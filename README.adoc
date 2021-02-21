@@ -1,7 +1,7 @@
 = kafka-delta-ingest
 
-The kafka-delta-ingest aims to build a highly efficient daemon for streaming
-data through link:https://kafka.apache.org[Apache Kafka] into
+The kafka-delta-ingest project aims to build a highly efficient daemon for
+streaming data through link:https://kafka.apache.org[Apache Kafka] into
 link:https://delta.io[Delta Lake].
 
 This project is currently highly experimental and evolving in tandem with the
