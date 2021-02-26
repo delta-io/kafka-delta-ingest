@@ -31,3 +31,11 @@ echo "{\"id\":\"10\",\"value\":10,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafka
 * Watch the delta table folder for new files
 ** `ls tests/data/example`
 ** `cat tests/data/example/_delta_logs/00000000000000000001.json`
+
+* Check committed offsets
+
+```
+$KAFKA_HOME/bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --describe --group kafka-delta-ingest:example
+```
+
+* Check number of rows in delta table

@@ -12,7 +12,7 @@ use deltalake::{DeltaTable, DeltaTableError, DeltaTableMetaData, DeltaTransactio
     action::{Add, Action, Stats}
 };
 use futures::stream::StreamExt;
-use log::warn;
+use log::{info, warn};
 use parquet::{
     arrow::ArrowWriter, 
     basic::Compression,
@@ -96,6 +96,7 @@ async fn start(consumer: StreamConsumer, delta_table_path: &str) {
                     // ...
 
                     if let Err(e) = consumer.store_offset(&m) {
+                        info!("Committed offset {}", m.offset());
                         warn!("Failed to commit consumer offsets");
                     }
                 }
