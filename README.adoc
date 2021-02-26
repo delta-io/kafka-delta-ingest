@@ -6,3 +6,28 @@ link:https://delta.io[Delta Lake].
 
 This project is currently highly experimental and evolving in tandem with the
 link:https://github.com/delta-io/delta-rs[delta-rs] bindings.
+
+== Developing
+
+* Compile: `cargo build`
+* Launch Kafka - `docker-compose up`
+* Run kafka-delta-ingest: `cargo run`
+** alternatively `RUST_LOG=info ./target/debug/kafka-delta-ingest`
+* Produce messages to `example` topic, e.g.: 
+
+```
+echo "{\"id\":\"1\",\"value\":1,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"2\",\"value\":2,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"3\",\"value\":3,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"4\",\"value\":4,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"5\",\"value\":5,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"6\",\"value\":6,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"7\",\"value\":7,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"8\",\"value\":8,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"9\",\"value\":9,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"10\",\"value\":10,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+```
+
+* Watch the delta table folder for new files
+** `ls tests/data/example`
+** `cat tests/data/example/_delta_logs/00000000000000000001.json`
