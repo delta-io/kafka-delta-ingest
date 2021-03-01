@@ -79,6 +79,7 @@ async fn start(consumer: StreamConsumer, delta_table_path: &str) {
                     }
                 };
 
+                // TODO: transform_message should also take the BorrowedMessage so Kafka metadata can be added (partition, offset, topic, etc)
                 transform_message(&mut value);
 
                 // Append to json batch
@@ -95,9 +96,12 @@ async fn start(consumer: StreamConsumer, delta_table_path: &str) {
                     // TODO: Hoist DeltaWriter ownership and transaction control flow into this scope
                     // ...
 
+                    // TODO: Kafka partition offsets shall eventually be written to a separate write-ahead-log for delta write atomicity
+                    // The offset commit to Kafka shall be specifically for consumer lag monitoring support and 
                     if let Err(e) = consumer.store_offset(&m) {
+                        warn!("Failed to commit consumer offsets {:?}", e);
+                    } else {
                         info!("Committed offset {}", m.offset());
-                        warn!("Failed to commit consumer offsets");
                     }
                 }
             },
@@ -118,13 +122,21 @@ async fn write_json_batch(message_buffer: &Vec<Value>, delta_table: &mut DeltaTa
     // TODO: This method is currently owning the DeltaWriter, closing it and committing the transaction
     // Ultimately, the writer must be held outside of this scope to allow multiple record batches and for the transaction to be committed separately.
 
+    // where transient network errors might occur, we need to be resilient - retry etc
+
     let delta_writer = DeltaWriter::for_table_path(delta_table.table_path.clone()).await.unwrap();
 
     // start a transaction
     let metadata = delta_table.get_metadata().unwrap().clone();
     let mut transaction = delta_table.create_transaction(None);
 
+    // schema derivation smells funny here
+
     let arrow_schema_ref = Arc::new(<ArrowSchema as From<&Schema>>::from(&metadata.schema));
+
+    // if one JSON message in a batch doesn't match schema, this should fail
+    // how should we handle this? pull out failed messages? dead letter everything in the batch?
+
     let record_batch = record_batch_from_json_buffer(arrow_schema_ref, message_buffer).unwrap();
 
     // write data and collect add
