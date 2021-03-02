@@ -68,7 +68,7 @@ pub async fn start(consumer: StreamConsumer, delta_table_path: &str, allowed_lat
                     // TODO: Handle error
                     let record_batch = deltalake_ext::record_batch_from_json_buffer(arrow_schema_ref.clone(), json_buffer.as_slice()).unwrap();
 
-                    // Clear the json buffer so we can add start clean on the next round.
+                    // Clear the json buffer so we can start clean on the next round.
                     json_buffer.clear();
 
                     // Write the arrow record batch to our delta writer that wraps an in memory cursor for tracking bytes.
@@ -87,6 +87,7 @@ pub async fn start(consumer: StreamConsumer, delta_table_path: &str, allowed_lat
                         // Create and commit a delta transaction to add the new data file to table state.
                         let mut tx = delta_table.create_transaction(None);
                         // TODO: Handle error
+                        // TODO: Pass an Operation::StreamingUpdate(...) for operation, and a tx action containing the partition offset version
                         let committed_version = tx.commit_with(&[action], None).await.unwrap();
 
                         // Reset the timer to track allowed latency for the next round
