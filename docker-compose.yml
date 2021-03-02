@@ -12,9 +12,6 @@ services:
 
   zookeeper:
     image: wurstmeister/zookeeper
-    # Somehow the container on my aarch64 machine is not able to set or access
-    # ulimits without privileged mode, causing the JVM to dump core O_O
-    # <>https://hg.openjdk.java.net/icedtea/jdk7/jdk/rev/028f2ab19545#l78.73>
     privileged: true
     ports:
       - "2181:2181"

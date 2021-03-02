@@ -12,6 +12,7 @@ use rdkafka::{Message, consumer::{
     }};
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::deltalake_ext;
 use crate::deltalake_ext::DeltaParquetWriter;
@@ -27,6 +28,8 @@ pub async fn start(consumer: StreamConsumer, delta_table_path: &str, allowed_lat
     let metadata = delta_table.get_metadata().unwrap().clone();
     let arrow_schema_ref = Arc::new(<ArrowSchema as From<&Schema>>::from(&metadata.schema));
     let partition_cols = metadata.partition_columns;
+
+    let mut timer = Instant::now();
 
     // Handle each message on the Kafka topic in a loop.
     while let Some(message) = stream.next().await {
@@ -57,7 +60,7 @@ pub async fn start(consumer: StreamConsumer, delta_table_path: &str, allowed_lat
                 // or the allowed latency has elapsed, write a record batch.
                 //
 
-                let should_complete_record_batch = json_buffer.len() == max_messages_per_batch;
+                let should_complete_record_batch = json_buffer.len() == max_messages_per_batch || timer.elapsed().as_secs() >= allowed_latency;
 
                 if should_complete_record_batch {
 
@@ -74,7 +77,7 @@ pub async fn start(consumer: StreamConsumer, delta_table_path: &str, allowed_lat
 
                     // When the memory buffer meets min bytes per file or allowed latency is met, complete the file and start a new one.
                     // TODO: Handle error
-                    let should_complete_file = delta_writer.buffer_len().unwrap() >= min_bytes_per_file;
+                    let should_complete_file = delta_writer.buffer_len().unwrap() >= min_bytes_per_file || timer.elapsed().as_secs() >= allowed_latency;
 
                     if should_complete_file {
                         // TODO: Handle error
@@ -85,6 +88,9 @@ pub async fn start(consumer: StreamConsumer, delta_table_path: &str, allowed_lat
                         let mut tx = delta_table.create_transaction(None);
                         // TODO: Handle error
                         let committed_version = tx.commit_with(&[action], None).await.unwrap();
+
+                        // Reset the timer to track allowed latency for the next round
+                        timer = Instant::now();
 
                         info!("Comitted Delta version {}", committed_version);
                     }
