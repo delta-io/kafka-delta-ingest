@@ -176,6 +176,9 @@ impl DeltaParquetWriter {
             .storage
             .join_path(self.table_path.as_str(), path.as_str());
 
+        // Close the arrow writer to flush remaining bytes and write the parquet footer
+        self.arrow_writer.close()?;
+
         //
         // TODO: Wrap in retry loop to handle temporary network errors
         //
@@ -183,9 +186,6 @@ impl DeltaParquetWriter {
         self.storage
             .put_obj(storage_path.as_str(), obj_bytes.as_slice())
             .await?;
-
-        // Close the arrow writer to flush remaining bytes and write the parquet footer
-        self.arrow_writer.close()?;
 
         let num_records = self.num_records;
 
