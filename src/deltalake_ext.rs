@@ -144,6 +144,7 @@ impl DeltaParquetWriter {
         self.partition_values = partition_values;
 
         // TODO: collect/update column stats
+        // @nevi-me makes a fantastic recommendation to expose stats from the parquet crate if possible in https://github.com/delta-io/kafka-delta-ingest/pull/1#discussion_r585878860
 
         // write the record batch to the held arrow writer
         self.arrow_writer.write(record_batch)?;
