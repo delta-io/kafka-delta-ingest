@@ -1,29 +1,43 @@
 use arrow::{
-    array::{Array, as_primitive_array}, 
+    array::{as_primitive_array, Array},
+    datatypes::Schema as ArrowSchema,
     datatypes::*,
     error::ArrowError,
-    datatypes::Schema as ArrowSchema,
     json::reader::Decoder,
     record_batch::RecordBatch,
 };
-use deltalake::{DeltaTableError, DeltaTableMetaData, Schema, StorageBackend, StorageError, UriError, 
-    action::{Add, Stats}
+use deltalake::{
+    action::{Add, Stats},
+    DeltaTableError, Schema, StorageBackend, StorageError, UriError,
 };
-use log::{info, warn};
-use parquet::{arrow::ArrowWriter, basic::Compression, errors::ParquetError, file::{properties::WriterProperties, writer::{InMemoryWriteableCursor}}};
+use parquet::{
+    arrow::ArrowWriter,
+    basic::Compression,
+    errors::ParquetError,
+    file::{properties::WriterProperties, writer::InMemoryWriteableCursor},
+};
 use serde_json::Value;
-use std::{collections::HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 #[derive(thiserror::Error, Debug)]
 pub enum DeltaWriterError {
-    #[error("Partition column contains more than one value")]
-    NonDistinctPartitionValue,
-
     #[error("Missing partition column: {col_name}")]
     MissingPartitionColumn { col_name: String },
+
+    #[error("Arrow RecordBatch schema does not match: RecordBatch schema: {record_batch_schema}, {expected_schema}")]
+    SchemaMismatch {
+        record_batch_schema: SchemaRef,
+        expected_schema: Arc<arrow::datatypes::Schema>,
+    },
+
+    #[error("Arrow RecordBatch created from JSON buffer is a None value")]
+    EmptyRecordBatch,
+
+    #[error("Serialization of delta log statistics failed")]
+    StatsSerializationFailed { stats_object: Stats },
 
     #[error("Invalid table path: {}", .source)]
     UriError {
@@ -32,27 +46,27 @@ pub enum DeltaWriterError {
     },
 
     #[error("Storage interaction failed: {source}")]
-    Storage { 
+    Storage {
         #[from]
-        source: StorageError 
+        source: StorageError,
     },
 
     #[error("DeltaTable interaction failed: {source}")]
-    DeltaTable { 
+    DeltaTable {
         #[from]
-        source: DeltaTableError 
+        source: DeltaTableError,
     },
 
     #[error("Arrow interaction failed: {source}")]
-    Arrow { 
+    Arrow {
         #[from]
-        source: ArrowError 
+        source: ArrowError,
     },
 
     #[error("Parquet write failed: {source}")]
-    Parquet { 
+    Parquet {
         #[from]
-        source: ParquetError 
+        source: ParquetError,
     },
 }
 
@@ -71,7 +85,10 @@ pub struct DeltaParquetWriter {
 /// This should be used along side a DeltaTransaction wrapping the same DeltaTable instance.
 impl DeltaParquetWriter {
     /// Initialize the writer from the given table path and delta schema
-    pub async fn for_table_path_with_schema(table_path: String, schema: &Schema) -> Result<DeltaParquetWriter, DeltaWriterError> {
+    pub async fn for_table_path_with_schema(
+        table_path: String,
+        schema: &Schema,
+    ) -> Result<DeltaParquetWriter, DeltaWriterError> {
         // Initialize storage backend for the given table path
         let storage = deltalake::get_backend_for_uri(table_path.as_str())?;
 
@@ -81,13 +98,16 @@ impl DeltaParquetWriter {
 
         // Initialize writer properties for the underlying arrow writer
         let writer_properties = WriterProperties::builder()
-            // TODO: Extract config/env for writer properties and set more than just compression
+            // NOTE: Consider extracting config for writer properties and setting more than just compression
             .set_compression(Compression::SNAPPY)
             .build();
 
         let cursor = InMemoryWriteableCursor::default();
-        // TODO: Handle error
-        let arrow_writer = ArrowWriter::try_new(cursor.clone(), arrow_schema_ref.clone(), Some(writer_properties.clone())).unwrap();
+        let arrow_writer = ArrowWriter::try_new(
+            cursor.clone(),
+            arrow_schema_ref.clone(),
+            Some(writer_properties.clone()),
+        )?;
 
         Ok(Self {
             table_path,
@@ -103,8 +123,22 @@ impl DeltaParquetWriter {
 
     /// Writes the record batch in-memory and updates internal state accordingly.
     /// This method buffers the write stream internally so it can be invoked for many record batches and flushed after the appropriate number of bytes has been written.
-    pub async fn write_record_batch(&mut self, partition_cols: &Vec<String>, record_batch: &RecordBatch) -> Result<(), DeltaWriterError> {
+    pub async fn write_record_batch(
+        &mut self,
+        partition_cols: &Vec<String>,
+        record_batch: &RecordBatch,
+    ) -> Result<(), DeltaWriterError> {
         let partition_values = extract_partition_values(partition_cols, record_batch)?;
+
+        // Verify record batch schema matches the expected schema
+        let schemas_match = record_batch.schema() == self.arrow_schema_ref;
+
+        if !schemas_match {
+            return Err(DeltaWriterError::SchemaMismatch {
+                record_batch_schema: record_batch.schema(),
+                expected_schema: self.arrow_schema_ref.clone(),
+            });
+        }
 
         // TODO: Verify that this RecordBatch contains partition values that agree with previous partition values (if any) for the current writer context
         self.partition_values = partition_values;
@@ -122,29 +156,40 @@ impl DeltaParquetWriter {
 
     /// Returns the current byte length of the in memory buffer.
     /// This should be used by the caller to decide when to call `complete_file`.
-    pub fn buffer_len(&self) -> Result<usize, DeltaWriterError> {
-        Ok(self.cursor.data().len())
+    pub fn buffer_len(&self) -> usize {
+        self.cursor.data().len()
     }
-    
-    /// Writes the existing parquet bytes to storage and resets internal state to handle another round.
+
+    /// Writes the existing parquet bytes to storage and resets internal state to handle another file.
     /// Returns an `Add` action representing the added file to be appended to the delta log.
-    pub async fn complete_file(&mut self, partition_cols: &Vec<String>) -> Result<Add, DeltaWriterError> {
-        let path = self.next_data_path(partition_cols, &self.partition_values).unwrap();
+    pub async fn complete_file(
+        &mut self,
+        partition_cols: &Vec<String>,
+    ) -> Result<Add, DeltaWriterError> {
+        let path = self.next_data_path(partition_cols, &self.partition_values)?;
 
         let obj_bytes = self.cursor.data();
         let file_size = obj_bytes.len() as i64;
 
-        let storage_path = format!("{}/{}", self.table_path, path);
+        let storage_path = self
+            .storage
+            .join_path(self.table_path.as_str(), path.as_str());
 
-        self.storage.put_obj(storage_path.as_str(), obj_bytes.as_slice()).await?;
+        //
+        // TODO: Wrap in retry loop to handle temporary network errors
+        //
+
+        self.storage
+            .put_obj(storage_path.as_str(), obj_bytes.as_slice())
+            .await?;
 
         // Close the arrow writer to flush remaining bytes and write the parquet footer
         self.arrow_writer.close()?;
 
         let num_records = self.num_records;
- 
-        // Re-initialize state to handle another file
-        self.reset();
+
+        // Re-initialize internal state to handle another file
+        self.reset()?;
 
         // Create and return the "add" action associated with the completed file
         let add = create_add(&self.partition_values, path, file_size, num_records);
@@ -152,44 +197,56 @@ impl DeltaParquetWriter {
         add
     }
 
-    fn reset(&mut self) {
+    fn reset(&mut self) -> Result<(), DeltaWriterError> {
+        // Reset the internal cursor for the next file
         self.cursor = InMemoryWriteableCursor::default();
-        // TODO: Handle error
-        self.arrow_writer = ArrowWriter::try_new(self.cursor.clone(), self.arrow_schema_ref.clone(), Some(self.writer_properties.clone())).unwrap();
+        // Reset the internal arrow writer for the next file
+        self.arrow_writer = ArrowWriter::try_new(
+            self.cursor.clone(),
+            self.arrow_schema_ref.clone(),
+            Some(self.writer_properties.clone()),
+        )?;
+        // Reset the record count to start from zero for the next file
         self.num_records = 0;
+
+        Ok(())
     }
 
     // TODO: parquet files have a 5 digit zero-padded prefix and a "c\d{3}" suffix that I have not been able to find documentation for yet.
-    fn next_data_path(&self, partition_cols: &Vec<String>, partition_values: &HashMap<String, String>) -> Result<String, DeltaWriterError> {
+    fn next_data_path(
+        &self,
+        partition_cols: &Vec<String>,
+        partition_values: &HashMap<String, String>,
+    ) -> Result<String, DeltaWriterError> {
         // TODO: what does 00000 mean?
         let first_part = "00000";
         let uuid_part = Uuid::new_v4();
         // TODO: what does c000 mean?
         let last_part = "c000";
 
-        let file_name = format!("part-{}-{}-{}.parquet", first_part, uuid_part, last_part);
+        // NOTE: If we add a non-snappy option, file name must change
+        let file_name = format!(
+            "part-{}-{}-{}.snappy.parquet",
+            first_part, uuid_part, last_part
+        );
 
         let data_path = if partition_cols.len() > 0 {
-            let mut path_part = String::with_capacity(20);
-
-            // ugly string builder hack
-            let mut first = true;
+            let mut path_parts = vec![];
 
             for k in partition_cols.iter() {
-                let partition_value = partition_values.get(k).ok_or(DeltaWriterError::MissingPartitionColumn{ col_name: k.to_string() })?;
+                let partition_value =
+                    partition_values
+                        .get(k)
+                        .ok_or(DeltaWriterError::MissingPartitionColumn {
+                            col_name: k.to_string(),
+                        })?;
 
-                if first {
-                    first = false;
-                } else {
-                    path_part.push_str("/");
-                }
+                let part = format!("{}={}", k, partition_value);
 
-                path_part.push_str(k);
-                path_part.push_str("=");
-                path_part.push_str(partition_value);
+                path_parts.push(part);
             }
-
-            format!("{}/{}", path_part, file_name)
+            path_parts.push(file_name);
+            path_parts.join("/")
         } else {
             file_name
         };
@@ -199,12 +256,12 @@ impl DeltaParquetWriter {
 }
 
 struct InMemValueIter<'a> {
-    buffer: &'a[Value],
+    buffer: &'a [Value],
     current_index: usize,
 }
 
 impl<'a> InMemValueIter<'a> {
-    fn from_vec(v: &'a[Value]) -> Self {
+    fn from_vec(v: &'a [Value]) -> Self {
         Self {
             buffer: v,
             current_index: 0,
@@ -224,26 +281,31 @@ impl<'a> Iterator for InMemValueIter<'a> {
     }
 }
 
-pub fn record_batch_from_json_buffer(arrow_schema_ref: Arc<ArrowSchema>, json_buffer: &[Value]) -> Result<RecordBatch, DeltaWriterError> {
+/// Creates an Arrow RecordBatch from the passed JSON buffer.
+pub fn record_batch_from_json_buffer(
+    arrow_schema_ref: Arc<ArrowSchema>,
+    json_buffer: &[Value],
+) -> Result<RecordBatch, DeltaWriterError> {
     let row_count = json_buffer.len();
-    let mut value_ter = InMemValueIter::from_vec(json_buffer);
+    let mut value_iter = InMemValueIter::from_vec(json_buffer);
     let decoder = Decoder::new(arrow_schema_ref.clone(), row_count, None);
-    let batch = decoder.next_batch(&mut value_ter)?;
 
-    // handle none
-    let batch = batch.unwrap();
-
-    Ok(batch)
+    decoder
+        .next_batch(&mut value_iter)?
+        .ok_or(DeltaWriterError::EmptyRecordBatch)
 }
 
-fn extract_partition_values(partition_cols: &Vec<String>, record_batch: &RecordBatch) -> Result<HashMap<String, String>, DeltaWriterError> {
+fn extract_partition_values(
+    partition_cols: &Vec<String>,
+    record_batch: &RecordBatch,
+) -> Result<HashMap<String, String>, DeltaWriterError> {
     let mut partition_values = HashMap::new();
 
     for col_name in partition_cols.iter() {
         let arrow_schema = record_batch.schema();
 
         let i = arrow_schema.index_of(col_name)?;
-        let col = record_batch.column(i); 
+        let col = record_batch.column(i);
 
         let partition_string = stringified_partition_value(col)?;
 
@@ -253,7 +315,13 @@ fn extract_partition_values(partition_cols: &Vec<String>, record_batch: &RecordB
     Ok(partition_values)
 }
 
-fn create_add(partition_values: &HashMap<String, String>, path: String, size: i64, num_records: i64) -> Result<Add, DeltaWriterError> {
+fn create_add(
+    partition_values: &HashMap<String, String>,
+    path: String,
+    size: i64,
+    num_records: i64,
+) -> Result<Add, DeltaWriterError> {
+    // Initialize a delta_rs stats object
     let stats = Stats {
         numRecords: num_records,
         // TODO: calculate additional stats
@@ -262,14 +330,18 @@ fn create_add(partition_values: &HashMap<String, String>, path: String, size: i6
         maxValues: HashMap::new(),
         nullCount: HashMap::new(),
     };
-    let stats_string = serde_json::to_string(&stats).unwrap();
+    // Derive a stats string to include in the add action
+    let stats_string =
+        serde_json::to_string(&stats).or(Err(DeltaWriterError::StatsSerializationFailed {
+            stats_object: stats,
+        }))?;
 
-    let modification_time = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap();
-    let modification_time= modification_time.as_millis() as i64;
+    // Determine the modification timestamp to include in the add action - milliseconds since epoch
+    // Err should be impossible in this case since `SystemTime::now()` is always greater than `UNIX_EPOCH`
+    let modification_time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    let modification_time = modification_time.as_millis() as i64;
 
-    let add = Add {
+    Ok(Add {
         path,
         size,
 
@@ -279,14 +351,14 @@ fn create_add(partition_values: &HashMap<String, String>, path: String, size: i6
         modificationTime: modification_time,
         dataChange: true,
 
-        // TODO: calculate additional stats 
+        // TODO: calculate additional stats
         stats: Some(stats_string),
+        // TODO: implement stats_parsed for better performance gain
+        // https://github.com/delta-io/delta/blob/master/PROTOCOL.md#checkpoint-format
         stats_parsed: None,
         // ?
         tags: None,
-    };
-
-    Ok(add)
+    })
 }
 
 // very naive implementation for plucking the partition value from the first element of a column array.
