@@ -167,6 +167,9 @@ impl DeltaParquetWriter {
         &mut self,
         partition_cols: &Vec<String>,
     ) -> Result<Add, DeltaWriterError> {
+        // Close the arrow writer to flush remaining bytes and write the parquet footer
+        self.arrow_writer.close()?;
+
         let path = self.next_data_path(partition_cols, &self.partition_values)?;
 
         let obj_bytes = self.cursor.data();
@@ -175,9 +178,6 @@ impl DeltaParquetWriter {
         let storage_path = self
             .storage
             .join_path(self.table_path.as_str(), path.as_str());
-
-        // Close the arrow writer to flush remaining bytes and write the parquet footer
-        self.arrow_writer.close()?;
 
         //
         // TODO: Wrap in retry loop to handle temporary network errors
