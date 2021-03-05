@@ -55,7 +55,7 @@ async fn main() -> anyhow::Result<()> {
             );
 
             let _ = tokio::spawn(async move {
-                match stream.start().await {
+                match stream.start(None).await {
                     Ok(_) => info!("Stream exited gracefully"),
                     Err(e) => error!("Stream exited with error {:?}", e),
                 }

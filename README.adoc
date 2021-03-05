@@ -46,4 +46,4 @@ TODO: ...
 == Tests
 
 * For unit tests, run `cargo test`.
-* Integration tests that depend on Kafka are currently marked with `#[ignore]`. Run `cargo test -- --ignored` to run these locally _after_ running `docker-compose up` to create a local Kafka.
+* Integration tests that depend on Kafka are currently marked with `#[ignore]`. Run `RUST_LOG=debug cargo test -- --ignored --nocapture` to run these locally _after_ running `docker-compose up` to create a local Kafka.

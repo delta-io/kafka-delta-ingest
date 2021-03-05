@@ -7,20 +7,25 @@ use log::{debug, error, info, warn};
 use rdkafka::{
     config::ClientConfig,
     consumer::{Consumer, StreamConsumer},
+    error::KafkaError,
     Message,
 };
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 use crate::deltalake_ext;
 use crate::deltalake_ext::{DeltaParquetWriter, DeltaWriterError};
 
 #[derive(thiserror::Error, Debug)]
 pub enum KafkaJsonToDeltaError {
-    #[error("Failed to start stream")]
-    StreamStartFailed,
+    #[error("Kafka error: {source}")]
+    Kafka {
+        #[from]
+        source: KafkaError,
+    },
 
     #[error("DeltaTable interaction failed: {source}")]
     DeltaTable {
@@ -39,6 +44,9 @@ pub enum KafkaJsonToDeltaError {
         #[from]
         source: DeltaWriterError,
     },
+
+    #[error("Failed to start stream")]
+    StreamStartFailed,
 }
 
 pub struct KafkaJsonToDelta {
@@ -95,18 +103,25 @@ impl KafkaJsonToDelta {
     }
 
     /// Starts the topic-to-table ingestion stream.
-    pub async fn start(&mut self) -> Result<(), KafkaJsonToDeltaError> {
+    pub async fn start(&mut self, cancellation_token: Option<&CancellationToken>) -> Result<(), KafkaJsonToDeltaError> {
+        info!("Starting stream");
+
         self.consumer
             .subscribe(&[self.topic.as_str()])
             .expect("Consumer subscription failed");
 
-        start(
+        let res = start(
             &mut self.consumer,
             self.table_location.as_str(),
             self.allowed_latency,
             self.max_messages_per_batch,
             self.min_bytes_per_file,
-        ).await
+            cancellation_token,
+        ).await;
+
+        info!("Stream stopped");
+
+        res
     }
 }
 
@@ -116,6 +131,7 @@ async fn start(
     allowed_latency: u64,
     max_messages_per_batch: usize,
     min_bytes_per_file: usize,
+    cancellation_token: Option<&CancellationToken>,
 ) -> Result<(), KafkaJsonToDeltaError> {
     let mut delta_table = deltalake::open_table(delta_table_path).await?;
     let mut json_buffer: Vec<Value> = Vec::new();
@@ -135,10 +151,16 @@ async fn start(
 
     // Handle each message on the Kafka topic in a loop.
     while let Some(message) = stream.next().await {
+        if let Some(token) = cancellation_token {
+            if token.is_cancelled() {
+                return Ok(());
+            }
+        }
+
+        debug!("Handling Kafka message.");
+
         match message {
             Ok(m) => {
-                debug!("Handling Kafka message.");
-
                 // Deserialize the rdkafka message into a serde_json::Value
                 let message_bytes = match m.payload() {
                     Some(bytes) => bytes,
@@ -169,13 +191,18 @@ async fn start(
                 // Append to json batch
                 json_buffer.push(value);
 
+                debug!("Added JSON message to buffer.");
+
                 //
                 // When the json batch contains max_messages_per_batch messages
                 // or the allowed_latency has elapsed, write a record batch.
                 //
 
+
                 let should_complete_record_batch = json_buffer.len() == max_messages_per_batch
                     || timer.elapsed().as_secs() >= allowed_latency;
+
+                debug!("Should complete record batch? {}, json_buffer.len: {}. timer.elapsed: {}", should_complete_record_batch, json_buffer.len(), timer.elapsed().as_secs());
 
                 if should_complete_record_batch {
                     info!("Creating Arrow RecordBatch from JSON message buffer.");
@@ -197,6 +224,8 @@ async fn start(
                     // When the memory buffer meets min bytes per file or allowed latency is met, complete the file and start a new one.
                     let should_complete_file = delta_writer.buffer_len() >= min_bytes_per_file
                         || timer.elapsed().as_secs() >= allowed_latency;
+
+                    debug!("Should complete file? {}. delta_writer.buffer_len: {}. timer.elapsed: {}", should_complete_file, delta_writer.buffer_len(), timer.elapsed().as_secs());
 
                     if should_complete_file {
                         info!("Completing parquet file write.");
