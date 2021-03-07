@@ -59,7 +59,8 @@ async fn main() -> anyhow::Result<()> {
                     Ok(_) => info!("Stream exited gracefully"),
                     Err(e) => error!("Stream exited with error {:?}", e),
                 }
-            }).await;
+            })
+            .await;
         }
         _ => unreachable!(),
     }

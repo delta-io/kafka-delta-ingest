@@ -5,20 +5,20 @@ use deltalake::{DeltaTableError, DeltaTransactionError, Schema};
 use futures::stream::StreamExt;
 use log::{debug, error, info, warn};
 use rdkafka::{
+    client::ClientContext,
     config::ClientConfig,
-    consumer::{Consumer, StreamConsumer},
+    consumer::{CommitMode, Consumer, ConsumerContext, Rebalance, StreamConsumer},
     error::KafkaError,
-    Message,
+    Message, Offset, TopicPartitionList,
 };
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::deltalake_ext;
 use crate::deltalake_ext::{DeltaParquetWriter, DeltaWriterError};
-
 #[derive(thiserror::Error, Debug)]
 pub enum KafkaJsonToDeltaError {
     #[error("Kafka error: {source}")]
@@ -45,9 +45,166 @@ pub enum KafkaJsonToDeltaError {
         source: DeltaWriterError,
     },
 
+    #[error("PartitionOffsets error: {source}")]
+    PartitionOffsets {
+        #[from]
+        source: PartitionOffsetsError,
+    },
+
     #[error("Failed to start stream")]
     StreamStartFailed,
+
+    #[error("Partition offset mutex is poisoned: {error_string}")]
+    PoisonedPartitionOffsetMutex { error_string: String },
+
+    #[error("A message was handled on partition {partition} but this partition is not tracked")]
+    UntrackedTopicPartition { partition: i32 },
+
+    #[error("Topic partition offset list is empty")]
+    MissingPartitionOffsets,
 }
+
+#[derive(thiserror::Error, Debug)]
+pub enum PartitionOffsetsError {
+    #[error("A message was handled on partition {partition} but this partition is not tracked")]
+    UntrackedTopicPartition { partition: i32 },
+
+    #[error("Topic partition offset list is empty")]
+    MissingPartitionOffsets,
+
+    #[error("Kafka error: {source}")]
+    Kafka {
+        #[from]
+        source: KafkaError,
+    },
+}
+
+struct PartitionOffsets {
+    topic: String,
+    assigned: HashMap<i32, Option<i64>>,
+}
+
+impl PartitionOffsets {
+    pub fn new(topic: String) -> Self {
+        let assigned = HashMap::new();
+
+        Self { topic, assigned }
+    }
+
+    pub fn track_partition_offset(
+        &mut self,
+        partition: i32,
+        offset: i64,
+    ) -> Result<(), PartitionOffsetsError> {
+        let o = self
+            .assigned
+            .get_mut(&partition)
+            .ok_or(PartitionOffsetsError::UntrackedTopicPartition { partition })?;
+
+        *o = Some(offset);
+
+        Ok(())
+    }
+
+    pub fn reset_from_topic_partition_list(&mut self, topic_partition_list: &TopicPartitionList) {
+        self.assigned.clear();
+        for element in topic_partition_list.elements().iter() {
+            let offset = element.offset();
+            match offset {
+                Offset::Offset(o) => {
+                    self.assigned.insert(element.partition(), Some(o));
+                }
+                _ => {
+                    debug!("Read element with offset {:?}", offset);
+                    self.assigned.insert(element.partition(), None);
+                }
+            }
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.assigned.clear();
+    }
+
+    pub fn create_topic_partition_list(&self) -> Result<TopicPartitionList, PartitionOffsetsError> {
+        let mut tpl = TopicPartitionList::new();
+
+        for (k, v) in self.assigned.iter() {
+            if let Some(o) = v {
+                debug!(
+                    "Adding partition offset to new TopicPartitionList {}: {}",
+                    k, o
+                );
+                tpl.add_partition_offset(
+                    self.topic.as_str(),
+                    k.clone(),
+                    Offset::Offset(o.clone()),
+                )?;
+            }
+        }
+
+        Ok(tpl)
+    }
+}
+
+// TODO: This handles resetting partition offsets to scratch,
+// but we also need a way to handle file buffers
+/// A custom ConsumerContext implementation for updating partition assignments after a rebalance
+struct KafkaJsonToDeltaConsumerContext {
+    // pub partition_offsets: Arc<Mutex<HashMap<i32, Option<i64>>>>,
+    pub partition_offsets: Arc<Mutex<PartitionOffsets>>,
+}
+
+impl ClientContext for KafkaJsonToDeltaConsumerContext {}
+
+impl ConsumerContext for KafkaJsonToDeltaConsumerContext {
+    fn pre_rebalance(&self, rebalance: &Rebalance) {
+        debug!("Pre rebalance {:?}", rebalance);
+    }
+
+    fn post_rebalance(&self, rebalance: &Rebalance) {
+        debug!("Post rebalance {:?}", rebalance);
+
+        match rebalance {
+            Rebalance::Assign(tpl) => {
+                info!("Received new partition assignment list");
+                match self.partition_offsets.lock() {
+                    Ok(mut partition_offsets) => {
+                        partition_offsets.reset_from_topic_partition_list(tpl);
+                    }
+                    Err(e) => {
+                        error!("Error locking partition_offsets {:?}", e);
+                    }
+                }
+            }
+            Rebalance::Revoke => {
+                info!("Partition assignments revoked");
+                match self.partition_offsets.lock() {
+                    Ok(mut partition_offsets) => {
+                        partition_offsets.clear();
+                    }
+                    Err(e) => {
+                        error!("Error locking partition_offsets {:?}", e);
+                    }
+                }
+            }
+            Rebalance::Error(e) => {
+                warn!(
+                    "Unexpected Kafka error in post_rebalance invocation {:?}",
+                    e
+                );
+            }
+        }
+    }
+}
+
+impl KafkaJsonToDeltaConsumerContext {
+    fn new(partition_offsets: Arc<Mutex<PartitionOffsets>>) -> Self {
+        Self { partition_offsets }
+    }
+}
+
+type KafkaJsonToDeltaConsumer = StreamConsumer<KafkaJsonToDeltaConsumerContext>;
 
 pub struct KafkaJsonToDelta {
     topic: String,
@@ -55,7 +212,8 @@ pub struct KafkaJsonToDelta {
     allowed_latency: u64,
     max_messages_per_batch: usize,
     min_bytes_per_file: usize,
-    consumer: StreamConsumer,
+    consumer: KafkaJsonToDeltaConsumer,
+    partition_offsets: Arc<Mutex<PartitionOffsets>>,
 }
 
 /// Encapsulates a single topic-to-table ingestion stream.
@@ -77,8 +235,10 @@ impl KafkaJsonToDelta {
             .set("bootstrap.servers", kafka_brokers.clone())
             .set("group.id", consumer_group_id)
             // Commit every 5 seconds... but...
-            .set("enable.auto.commit", "true")
-            .set("auto.commit.interval.ms", "5000")
+            // .set("enable.auto.commit", "true")
+            // No auto-commits. We will commit explicitly after completing Delta transactions
+            .set("enable.auto.commit", "false")
+            // .set("auto.commit.interval.ms", "5000")
             // but... only commit the offsets explicitly stored via `consumer.store_offset`.
             .set("enable.auto.offset.store", "false");
 
@@ -88,8 +248,11 @@ impl KafkaJsonToDelta {
             }
         }
 
-        let consumer: StreamConsumer = kafka_client_config
-            .create()
+        let partition_offsets = Arc::new(Mutex::new(PartitionOffsets::new(topic.clone())));
+        let consumer_context = KafkaJsonToDeltaConsumerContext::new(partition_offsets.clone());
+
+        let consumer: KafkaJsonToDeltaConsumer = kafka_client_config
+            .create_with_context(consumer_context)
             .expect("Failed to create StreamConsumer");
 
         Self {
@@ -99,182 +262,417 @@ impl KafkaJsonToDelta {
             max_messages_per_batch,
             min_bytes_per_file,
             consumer,
+            partition_offsets,
         }
     }
 
     /// Starts the topic-to-table ingestion stream.
-    pub async fn start(&mut self, cancellation_token: Option<&CancellationToken>) -> Result<(), KafkaJsonToDeltaError> {
+    pub async fn start(
+        &mut self,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<(), KafkaJsonToDeltaError> {
         info!("Starting stream");
 
         self.consumer
             .subscribe(&[self.topic.as_str()])
             .expect("Consumer subscription failed");
 
-        let res = start(
-            &mut self.consumer,
-            self.table_location.as_str(),
-            self.allowed_latency,
-            self.max_messages_per_batch,
-            self.min_bytes_per_file,
-            cancellation_token,
-        ).await;
+        // let res = start(
+        //     &mut self.consumer,
+        //     self.table_location.as_str(),
+        //     self.allowed_latency,
+        //     self.max_messages_per_batch,
+        //     self.min_bytes_per_file,
+        //     cancellation_token,
+        //     self.partition_offsets.clone(),
+        // )
+        // .await;
 
-        info!("Stream stopped");
+        let res = self.run_loop(cancellation_token).await;
+
+        if res.is_err() {
+            error!("Stream stopped with error result: {:?}", res);
+        } else {
+            info!("Stream stopped");
+        }
 
         res
     }
-}
 
-async fn start(
-    consumer: &mut StreamConsumer,
-    delta_table_path: &str,
-    allowed_latency: u64,
-    max_messages_per_batch: usize,
-    min_bytes_per_file: usize,
-    cancellation_token: Option<&CancellationToken>,
-) -> Result<(), KafkaJsonToDeltaError> {
-    let mut delta_table = deltalake::open_table(delta_table_path).await?;
-    let mut json_buffer: Vec<Value> = Vec::new();
-    let mut stream = consumer.stream();
-    let metadata = delta_table.get_metadata()?.clone();
-    let schema = metadata.schema.clone();
-    let mut delta_writer =
-        DeltaParquetWriter::for_table_path_with_schema(delta_table.table_path.clone(), &schema)
-            .await?;
+    async fn run_loop(
+        &mut self,
+        cancellation_token: Option<&CancellationToken>,
+    ) -> Result<(), KafkaJsonToDeltaError> {
+        let mut delta_table = deltalake::open_table(self.table_location.as_str()).await?;
+        let mut json_buffer: Vec<Value> = Vec::new();
+        let mut stream = self.consumer.stream();
+        let metadata = delta_table.get_metadata()?.clone();
+        let schema = metadata.schema.clone();
+        let mut delta_writer =
+            DeltaParquetWriter::for_table_path_with_schema(delta_table.table_path.clone(), &schema)
+                .await?;
 
-    let arrow_schema_ref = Arc::new(<ArrowSchema as From<&Schema>>::from(
-        &metadata.clone().schema,
-    ));
-    let partition_cols = metadata.partition_columns;
+        let arrow_schema_ref = Arc::new(<ArrowSchema as From<&Schema>>::from(
+            &metadata.clone().schema,
+        ));
+        let partition_cols = metadata.partition_columns;
 
-    let mut timer = Instant::now();
+        let mut latency_timer = Instant::now();
 
-    // Handle each message on the Kafka topic in a loop.
-    while let Some(message) = stream.next().await {
-        if let Some(token) = cancellation_token {
-            if token.is_cancelled() {
-                return Ok(());
-            }
-        }
-
-        debug!("Handling Kafka message.");
-
-        match message {
-            Ok(m) => {
-                // Deserialize the rdkafka message into a serde_json::Value
-                let message_bytes = match m.payload() {
-                    Some(bytes) => bytes,
-                    None => {
-                        warn!(
-                            "Payload has no bytes at partition: {} with offset: {}",
-                            m.partition(),
-                            m.offset()
-                        );
-                        continue;
-                    }
-                };
-
-                let mut value: Value = match serde_json::from_slice(message_bytes) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        // TODO: Add better deserialization error handling
-                        // Ideally, provide an option to send the message bytes to a dead letter queue
-                        error!("Error deserializing message {:?}", e);
-                        continue;
-                    }
-                };
-
-                // Transform the message according to topic configuration.
-                // This is a noop for now.
-                let _ = transform_message(&mut value, &m);
-
-                // Append to json batch
-                json_buffer.push(value);
-
-                debug!("Added JSON message to buffer.");
-
-                //
-                // When the json batch contains max_messages_per_batch messages
-                // or the allowed_latency has elapsed, write a record batch.
-                //
-
-
-                let should_complete_record_batch = json_buffer.len() == max_messages_per_batch
-                    || timer.elapsed().as_secs() >= allowed_latency;
-
-                debug!("Should complete record batch? {}, json_buffer.len: {}. timer.elapsed: {}", should_complete_record_batch, json_buffer.len(), timer.elapsed().as_secs());
-
-                if should_complete_record_batch {
-                    info!("Creating Arrow RecordBatch from JSON message buffer.");
-
-                    // Convert the json buffer to an arrow record batch.
-                    let record_batch = deltalake_ext::record_batch_from_json_buffer(
-                        arrow_schema_ref.clone(),
-                        json_buffer.as_slice(),
-                    )?;
-
-                    // Clear the json buffer so we can start clean on the next round.
-                    json_buffer.clear();
-
-                    // Write the arrow record batch to our delta writer that wraps an in memory cursor for tracking bytes.
-                    delta_writer
-                        .write_record_batch(&partition_cols, &record_batch)
-                        .await?;
-
-                    // When the memory buffer meets min bytes per file or allowed latency is met, complete the file and start a new one.
-                    let should_complete_file = delta_writer.buffer_len() >= min_bytes_per_file
-                        || timer.elapsed().as_secs() >= allowed_latency;
-
-                    debug!("Should complete file? {}. delta_writer.buffer_len: {}. timer.elapsed: {}", should_complete_file, delta_writer.buffer_len(), timer.elapsed().as_secs());
-
-                    if should_complete_file {
-                        info!("Completing parquet file write.");
-
-                        let add = delta_writer.complete_file(&partition_cols).await?;
-                        let action = deltalake::action::Action::add(add);
-
-                        // Create and commit a delta transaction to add the new data file to table state.
-                        let mut tx = delta_table.create_transaction(None);
-                        // TODO: Pass an Operation::StreamingUpdate(...) for operation, and a tx action containing the partition offset version
-                        let committed_version = tx.commit_with(&[action], None).await?;
-
-                        // Reset the timer to track allowed latency for the next file
-                        timer = Instant::now();
-
-                        info!("Comitted Delta version {}", committed_version);
-                    }
-
-                    // TODO: Kafka partition offsets shall eventually be written to a separate write-ahead-log
-                    // to maintain consistency with the data written in each version of the delta log.
-                    // The offset commit to Kafka shall be specifically for consumer lag monitoring support.
-
-                    // Commit the offset to Kafka so consumer lag monitors know where we are.
-                    if let Err(e) = consumer.store_offset(&m) {
-                        warn!("Failed to commit consumer offsets {:?}", e);
-                    } else {
-                        info!("Committed offset {}", m.offset());
-                    }
+        // Handle each message on the Kafka topic in a loop.
+        while let Some(message) = stream.next().await {
+            if let Some(token) = cancellation_token {
+                if token.is_cancelled() {
+                    return Ok(());
                 }
             }
-            Err(e) => {
-                // TODO: What does this error really imply? Determine if this should stop the stream.
-                error!(
-                    "Error getting BorrowedMessage while processing stream {:?}",
-                    e
-                );
+
+            debug!("Handling Kafka message.");
+
+            match message {
+                Ok(m) => {
+                    // Deserialize the rdkafka message into a serde_json::Value
+                    let message_bytes = match m.payload() {
+                        Some(bytes) => bytes,
+                        None => {
+                            warn!(
+                                "Payload has no bytes at partition: {} with offset: {}",
+                                m.partition(),
+                                m.offset()
+                            );
+                            continue;
+                        }
+                    };
+
+                    let mut value: Value = match serde_json::from_slice(message_bytes) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            // TODO: Add better deserialization error handling
+                            // Ideally, provide an option to send the message bytes to a dead letter queue
+                            error!("Error deserializing message {:?}", e);
+                            continue;
+                        }
+                    };
+
+                    // Transform the message according to topic configuration.
+                    // This is a noop for now.
+                    let _ = self.transform_message(&mut value, &m);
+
+                    // Append to json buffer
+                    json_buffer.push(value);
+
+                    debug!("Added JSON message to buffer.");
+
+                    {
+                        // Track the partition and offset for this message to commit later when flushing
+                        // the json buffer
+                        let mut partition_offsets = self.partition_offsets.lock().map_err(|e| {
+                            KafkaJsonToDeltaError::PoisonedPartitionOffsetMutex {
+                                error_string: e.to_string(),
+                            }
+                        })?;
+
+                        partition_offsets.track_partition_offset(m.partition(), m.offset())?;
+                    }
+
+                    //
+                    // When the json batch contains max_messages_per_batch messages
+                    // or the allowed_latency has elapsed, write a record batch.
+                    //
+
+                    let should_complete_record_batch = json_buffer.len()
+                        == self.max_messages_per_batch
+                        || latency_timer.elapsed().as_secs() >= self.allowed_latency;
+
+                    debug!(
+                        "Should complete record batch? {}, json_buffer.len: {}. timer.elapsed: {}",
+                        should_complete_record_batch,
+                        json_buffer.len(),
+                        latency_timer.elapsed().as_secs()
+                    );
+
+                    if should_complete_record_batch {
+                        info!("Creating Arrow RecordBatch from JSON message buffer.");
+
+                        // Convert the json buffer to an arrow record batch.
+                        let record_batch = deltalake_ext::record_batch_from_json_buffer(
+                            arrow_schema_ref.clone(),
+                            json_buffer.as_slice(),
+                        )?;
+
+                        // Clear the json buffer so we can start clean on the next round.
+                        json_buffer.clear();
+
+                        // Write the arrow record batch to our delta writer that wraps an in memory cursor for tracking bytes.
+                        delta_writer
+                            .write_record_batch(&partition_cols, &record_batch)
+                            .await?;
+
+                        // When the memory buffer meets min bytes per file or allowed latency is met, complete the file and start a new one.
+                        let should_complete_file = delta_writer.buffer_len()
+                            >= self.min_bytes_per_file
+                            || latency_timer.elapsed().as_secs() >= self.allowed_latency;
+
+                        debug!(
+                            "Should complete file? {}. delta_writer.buffer_len: {}. timer.elapsed: {}",
+                            should_complete_file,
+                            delta_writer.buffer_len(),
+                            latency_timer.elapsed().as_secs()
+                        );
+
+                        if should_complete_file {
+                            info!("Completing parquet file write.");
+
+                            let add = delta_writer.complete_file(&partition_cols).await?;
+                            let action = deltalake::action::Action::add(add);
+
+                            // Create and commit a delta transaction to add the new data file to table state.
+                            let mut tx = delta_table.create_transaction(None);
+                            // TODO: Pass an Operation::StreamingUpdate(...) for operation, and a tx action containing the partition offset version
+                            let committed_version = tx.commit_with(&[action], None).await?;
+
+                            // Reset the timer to track allowed latency for the next file
+                            latency_timer = Instant::now();
+
+                            info!("Comitted Delta version {}", committed_version);
+                        }
+
+                        // TODO: Kafka partition offsets shall eventually be written to a separate write-ahead-log
+                        // to maintain consistency with the data written in each version of the delta log.
+                        // The offset commit to Kafka shall be specifically for consumer lag monitoring support.
+
+                        // Commit all assigned partition offsets to Kafka so consumer lag monitors know where we are.
+
+                        let partition_offsets = self.partition_offsets.lock().map_err(|e| {
+                            KafkaJsonToDeltaError::PoisonedPartitionOffsetMutex {
+                                error_string: e.to_string(),
+                            }
+                        })?;
+
+                        let topic_partition_list =
+                            partition_offsets.create_topic_partition_list()?;
+
+                        info!("Committing offsets");
+
+                        let _ = self
+                            .consumer
+                            .commit(&topic_partition_list, CommitMode::Async)?;
+                    }
+                }
+                Err(e) => {
+                    // TODO: What does this error really imply? Determine if this should stop the stream.
+                    error!(
+                        "Error getting BorrowedMessage while processing stream {:?}",
+                        e
+                    );
+                }
             }
         }
+
+        Ok(())
     }
 
-    Ok(())
+    fn transform_message<M>(
+        &self,
+        _value: &mut Value,
+        _message: &M,
+    ) -> Result<(), KafkaJsonToDeltaError>
+    where
+        M: Message,
+    {
+        // TODO: transform the message according to topic configuration options
+        // ...
+
+        Ok(())
+    }
 }
 
-fn transform_message<M>(_value: &mut Value, _message: &M) -> Result<(), KafkaJsonToDeltaError>
-where
-    M: Message,
-{
-    // TODO: transform the message according to topic configuration options
-    // ...
+//async fn start(
+//    consumer: &mut KafkaJsonToDeltaConsumer,
+//    delta_table_path: &str,
+//    allowed_latency: u64,
+//    max_messages_per_batch: usize,
+//    min_bytes_per_file: usize,
+//    cancellation_token: Option<&CancellationToken>,
+//    partition_offsets: Arc<Mutex<PartitionOffsets>>,
+//) -> Result<(), KafkaJsonToDeltaError> {
+//    let mut delta_table = deltalake::open_table(delta_table_path).await?;
+//    let mut json_buffer: Vec<Value> = Vec::new();
+//    let mut stream = consumer.stream();
+//    let metadata = delta_table.get_metadata()?.clone();
+//    let schema = metadata.schema.clone();
+//    let mut delta_writer =
+//        DeltaParquetWriter::for_table_path_with_schema(delta_table.table_path.clone(), &schema)
+//            .await?;
 
-    Ok(())
+//    let arrow_schema_ref = Arc::new(<ArrowSchema as From<&Schema>>::from(
+//        &metadata.clone().schema,
+//    ));
+//    let partition_cols = metadata.partition_columns;
+
+//    let mut latency_timer = Instant::now();
+
+//    // Handle each message on the Kafka topic in a loop.
+//    while let Some(message) = stream.next().await {
+//        if let Some(token) = cancellation_token {
+//            if token.is_cancelled() {
+//                return Ok(());
+//            }
+//        }
+
+//        debug!("Handling Kafka message.");
+
+//        match message {
+//            Ok(m) => {
+//                // Deserialize the rdkafka message into a serde_json::Value
+//                let message_bytes = match m.payload() {
+//                    Some(bytes) => bytes,
+//                    None => {
+//                        warn!(
+//                            "Payload has no bytes at partition: {} with offset: {}",
+//                            m.partition(),
+//                            m.offset()
+//                        );
+//                        continue;
+//                    }
+//                };
+
+//                let mut value: Value = match serde_json::from_slice(message_bytes) {
+//                    Ok(v) => v,
+//                    Err(e) => {
+//                        // TODO: Add better deserialization error handling
+//                        // Ideally, provide an option to send the message bytes to a dead letter queue
+//                        error!("Error deserializing message {:?}", e);
+//                        continue;
+//                    }
+//                };
+
+//                // Transform the message according to topic configuration.
+//                // This is a noop for now.
+//                let _ = transform_message(&mut value, &m);
+
+//                // Append to json buffer
+//                json_buffer.push(value);
+
+//                debug!("Added JSON message to buffer.");
+
+//                {
+//                    // Track the partition and offset for this message to commit later when flushing
+//                    // the json buffer
+//                    let mut partition_offsets = partition_offsets.lock().map_err(|e| {
+//                        KafkaJsonToDeltaError::PoisonedPartitionOffsetMutex {
+//                            error_string: e.to_string(),
+//                        }
+//                    })?;
+
+//                    partition_offsets.track_partition_offset(m.partition(), m.offset())?;
+//                }
+
+//                //
+//                // When the json batch contains max_messages_per_batch messages
+//                // or the allowed_latency has elapsed, write a record batch.
+//                //
+
+//                let should_complete_record_batch = json_buffer.len() == max_messages_per_batch
+//                    || latency_timer.elapsed().as_secs() >= allowed_latency;
+
+//                debug!(
+//                    "Should complete record batch? {}, json_buffer.len: {}. timer.elapsed: {}",
+//                    should_complete_record_batch,
+//                    json_buffer.len(),
+//                    latency_timer.elapsed().as_secs()
+//                );
+
+//                if should_complete_record_batch {
+//                    info!("Creating Arrow RecordBatch from JSON message buffer.");
+
+//                    // Convert the json buffer to an arrow record batch.
+//                    let record_batch = deltalake_ext::record_batch_from_json_buffer(
+//                        arrow_schema_ref.clone(),
+//                        json_buffer.as_slice(),
+//                    )?;
+
+//                    // Clear the json buffer so we can start clean on the next round.
+//                    json_buffer.clear();
+
+//                    // Write the arrow record batch to our delta writer that wraps an in memory cursor for tracking bytes.
+//                    delta_writer
+//                        .write_record_batch(&partition_cols, &record_batch)
+//                        .await?;
+
+//                    // When the memory buffer meets min bytes per file or allowed latency is met, complete the file and start a new one.
+//                    let should_complete_file = delta_writer.buffer_len() >= min_bytes_per_file
+//                        || latency_timer.elapsed().as_secs() >= allowed_latency;
+
+//                    debug!(
+//                        "Should complete file? {}. delta_writer.buffer_len: {}. timer.elapsed: {}",
+//                        should_complete_file,
+//                        delta_writer.buffer_len(),
+//                        latency_timer.elapsed().as_secs()
+//                    );
+
+//                    if should_complete_file {
+//                        info!("Completing parquet file write.");
+
+//                        let add = delta_writer.complete_file(&partition_cols).await?;
+//                        let action = deltalake::action::Action::add(add);
+
+//                        // Create and commit a delta transaction to add the new data file to table state.
+//                        let mut tx = delta_table.create_transaction(None);
+//                        // TODO: Pass an Operation::StreamingUpdate(...) for operation, and a tx action containing the partition offset version
+//                        let committed_version = tx.commit_with(&[action], None).await?;
+
+//                        // Reset the timer to track allowed latency for the next file
+//                        latency_timer = Instant::now();
+
+//                        info!("Comitted Delta version {}", committed_version);
+//                    }
+
+//                    // TODO: Kafka partition offsets shall eventually be written to a separate write-ahead-log
+//                    // to maintain consistency with the data written in each version of the delta log.
+//                    // The offset commit to Kafka shall be specifically for consumer lag monitoring support.
+
+//                    // Commit all assigned partition offsets to Kafka so consumer lag monitors know where we are.
+
+//                    let partition_offsets = partition_offsets.lock().map_err(|e| {
+//                        KafkaJsonToDeltaError::PoisonedPartitionOffsetMutex {
+//                            error_string: e.to_string(),
+//                        }
+//                    })?;
+
+//                    let topic_partition_list = partition_offsets.create_topic_partition_list()?;
+
+//                    info!("Committing offsets");
+
+//                    let _ = consumer.commit(&topic_partition_list, CommitMode::Async)?;
+//                }
+//            }
+//            Err(e) => {
+//                // TODO: What does this error really imply? Determine if this should stop the stream.
+//                error!(
+//                    "Error getting BorrowedMessage while processing stream {:?}",
+//                    e
+//                );
+//            }
+//        }
+//    }
+
+//    Ok(())
+//}
+
+//fn transform_message<M>(_value: &mut Value, _message: &M) -> Result<(), KafkaJsonToDeltaError>
+//where
+//    M: Message,
+//{
+//    // TODO: transform the message according to topic configuration options
+//    // ...
+
+//    Ok(())
+//}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // TODO: unit tests...
 }

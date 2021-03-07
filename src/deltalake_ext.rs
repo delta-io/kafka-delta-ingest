@@ -36,8 +36,9 @@ pub enum DeltaWriterError {
     #[error("Arrow RecordBatch created from JSON buffer is a None value")]
     EmptyRecordBatch,
 
+    // TODO: derive Debug for Stats in delta-rs
     #[error("Serialization of delta log statistics failed")]
-    StatsSerializationFailed { stats_object: Stats },
+    StatsSerializationFailed { stats: Stats },
 
     #[error("Invalid table path: {}", .source)]
     UriError {
@@ -332,10 +333,8 @@ fn create_add(
         nullCount: HashMap::new(),
     };
     // Derive a stats string to include in the add action
-    let stats_string =
-        serde_json::to_string(&stats).or(Err(DeltaWriterError::StatsSerializationFailed {
-            stats_object: stats,
-        }))?;
+    let stats_string = serde_json::to_string(&stats)
+        .or(Err(DeltaWriterError::StatsSerializationFailed { stats }))?;
 
     // Determine the modification timestamp to include in the add action - milliseconds since epoch
     // Err should be impossible in this case since `SystemTime::now()` is always greater than `UNIX_EPOCH`
