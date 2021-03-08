@@ -37,12 +37,6 @@ echo "{\"id\":\"10\",\"value\":10,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafka
 $KAFKA_HOME/bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --describe --group kafka-delta-ingest:example
 ```
 
-* Check rows in delta table with `delta-inspect`
-
-```
-TODO: ...
-```
-
 == Tests
 
 * For unit tests, run `cargo test`.

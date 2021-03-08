@@ -62,6 +62,12 @@ pub enum KafkaJsonToDeltaError {
 
     #[error("Topic partition offset list is empty")]
     MissingPartitionOffsets,
+
+    #[error("Kafka message payload was empty at partition {partition} offset {offset}")]
+    KafkaMessageNoPayload { partition: i32, offset: i64 },
+
+    #[error("Kafka message deserialization failed at partition {partition} offset {offset}")]
+    KafkaMessageDeserialization { partition: i32, offset: i64 },
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -316,27 +322,11 @@ impl KafkaJsonToDelta {
 
             match message {
                 Ok(m) => {
-                    // Deserialize the rdkafka message into a serde_json::Value
-                    let message_bytes = match m.payload() {
-                        Some(bytes) => bytes,
-                        None => {
-                            warn!(
-                                "Payload has no bytes at partition: {} with offset: {}",
-                                m.partition(),
-                                m.offset()
-                            );
-                            continue;
-                        }
-                    };
-
-                    let mut value: Value = match serde_json::from_slice(message_bytes) {
+                    let mut value = match deserialize_message(&m) {
                         Ok(v) => v,
-                        Err(e) => {
-                            // TODO: Add better deserialization error handling
-                            // Ideally, provide an option to send the message bytes to a dead letter queue
-                            error!("Error deserializing message {:?}", e);
-                            continue;
-                        }
+                        Err(KafkaJsonToDeltaError::KafkaMessageNoPayload { .. }) => continue,
+                        Err(KafkaJsonToDeltaError::KafkaMessageDeserialization { .. }) => continue,
+                        Err(e) => return Err(e),
                     };
 
                     // Transform the message according to topic configuration.
@@ -345,6 +335,9 @@ impl KafkaJsonToDelta {
 
                     // Append to json buffer
                     json_buffer.push(value);
+
+                    // TODO: the rest of this method needs a good cleanup so individual chunks can
+                    // be unit tested
 
                     debug!("Added JSON message to buffer.");
 
@@ -470,4 +463,40 @@ impl KafkaJsonToDelta {
 
         Ok(())
     }
+}
+
+fn deserialize_message<M>(m: &M) -> Result<serde_json::Value, KafkaJsonToDeltaError>
+where
+    M: Message,
+{
+    // Deserialize the rdkafka message into a serde_json::Value
+    let message_bytes = match m.payload() {
+        Some(bytes) => bytes,
+        None => {
+            warn!(
+                "Payload has no bytes at partition: {} with offset: {}",
+                m.partition(),
+                m.offset()
+            );
+            return Err(KafkaJsonToDeltaError::KafkaMessageNoPayload {
+                partition: m.partition(),
+                offset: m.offset(),
+            });
+        }
+    };
+
+    let value: Value = match serde_json::from_slice(message_bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            // TODO: Add better deserialization error handling
+            // Ideally, provide an option to send the message bytes to a dead letter queue
+            error!("Error deserializing message {:?}", e);
+            return Err(KafkaJsonToDeltaError::KafkaMessageDeserialization {
+                partition: m.partition(),
+                offset: m.offset(),
+            });
+        }
+    };
+
+    Ok(value)
 }
