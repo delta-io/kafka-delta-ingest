@@ -6,3 +6,38 @@ link:https://delta.io[Delta Lake].
 
 This project is currently highly experimental and evolving in tandem with the
 link:https://github.com/delta-io/delta-rs[delta-rs] bindings.
+
+== Developing
+
+* Compile: `cargo build`
+* Launch Kafka - `docker-compose up`
+* Run kafka-delta-ingest (with a short 10s allowed_latency): `RUST_LOG=debug cargo run ingest example ./tests/data/example --allowed_latency 10`
+* In separate shell, produce messages to `example` topic, e.g.: 
+
+```
+echo "{\"id\":\"1\",\"value\":1,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"2\",\"value\":2,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"3\",\"value\":3,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"4\",\"value\":4,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"5\",\"value\":5,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"6\",\"value\":6,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"7\",\"value\":7,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"8\",\"value\":8,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"9\",\"value\":9,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"10\",\"value\":10,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+```
+
+* Watch the delta table folder for new files
+** `watch ls tests/data/example`
+** `cat tests/data/example/_delta_logs/00000000000000000001.json`
+
+* Check committed offsets
+
+```
+$KAFKA_HOME/bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --describe --group kafka-delta-ingest:example
+```
+
+== Tests
+
+* For unit tests, run `cargo test`.
+* Integration tests that depend on Kafka are currently marked with `#[ignore]`. Run `RUST_LOG=debug cargo test -- --ignored --nocapture` to run these locally _after_ running `docker-compose up` to create a local Kafka.
