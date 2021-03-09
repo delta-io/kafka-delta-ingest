@@ -134,7 +134,7 @@ Figure 3 shows a candidate logical diagram of the partition offset WAL table sch
 
 _Figure 3_
 
-![Transaction State](./img/kafka-delta-ingest-transaction-state)
+![Transaction State](./img/kafka-delta-ingest-transaction-state.png)
 
 The distributed lock schema is not pictured in this design document, but may take inspiration from the [dynamo-db-lock-client](https://github.com/awslabs/amazon-dynamodb-lock-client) Java implementation.
 
