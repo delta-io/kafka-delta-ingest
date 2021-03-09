@@ -79,7 +79,7 @@ The primary run loop of kafka-delta-ingest should follow the pseudo-code outline
 * Check assigned partitions and store them internally.
 * Register rebalance handler with ConsumerContext.
 * Handle each message from the topic in a loop.
-* Invoke transform_fn for each received message.
+* Invoke a transformation function for each received message.
     * This allows the client context to modify the Kafka message and mutate it before it is written to Delta.
 * Buffer each transformed message along with its partition and offset until either options.allowed_latency or options.max_messages_per_batch is reached.
 * When either options.allowed_latency or options.max_messages_per_batch is reached, write a record batch to the underlying writer. 
