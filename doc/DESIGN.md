@@ -9,7 +9,7 @@ Only JSON Kafka message formats will be supported in the initial implementation.
 
 ## Architecture
 
-This document uses the term job to represent the full set of running kafka-delta-ingest resources required to sync a single Kafka topic to a Delta table. The term process is used to represent a single running resource that is part of a job. The relationship from topic-to-process is 1:M (to accommodate scalability and efficient resource allocation for both low-volume and high-volume topics), so a topic may have one or more processes handling it, but a single process will only handle a single topic. The relationship from job-to-process is 1:M, and the relationship from job-to-topic is 1:1.
+This document uses the term "job" to represent the full set of running kafka-delta-ingest resources required to sync a single Kafka topic to a Delta table. The term "process" is used to represent a single running resource that is part of a job. The relationship from topic-to-process is 1:M (to accommodate scalability and efficient resource allocation for both low-volume and high-volume topics), so a topic may have one or more processes handling it, but a single process will only handle a single topic. The relationship from job-to-process is 1:M, and the relationship from job-to-topic is 1:1.
 
 
 ### External Components
@@ -43,7 +43,8 @@ Properties with overrides include:
     * must be the same for all processes that are part of a single job
 
 Properties for which overrides will not be expected or supported in v1 include:
-    * compression type (always snappy)
+
+* compression type (always snappy)
 
 Figure 1 shows an example of some jobs and their composing processes handling a few different Kafka topic to Delta table streams.
 
