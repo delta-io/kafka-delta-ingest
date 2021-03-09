@@ -61,7 +61,7 @@ The design invariants listed below describe the guidelines considered for the de
 
 * To support read efficiency, Kafka messages must be buffered into sizable record batches before they are written
 * Parquet file sizes should be as large as possible to limit optimization latency and pre-optimized query latency.
-* Messages should be transformable (same message transformation only - no joins or aggregates) prior to delta table write.
+* Messages should be transformable (pure message transformation only - no joins or aggregates) prior to delta table write.
 * Clients should be capable of specifying their allowed message latency for specific jobs, and actual message latency should approximate this value.
     * We will assume “processing time == 0” and use allowed latency as a flush marker.
 
