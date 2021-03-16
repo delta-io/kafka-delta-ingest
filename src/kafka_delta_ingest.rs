@@ -1,4 +1,5 @@
 extern crate anyhow;
+extern crate jmespath;
 
 use arrow::datatypes::Schema as ArrowSchema;
 use deltalake::{DeltaTableError, DeltaTransactionError, Schema};
@@ -11,7 +12,7 @@ use rdkafka::{
     error::KafkaError,
     Message, Offset, TopicPartitionList,
 };
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -461,9 +462,131 @@ impl KafkaJsonToDelta {
         // TODO: transform the message according to topic configuration options
         // ...
 
+        let expression = json!({
+            "modified_date": {
+                "type": "message_value",
+                "expression": ".modified",
+                "transform": {
+                    "fn": "substring",
+                    "args": [0, 10],
+                },
+            },
+            "_kafka_partition": {
+                "type": "kafka_message",
+                "property": "partition",
+            },
+            "_kafka_offset": {
+                "type": "kafka_message",
+                "property": "offset",
+            }
+        });
+
         Ok(())
     }
 }
+
+pub enum TransformError {}
+
+pub enum TransformType {
+    MessageValue,
+    KafkaMessage,
+}
+
+trait Transform {
+    fn transform_message<M>(&self, value: &mut Value, message: &M) -> Result<(), TransformError>;
+}
+
+struct MessageValueTransform {}
+
+impl MessageValueTransform {
+    pub fn new(config: serde_json::Value) -> Self {
+        MessageValueTransform {}
+    }
+}
+
+impl Transform for MessageValueTransform {
+    fn transform_message<M>(&self, value: &mut Value, message: &M) -> Result<(), TransformError> {
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("error")).init();
+
+        debug!("transform_message invoked");
+
+        use jmespath::functions::{ArgumentType, CustomFunction, Signature};
+        use jmespath::{Context, Rcvar, Runtime};
+
+        let mut runtime = Runtime::new();
+        runtime.register_builtin_functions();
+
+        debug!("Registering substring function");
+
+        runtime.register_function(
+            "ymd_from_iso_ts",
+            Box::new(CustomFunction::new(
+                Signature::new(vec![ArgumentType::String], None),
+                Box::new(|args: &[Rcvar], _: &mut Context| {
+                    // TODO: Fix unwraps
+                    //
+
+                    debug!("unwrapping string arg");
+                    let s = args[0].as_string().unwrap();
+
+                    let s2: String = s.chars().skip(0).take(10).collect();
+
+                    let var = jmespath::Variable::from_json(s2.as_str()).unwrap();
+
+                    Ok(Arc::new(var))
+                }),
+            )),
+        );
+
+        debug!("Registered substring function");
+
+        let json_str = value.to_string();
+
+        let data = jmespath::Variable::from_json(json_str.as_str()).unwrap();
+
+        //         match runtime.get_function("substring") {
+        //             Some(f) => f.evaluate(&[], jmespath::Context),
+        //             None => {
+        //                 // noop
+        //             }
+        //         };
+
+        debug!("data {:?}", data);
+
+        let expr = runtime.compile("substring('.modified')").unwrap();
+
+        debug!("compiled expression");
+
+        let result = expr.search(data).unwrap();
+
+        debug!("Executed expression");
+
+        let res_string = result.as_string().unwrap();
+
+        debug!("casted and unwrapped result");
+
+        let res_value = serde_json::from_str(res_string.as_str()).unwrap();
+
+        debug!("{:?}", result);
+
+        match value {
+            Value::Object(ref mut m) => {
+                m.insert("modified_date".to_string(), res_value);
+            }
+            _ => {
+                // noop
+            }
+        };
+
+        Ok(())
+    }
+}
+
+// struct KafkaMessageTransform {
+// }
+
+// struct CompositeTransform {
+// }
 
 fn deserialize_message<M>(m: &M) -> Result<serde_json::Value, KafkaJsonToDeltaError>
 where
@@ -499,4 +622,44 @@ where
     };
 
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use rdkafka::message::OwnedMessage;
+
+    use super::*;
+
+    #[test]
+    fn transform() {
+        debug!("Starting transform test");
+
+        let mut test_value = json!({
+            "name": "A",
+            "modified": "2021-03-16T14:38:58Z",
+        });
+
+        let test_message = OwnedMessage::new(
+            Some(test_value.to_string().into_bytes()),
+            None,
+            "test".to_string(),
+            rdkafka::Timestamp::NotAvailable,
+            0,
+            0,
+            None,
+        );
+
+        let config = json!({
+            "modified_date": {
+                "type": "message_value",
+                "expression": "ymd_from_iso_ts(.modified, 0, 10)",
+            }
+        });
+
+        let transform = MessageValueTransform::new(config);
+
+        let _result = transform.transform_message(&mut test_value, &test_message);
+
+        info!("{:?}", test_value);
+    }
 }
