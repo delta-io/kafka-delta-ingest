@@ -29,7 +29,7 @@ lazy_static! {
     pub(crate) static ref TRANSFORM_RUNTIME: Runtime = {
         let mut runtime = Runtime::new();
         runtime.register_builtin_functions();
-        runtime.register_function("substr", Box::new(custom_substring()));
+        runtime.register_function("substr", Box::new(custom_substr()));
         runtime
     };
 }
@@ -59,7 +59,7 @@ pub(crate) fn compile_transforms(
     Ok(transforms)
 }
 
-fn custom_substring() -> CustomFunction {
+fn custom_substr() -> CustomFunction {
     CustomFunction::new(
         Signature::new(
             vec![
