@@ -827,6 +827,7 @@ dependencies = [
  "env_logger",
  "futures",
  "jmespath",
+ "lazy_static",
  "log",
  "parquet",
  "rdkafka",

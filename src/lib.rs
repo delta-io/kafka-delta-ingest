@@ -1,3 +1,6 @@
+#[macro_use]
+extern crate lazy_static;
+
 use arrow::datatypes::Schema as ArrowSchema;
 use deltalake::{DeltaTableError, DeltaTransactionError, Schema};
 use futures::stream::StreamExt;
@@ -9,7 +12,7 @@ use rdkafka::{
     error::KafkaError,
     Message, Offset, TopicPartitionList,
 };
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -51,6 +54,12 @@ pub enum KafkaJsonToDeltaError {
     PartitionOffsets {
         #[from]
         source: PartitionOffsetsError,
+    },
+
+    #[error("TransformError: {source}")]
+    Transform {
+        #[from]
+        source: TransformError,
     },
 
     #[error("Failed to start stream")]
@@ -220,6 +229,7 @@ pub struct KafkaJsonToDelta {
     allowed_latency: u64,
     max_messages_per_batch: usize,
     min_bytes_per_file: usize,
+    transforms: HashMap<String, String>,
     consumer: KafkaJsonToDeltaConsumer,
     partition_offsets: Arc<Mutex<PartitionOffsets>>,
 }
@@ -236,6 +246,7 @@ impl KafkaJsonToDelta {
         allowed_latency: u64,
         max_messages_per_batch: usize,
         min_bytes_per_file: usize,
+        transforms: HashMap<String, String>,
     ) -> Self {
         let mut kafka_client_config = ClientConfig::new();
 
@@ -265,6 +276,7 @@ impl KafkaJsonToDelta {
             allowed_latency,
             max_messages_per_batch,
             min_bytes_per_file,
+            transforms,
             consumer,
             partition_offsets,
         }
@@ -312,6 +324,10 @@ impl KafkaJsonToDelta {
 
         let mut latency_timer = Instant::now();
 
+        let expressions = compile_transforms(&self.transforms)?;
+
+        let transformer = TransformContext::new(expressions);
+
         // Handle each message on the Kafka topic in a loop.
         while let Some(message) = stream.next().await {
             if let Some(token) = cancellation_token {
@@ -331,9 +347,16 @@ impl KafkaJsonToDelta {
                         Err(e) => return Err(e),
                     };
 
-                    // Transform the message according to topic configuration.
-                    // This is a noop for now.
-                    let _ = self.transform_message(&mut value, &m);
+                    match transformer.transform(&mut value, &m) {
+                        Ok(_) => {
+                            debug!("Transformed value {:?}", value);
+                        }
+                        Err(e) => {
+                            // TODO: Add better transform failure handling, ideally send to a dlq
+                            error!("Message transform failed {:?}", e);
+                            continue;
+                        }
+                    }
 
                     // Append to json buffer
                     json_buffer.push(value);
@@ -449,17 +472,6 @@ impl KafkaJsonToDelta {
             }
         }
 
-        Ok(())
-    }
-
-    fn transform_message<M>(
-        &self,
-        _value: &mut Value,
-        _message: &M,
-    ) -> Result<(), KafkaJsonToDeltaError>
-    where
-        M: Message,
-    {
         Ok(())
     }
 }

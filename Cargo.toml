@@ -17,6 +17,7 @@ futures = "0.3"
 #  The "sync" feature is undocumented but required in order to swap Rc for Arc
 #  in the crate, allowing it to be used with futures and threads properly
 jmespath = { git = "https://github.com/jmespath/jmespath.rs", features = ["sync"] }
+lazy_static = "1"
 log = "0"
 rdkafka = "~0.25.0"
 regex = "1"
