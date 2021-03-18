@@ -14,9 +14,6 @@ clap = { version = ">=3.0.0-beta.2,<4", features = ["color"] }
 crossbeam = { version = "0" }
 env_logger = "0"
 futures = "0.3"
-# The "sync" feature is undocumented but required in order to swap Rc for Arc
-# in the crate, allowing it to be used with futures and threads properly
-# jmespath = { git = "https://github.com/jmespath/jmespath.rs", features = ["sync"] }
 jmespatch = { version = "0.3", features = ["sync"] }
 lazy_static = "1"
 log = "0"
