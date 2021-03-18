@@ -1,10 +1,11 @@
-use jmespath::{
+use jmespatch::{
     functions::{ArgumentType, CustomFunction, Signature},
-    Context, Expression, Rcvar, Runtime,
+    Context, ErrorReason, Expression, JmespathError, Rcvar, Runtime, RuntimeError, Variable,
 };
 use rdkafka::Message;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::convert::TryFrom;
 use std::sync::Arc;
 
 #[derive(thiserror::Error, Debug)]
@@ -15,7 +16,7 @@ pub enum TransformError {
     #[error("JmespathError: {source}")]
     JmesPath {
         #[from]
-        source: jmespath::JmespathError,
+        source: JmespathError,
     },
 
     #[error("serde_json::Error: {source}")]
@@ -25,16 +26,52 @@ pub enum TransformError {
     },
 }
 
+// Error thrown from custom functions registered in the jmespath Runtime
+struct InvalidTypeError {
+    expression: String,
+    offset: usize,
+    expected: String,
+    actual: String,
+    position: usize,
+}
+
+// From impl for InvalidTypeError so we can return these from within custom functions
+impl From<InvalidTypeError> for JmespathError {
+    fn from(err: InvalidTypeError) -> Self {
+        JmespathError::new(
+            err.expression.as_str(),
+            err.offset,
+            ErrorReason::Runtime(RuntimeError::InvalidType {
+                expected: err.expected,
+                actual: err.actual,
+                position: err.position,
+            }),
+        )
+    }
+}
+
+impl InvalidTypeError {
+    fn new(context: &Context, expected: &str, actual: String, position: usize) -> Self {
+        Self {
+            expression: context.expression.to_owned(),
+            offset: context.offset,
+            expected: expected.to_owned(),
+            actual: actual.to_string(),
+            position: position,
+        }
+    }
+}
+
 lazy_static! {
-    pub(crate) static ref TRANSFORM_RUNTIME: Runtime = {
+    static ref TRANSFORM_RUNTIME: Runtime = {
         let mut runtime = Runtime::new();
         runtime.register_builtin_functions();
-        runtime.register_function("substr", Box::new(custom_substr()));
+        runtime.register_function("substr", Box::new(create_substr_fn()));
         runtime
     };
 }
 
-pub(crate) fn compile_transforms(
+pub fn compile_transforms(
     definitions: &HashMap<String, String>,
 ) -> Result<HashMap<String, MessageTransform>, TransformError> {
     let mut transforms = HashMap::new();
@@ -47,7 +84,6 @@ pub(crate) fn compile_transforms(
             "kafka.timestamp" => MessageTransform::KafkaMetaTransform(KafkaMetaProperty::Timestamp),
             _ => {
                 let expression = TRANSFORM_RUNTIME.compile(v.as_str())?;
-                let expression = expression;
 
                 MessageTransform::ExpressionTransform(expression)
             }
@@ -59,25 +95,58 @@ pub(crate) fn compile_transforms(
     Ok(transforms)
 }
 
-fn custom_substr() -> CustomFunction {
+// Returns a Jmespath CustomFunction for selecting substrings from a string.
+// This function can be registered and used within a Jmespath runtime.
+//
+// Logically the function signature in Rust would be:
+//
+// ```
+// fn substr(path: Expression, skip: i32, take: i32) -> Value;
+// ```
+//
+// For example given the object:
+//
+// ```
+// {
+//   "name": "William"
+// }
+// ```
+//
+// and the expression:
+//
+// ```
+// substr(name,`0`,`4`)
+// ```
+//
+// the value returned will be "Will"
+//
+fn create_substr_fn() -> CustomFunction {
     CustomFunction::new(
         Signature::new(
             vec![
                 ArgumentType::String,
-                ArgumentType::String,
-                ArgumentType::String,
+                ArgumentType::Number,
+                ArgumentType::Number,
             ],
             None,
         ),
-        Box::new(|args: &[Rcvar], _context: &mut Context| {
-            let s = args[0].as_string().unwrap();
+        Box::new(|args: &[Rcvar], context: &mut Context| {
+            let s = args[0].as_string().ok_or_else(|| {
+                InvalidTypeError::new(context, "string", args[0].get_type().to_string(), 0)
+            })?;
 
-            let start = args[1].as_string().unwrap().parse::<usize>().unwrap();
-            let end = args[2].as_string().unwrap().parse::<usize>().unwrap();
+            let start = args[1].as_number().ok_or_else(|| {
+                InvalidTypeError::new(context, "number", args[0].get_type().to_string(), 1)
+            })? as usize;
+            let end = args[2].as_number().ok_or_else(|| {
+                InvalidTypeError::new(context, "number", args[0].get_type().to_string(), 2)
+            })? as usize;
 
             let s: String = s.chars().skip(start).take(end).collect();
 
-            let var = jmespath::Variable::from(serde_json::Value::String(s));
+            let val = serde_json::Value::String(s);
+
+            let var = Variable::try_from(val)?;
 
             Ok(Arc::new(var))
         }),
@@ -96,24 +165,20 @@ pub enum MessageTransform {
     ExpressionTransform(Expression<'static>),
 }
 
-pub(crate) struct TransformContext {
+pub struct TransformContext {
     transforms: HashMap<String, MessageTransform>,
 }
 
 impl TransformContext {
-    pub(crate) fn new(transforms: HashMap<String, MessageTransform>) -> Self {
+    pub fn new(transforms: HashMap<String, MessageTransform>) -> Self {
         Self { transforms }
     }
 
-    pub(crate) fn transform<M>(
-        &self,
-        value: &mut Value,
-        kafka_message: &M,
-    ) -> Result<(), TransformError>
+    pub fn transform<M>(&self, value: &mut Value, kafka_message: &M) -> Result<(), TransformError>
     where
         M: Message,
     {
-        let data = jmespath::Variable::from(value.clone());
+        let data = Variable::try_from(value.clone())?;
 
         match value.as_object_mut() {
             Some(map) => {
@@ -180,7 +245,7 @@ mod tests {
 
         transforms.insert(
             "modified_date".to_string(),
-            "substr(modified, '0', '10')".to_string(),
+            "substr(modified, `0`, `10`)".to_string(),
         );
 
         let expressions = compile_transforms(&transforms).unwrap();

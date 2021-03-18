@@ -50,7 +50,7 @@ async fn e2e_smoke_test() {
     let mut transforms = HashMap::new();
     transforms.insert(
         "modified_date".to_string(),
-        "substr(modified, '0', '10')".to_string(),
+        "substr(modified, `0`, `10`)".to_string(),
     );
     transforms.insert("_kafka_offset".to_string(), "kafka.offset".to_string());
 

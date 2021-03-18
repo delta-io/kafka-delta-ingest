@@ -22,7 +22,7 @@ async fn main() -> anyhow::Result<()> {
             (@arg ALLOWED_LATENCY: -l --allowed_latency +takes_value default_value("300") "The allowed latency (in seconds) from the time a message is consumed to when it should be written to Delta.")
             (@arg MAX_MESSAGES_PER_BATCH: -m --max_messages_per_batch +takes_value default_value("5000") "The maximum number of rows allowed in a parquet row group. This should approximate the number of bytes described by MIN_BYTES_PER_FILE.")
             (@arg MIN_BYTES_PER_FILE: -b --min_bytes_per_file +takes_value default_value("134217728") "The target minimum file size (in bytes) for each Delta file. File size may be smaller than this value if ALLOWED_LATENCY does not allow enough time to accumulate the specified number of bytes.")
-            (@arg TRANSFORM: -t --transform +multiple +takes_value "A list of transforms to apply to each Kafka message.")
+            (@arg TRANSFORM: -t --transform +multiple +takes_value "A list of transforms to apply to each Kafka message. Each transform should follow the pattern \"property:query\". For example `-t \"modified_date:substr(modified,`0`,`10`)\" \"kafka_offset:kafka.offset\"`.")
         )
     )
     .setting(AppSettings::SubcommandRequiredElseHelp)

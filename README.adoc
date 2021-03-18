@@ -14,7 +14,7 @@ link:https://github.com/delta-io/delta-rs[delta-rs] bindings.
 * Run kafka-delta-ingest (with a short 10s allowed_latency): 
 
 ```bash
-RUST_LOG=debug cargo run ingest example ./tests/data/example --allowed_latency 10 -t "modified_date: substr(modified,'0','10') "kafka_offset: kafka.offset"
+RUST_LOG=debug cargo run ingest example ./tests/data/example --allowed_latency 10 -t 'modified_date: substr(modified,`0`,`10`)' 'kafka_offset: kafka.offset'
 ```
 * In separate shell, produce messages to `example` topic, e.g.: 
 

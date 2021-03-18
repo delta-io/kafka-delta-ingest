@@ -792,9 +792,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd25036021b0de88a0aff6b850051563c6516d0bf53f8638938edbb9de732736"
 
 [[package]]
-name = "jmespath"
-version = "0.2.0"
-source = "git+https://github.com/jmespath/jmespath.rs#6a0b4c29db9f9ca3fe8fb49bef5cb10d0d217b69"
+name = "jmespatch"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7acf91a732ade34d8eda2dee9500a051833f14f0d3d10d77c149845d6ac6a5f0"
 dependencies = [
  "lazy_static",
  "serde",
@@ -826,7 +827,7 @@ dependencies = [
  "deltalake",
  "env_logger",
  "futures",
- "jmespath",
+ "jmespatch",
  "lazy_static",
  "log",
  "parquet",
