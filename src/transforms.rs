@@ -185,7 +185,7 @@ impl TransformContext {
                 for (property, message_transform) in self.transforms.iter() {
                     let property_value = match message_transform {
                         MessageTransform::ExpressionTransform(expression) => {
-                            let variable = expression.search(data.clone())?;
+                            let variable = expression.search(&data)?;
                             serde_json::to_value(variable)?
                         }
                         MessageTransform::KafkaMetaTransform(meta_property) => {
