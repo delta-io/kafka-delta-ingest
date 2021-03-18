@@ -22,7 +22,7 @@ async fn main() -> anyhow::Result<()> {
             (@arg ALLOWED_LATENCY: -l --allowed_latency +takes_value default_value("300") "The allowed latency (in seconds) from the time a message is consumed to when it should be written to Delta.")
             (@arg MAX_MESSAGES_PER_BATCH: -m --max_messages_per_batch +takes_value default_value("5000") "The maximum number of rows allowed in a parquet row group. This should approximate the number of bytes described by MIN_BYTES_PER_FILE.")
             (@arg MIN_BYTES_PER_FILE: -b --min_bytes_per_file +takes_value default_value("134217728") "The target minimum file size (in bytes) for each Delta file. File size may be smaller than this value if ALLOWED_LATENCY does not allow enough time to accumulate the specified number of bytes.")
-            (@arg TRANSFORM: -t --transform +multiple +takes_value "A list of transforms to apply to each Kafka message. Each transform should follow the pattern \"property:query\". For example `-t \"modified_date:substr(modified,`0`,`10`)\" \"kafka_offset:kafka.offset\"`.")
+            (@arg TRANSFORM: -t --transform +multiple +takes_value validator(parse_transform) "A list of transforms to apply to each Kafka message. Each transform should follow the pattern \"property:query\". For example `-t \"modified_date:substr(modified,`0`,`10`)\" \"kafka_offset:kafka.offset\"`.")
         )
     )
     .setting(AppSettings::SubcommandRequiredElseHelp)
@@ -50,14 +50,7 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|| vec![]);
             let transforms: HashMap<String, String> = transforms
                 .iter()
-                .map(|t| {
-                    let mut splits = t.splitn(2, ':');
-
-                    (
-                        splits.next().unwrap().trim().to_string(),
-                        splits.next().unwrap().trim().to_string(),
-                    )
-                })
+                .map(|t| parse_transform(t).unwrap())
                 .collect();
 
             let mut stream = KafkaJsonToDelta::new(
@@ -85,4 +78,27 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[derive(thiserror::Error, Debug)]
+#[error("'{value}' - Each transform argument must be colon delimited and match the pattern 'PROPERTY_TO_ASSIGN: TRANSFORM'")]
+struct InvalidTransformSyntaxError {
+    value: String,
+}
+
+// parse each transform argument and let clap format the error in case of invalid syntax.
+// this function is used both as a validator in the clap config, and to extract the program
+// arguments.
+fn parse_transform(val: &str) -> Result<(String, String), InvalidTransformSyntaxError> {
+    let splits: Vec<&str> = val.splitn(2, ':').map(|s| s.trim()).collect();
+
+    match splits.len() {
+        2 => {
+            let tuple: (String, String) = (splits[0].to_owned(), splits[1].to_owned());
+            Ok(tuple)
+        }
+        _ => Err(InvalidTransformSyntaxError {
+            value: val.to_string(),
+        }),
+    }
 }
