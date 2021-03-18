@@ -130,27 +130,29 @@ fn create_substr_fn() -> CustomFunction {
             ],
             None,
         ),
-        Box::new(|args: &[Rcvar], context: &mut Context| {
-            let s = args[0].as_string().ok_or_else(|| {
-                InvalidTypeError::new(context, "string", args[0].get_type().to_string(), 0)
-            })?;
-
-            let start = args[1].as_number().ok_or_else(|| {
-                InvalidTypeError::new(context, "number", args[0].get_type().to_string(), 1)
-            })? as usize;
-            let end = args[2].as_number().ok_or_else(|| {
-                InvalidTypeError::new(context, "number", args[0].get_type().to_string(), 2)
-            })? as usize;
-
-            let s: String = s.chars().skip(start).take(end).collect();
-
-            let val = serde_json::Value::String(s);
-
-            let var = Variable::try_from(val)?;
-
-            Ok(Arc::new(var))
-        }),
+        Box::new(substr),
     )
+}
+
+fn substr(args: &[Rcvar], context: &mut Context) -> Result<Rcvar, JmespathError> {
+    let s = args[0].as_string().ok_or_else(|| {
+        InvalidTypeError::new(context, "string", args[0].get_type().to_string(), 0)
+    })?;
+
+    let start = args[1].as_number().ok_or_else(|| {
+        InvalidTypeError::new(context, "number", args[0].get_type().to_string(), 1)
+    })? as usize;
+    let end = args[2].as_number().ok_or_else(|| {
+        InvalidTypeError::new(context, "number", args[0].get_type().to_string(), 2)
+    })? as usize;
+
+    let s: String = s.chars().skip(start).take(end).collect();
+
+    let val = serde_json::Value::String(s);
+
+    let var = Variable::try_from(val)?;
+
+    Ok(Arc::new(var))
 }
 
 pub enum KafkaMetaProperty {
@@ -315,5 +317,47 @@ mod tests {
         assert_eq!(0i64, kafka_offset);
         assert_eq!(0i64, kafka_partition);
         assert_eq!("test", kafka_topic);
+    }
+
+    #[test]
+    fn substr_returns_will_from_william() {
+        let args = &[
+            Arc::new(Variable::String("William".to_owned())),
+            Arc::new(Variable::Number(
+                serde_json::Number::from_f64(0f64).unwrap(),
+            )),
+            Arc::new(Variable::Number(
+                serde_json::Number::from_f64(4f64).unwrap(),
+            )),
+        ];
+
+        let runtime = Runtime::new();
+        let mut context = Context::new("X", &runtime);
+
+        let s = substr(args, &mut context).unwrap();
+        let s = s.as_string().unwrap().as_str();
+
+        assert_eq!("Will", s);
+    }
+
+    #[test]
+    fn substr_returns_liam_from_william() {
+        let args = &[
+            Arc::new(Variable::String("William".to_owned())),
+            Arc::new(Variable::Number(
+                serde_json::Number::from_f64(3f64).unwrap(),
+            )),
+            Arc::new(Variable::Number(
+                serde_json::Number::from_f64(4f64).unwrap(),
+            )),
+        ];
+
+        let runtime = Runtime::new();
+        let mut context = Context::new("X", &runtime);
+
+        let s = substr(args, &mut context).unwrap();
+        let s = s.as_string().unwrap().as_str();
+
+        assert_eq!("liam", s);
     }
 }
