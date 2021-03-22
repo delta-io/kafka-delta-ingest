@@ -47,6 +47,13 @@ async fn e2e_smoke_test() {
     let mut additional_config = HashMap::new();
     additional_config.insert("auto.offset.reset".to_string(), "earliest".to_string());
 
+    let mut transforms = HashMap::new();
+    transforms.insert(
+        "modified_date".to_string(),
+        "substr(modified, `0`, `10`)".to_string(),
+    );
+    transforms.insert("_kafka_offset".to_string(), "kafka.offset".to_string());
+
     let mut stream = KafkaJsonToDelta::new(
         topic.to_string(),
         table_location.to_string(),
@@ -57,6 +64,7 @@ async fn e2e_smoke_test() {
         2,
         // co-ordinate expected min bytes per file with the expected bytes written by the producer to predict test output
         370,
+        transforms,
     );
 
     let token = CancellationToken::new();
@@ -156,25 +164,25 @@ async fn produce_example(topic: &str, sleep_duration: std::time::Duration) {
     let json1 = serde_json::to_string(&json!({
         "id": "1",
         "value": 1,
-        "modified": "2021-03-01",
+        "modified": "2021-03-01T14:38:58Z",
     }))
     .unwrap();
     let json2 = serde_json::to_string(&json!({
         "id": "2",
         "value": 2,
-        "modified": "2021-03-01",
+        "modified": "2021-03-01T14:38:58Z",
     }))
     .unwrap();
     let json3 = serde_json::to_string(&json!({
         "id": "2",
         "value": 2,
-        "modified": "2021-03-01",
+        "modified": "2021-03-01T14:38:58Z",
     }))
     .unwrap();
     let json4 = serde_json::to_string(&json!({
         "id": "4",
         "value": 4,
-        "modified": "2021-03-01",
+        "modified": "2021-03-01T14:38:58Z",
     }))
     .unwrap();
 

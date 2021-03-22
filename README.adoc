@@ -11,20 +11,24 @@ link:https://github.com/delta-io/delta-rs[delta-rs] bindings.
 
 * Compile: `cargo build`
 * Launch Kafka - `docker-compose up`
-* Run kafka-delta-ingest (with a short 10s allowed_latency): `RUST_LOG=debug cargo run ingest example ./tests/data/example --allowed_latency 10`
+* Run kafka-delta-ingest (with a short 10s allowed_latency): 
+
+```bash
+RUST_LOG=debug cargo run ingest example ./tests/data/example --allowed_latency 10 -t 'modified_date: substr(modified,`0`,`10`)' 'kafka_offset: kafka.offset'
+```
 * In separate shell, produce messages to `example` topic, e.g.: 
 
 ```
-echo "{\"id\":\"1\",\"value\":1,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
-echo "{\"id\":\"2\",\"value\":2,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
-echo "{\"id\":\"3\",\"value\":3,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
-echo "{\"id\":\"4\",\"value\":4,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
-echo "{\"id\":\"5\",\"value\":5,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
-echo "{\"id\":\"6\",\"value\":6,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
-echo "{\"id\":\"7\",\"value\":7,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
-echo "{\"id\":\"8\",\"value\":8,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
-echo "{\"id\":\"9\",\"value\":9,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
-echo "{\"id\":\"10\",\"value\":10,\"modified\":\"$(date +"%Y-%m-%d")\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"1\",\"value\":1,\"modified\":\"2021-03-16T14:38:58Z\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"2\",\"value\":2,\"modified\":\"2021-03-16T14:38:58Z\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"3\",\"value\":3,\"modified\":\"2021-03-16T14:38:58Z\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"4\",\"value\":4,\"modified\":\"2021-03-16T14:38:58Z\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"5\",\"value\":5,\"modified\":\"2021-03-16T14:38:58Z\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"6\",\"value\":6,\"modified\":\"2021-03-16T14:38:58Z\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"7\",\"value\":7,\"modified\":\"2021-03-16T14:38:58Z\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"8\",\"value\":8,\"modified\":\"2021-03-16T14:38:58Z\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"9\",\"value\":9,\"modified\":\"2021-03-16T14:38:58Z\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
+echo "{\"id\":\"10\",\"value\":10,\"modified\":\"2021-03-16T14:38:58Z\"}" | kafkacat -P -b localhost:9092 -t example -p -1;
 ```
 
 * Watch the delta table folder for new files
