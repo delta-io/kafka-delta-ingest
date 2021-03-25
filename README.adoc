@@ -76,3 +76,5 @@ A tarball containing 100K line-delimited JSON messages is included in `tests/jso
 * `url` - Random choice from list of top 100 popular websites from wikipedia
 * `uuid` - New uuid - unique per message
 
+URLs sampled for the test data are sourced from Wikipedia's list of most popular websites - https://en.wikipedia.org/wiki/List_of_most_popular_websites.
+
