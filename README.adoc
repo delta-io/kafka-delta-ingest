@@ -45,3 +45,34 @@ $KAFKA_HOME/bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --des
 
 * For unit tests, run `cargo test`.
 * Integration tests that depend on Kafka are currently marked with `#[ignore]`. Run `RUST_LOG=debug cargo test -- --ignored --nocapture` to run these locally _after_ running `docker-compose up` to create a local Kafka.
+
+=== Test Data
+
+A tarball containing 100K line-delimited JSON messages is included in `tests/json/web_requests-100K.json.tar.gz`. This file will be used to play onto Kafka in future integration and load tests and should be useful for exploratory testing as well. 
+
+==== Pretty-printed example from the file
+
+```json
+{
+  "meta": {
+    "producer": {
+      "timestamp": "2021-03-24T15:06:17.321710+00:00"
+    }
+  },
+  "method": "DELETE",
+  "session_id": "7c28bcf9-be26-4d0b-931a-3374ab4bb458",
+  "status": 204,
+  "url": "http://www.youku.com",
+  "uuid": "831c6afa-375c-4988-b248-096f9ed101f8"
+}
+```
+
+==== Test data generation spec 
+
+* `meta.producer.timestamp` - ISO8601 timestamp when test message was generated
+* `method` - Random choice from list of HTTP methods
+* `session_id` - Random choice from list of 200 generated UUIDs
+* `status` - Random choice from list of HTTP status codes
+* `url` - Random choice from list of top 100 popular websites from wikipedia
+* `uuid` - New uuid - unique per message
+
