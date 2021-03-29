@@ -167,13 +167,19 @@ pub enum MessageTransform {
     ExpressionTransform(Expression<'static>),
 }
 
-pub struct TransformContext {
+pub struct Transformer {
     transforms: HashMap<String, MessageTransform>,
 }
 
-impl TransformContext {
+impl Transformer {
     pub fn new(transforms: HashMap<String, MessageTransform>) -> Self {
         Self { transforms }
+    }
+
+    pub fn from_transforms(transforms: &HashMap<String, String>) -> Result<Self, TransformError> {
+        let transforms = compile_transforms(transforms)?;
+
+        Ok(Self { transforms })
     }
 
     pub fn transform<M>(&self, value: &mut Value, kafka_message: &M) -> Result<(), TransformError>
@@ -252,7 +258,7 @@ mod tests {
 
         let expressions = compile_transforms(&transforms).unwrap();
 
-        let transformer = TransformContext::new(expressions);
+        let transformer = Transformer::new(expressions);
 
         let _ = transformer
             .transform(&mut test_value, &test_message)
@@ -295,7 +301,7 @@ mod tests {
 
         let expressions = compile_transforms(&transforms).unwrap();
 
-        let transformer = TransformContext::new(expressions);
+        let transformer = Transformer::new(expressions);
 
         let _ = transformer
             .transform(&mut test_value, &test_message)

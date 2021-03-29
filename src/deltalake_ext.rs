@@ -284,7 +284,7 @@ impl<'a> Iterator for InMemValueIter<'a> {
 }
 
 /// Creates an Arrow RecordBatch from the passed JSON buffer.
-pub fn record_batch_from_json_buffer(
+pub fn record_batch_from_json(
     arrow_schema_ref: Arc<ArrowSchema>,
     json_buffer: &[Value],
 ) -> Result<RecordBatch, DeltaWriterError> {
