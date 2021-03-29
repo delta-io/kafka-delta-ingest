@@ -17,10 +17,13 @@ futures = "0.3"
 jmespatch = { version = "0.3", features = ["sync"] }
 lazy_static = "1"
 log = "0"
+maplit = "1.0.2"
 rdkafka = "~0.25.0"
 regex = "1"
 rusoto_core = { version = "0.46" }
+rusoto_credential = { version = "0.46" }
 rusoto_s3 = { version = "0.46" }
+rusoto_dynamodb = { version = "0.46" }
 serde = { version = "1.0", features = ["derive"] }
 serde_derive = "1.0"
 serde_json = "1.0"

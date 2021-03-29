@@ -70,6 +70,7 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
                 .collect();
 
             let mut stream = KafkaJsonToDelta::new(
+                "app_id".to_string(),
                 topic.to_string(),
                 table_location.to_string(),
                 kafka_brokers.to_string(),

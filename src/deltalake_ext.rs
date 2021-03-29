@@ -7,9 +7,11 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use deltalake::{
-    action::{Add, Stats},
-    DeltaTableError, Schema, StorageBackend, StorageError, UriError,
+    action::{Action, Add, Stats},
+    DeltaDataTypeVersion, DeltaTable, DeltaTableError, DeltaTransactionError, Schema,
+    StorageBackend, StorageError, UriError,
 };
+use log::info;
 use parquet::{
     arrow::ArrowWriter,
     basic::Compression,
@@ -32,6 +34,9 @@ pub enum DeltaWriterError {
         record_batch_schema: SchemaRef,
         expected_schema: Arc<arrow::datatypes::Schema>,
     },
+
+    #[error("{0}")]
+    MissingMetadata(String),
 
     #[error("Arrow RecordBatch created from JSON buffer is a None value")]
     EmptyRecordBatch,
@@ -69,33 +74,42 @@ pub enum DeltaWriterError {
         #[from]
         source: ParquetError,
     },
+
+    #[error("Delta transaction commit failed: {source}")]
+    DeltaTransactionError {
+        #[from]
+        source: DeltaTransactionError,
+    },
 }
 
-pub struct DeltaParquetWriter {
+pub struct StreamingDeltaWriter {
     table_path: String,
+    table: DeltaTable,
     storage: Box<dyn StorageBackend>,
     arrow_schema_ref: Arc<arrow::datatypes::Schema>,
     writer_properties: WriterProperties,
     cursor: InMemoryWriteableCursor,
     arrow_writer: ArrowWriter<InMemoryWriteableCursor>,
+    partition_columns: Vec<String>,
     partition_values: HashMap<String, String>,
     num_records: i64,
 }
 
-/// A writer that writes record batches in parquet format to a table location.
-/// This should be used along side a DeltaTransaction wrapping the same DeltaTable instance.
-impl DeltaParquetWriter {
+impl StreamingDeltaWriter {
     /// Initialize the writer from the given table path and delta schema
-    pub async fn for_table_path_with_schema(
+    pub async fn for_table_path(
         table_path: String,
-        schema: &Schema,
-    ) -> Result<DeltaParquetWriter, DeltaWriterError> {
-        // Initialize storage backend for the given table path
+        // schema: &Schema,
+    ) -> Result<StreamingDeltaWriter, DeltaWriterError> {
+        let table = deltalake::open_table(&table_path.as_str()).await?;
         let storage = deltalake::get_backend_for_uri(table_path.as_str())?;
 
         // Initialize an arrow schema ref from the delta table schema
-        let arrow_schema = <ArrowSchema as From<&Schema>>::from(schema);
+        let metadata = table.get_metadata()?.clone();
+        let schema = metadata.schema.clone();
+        let arrow_schema = <ArrowSchema as From<&Schema>>::from(&schema);
         let arrow_schema_ref = Arc::new(arrow_schema);
+        let partition_columns = metadata.partition_columns;
 
         // Initialize writer properties for the underlying arrow writer
         let writer_properties = WriterProperties::builder()
@@ -112,24 +126,31 @@ impl DeltaParquetWriter {
 
         Ok(Self {
             table_path,
+            table,
             storage,
             arrow_schema_ref,
             writer_properties,
             cursor,
             arrow_writer,
+            partition_columns,
             partition_values: HashMap::new(),
             num_records: 0,
         })
+    }
+
+    pub fn last_transaction_version(&self, app_id: &str) -> Option<DeltaDataTypeVersion> {
+        let tx_versions = self.table.get_app_transaction_version();
+
+        tx_versions.get(app_id).map(|v| v.to_owned())
     }
 
     /// Writes the record batch in-memory and updates internal state accordingly.
     /// This method buffers the write stream internally so it can be invoked for many record batches and flushed after the appropriate number of bytes has been written.
     pub async fn write_record_batch(
         &mut self,
-        partition_cols: &Vec<String>,
         record_batch: &RecordBatch,
     ) -> Result<(), DeltaWriterError> {
-        let partition_values = extract_partition_values(partition_cols, record_batch)?;
+        let partition_values = extract_partition_values(&self.partition_columns, record_batch)?;
 
         // Verify record batch schema matches the expected schema
         let schemas_match = record_batch.schema() == self.arrow_schema_ref;
@@ -157,21 +178,20 @@ impl DeltaParquetWriter {
     }
 
     /// Returns the current byte length of the in memory buffer.
-    /// This should be used by the caller to decide when to call `complete_file`.
+    /// This may be used by the caller to decide when to finalize the file write.
     pub fn buffer_len(&self) -> usize {
         self.cursor.data().len()
     }
 
     /// Writes the existing parquet bytes to storage and resets internal state to handle another file.
-    /// Returns an `Add` action representing the added file to be appended to the delta log.
-    pub async fn complete_file(
+    pub async fn write_file(
         &mut self,
-        partition_cols: &Vec<String>,
-    ) -> Result<Add, DeltaWriterError> {
+        actions: &mut Vec<Action>,
+    ) -> Result<DeltaDataTypeVersion, DeltaWriterError> {
         // Close the arrow writer to flush remaining bytes and write the parquet footer
         self.arrow_writer.close()?;
 
-        let path = self.next_data_path(partition_cols, &self.partition_values)?;
+        let path = self.next_data_path(&self.partition_columns, &self.partition_values)?;
 
         let obj_bytes = self.cursor.data();
         let file_size = obj_bytes.len() as i64;
@@ -190,13 +210,20 @@ impl DeltaParquetWriter {
 
         let num_records = self.num_records;
 
-        // Re-initialize internal state to handle another file
+        // After data is written, re-initialize internal state to handle another file
         self.reset()?;
 
-        // Create and return the "add" action associated with the completed file
-        let add = create_add(&self.partition_values, path, file_size, num_records);
+        let add = create_add(&self.partition_values, path, file_size, num_records)?;
 
-        add
+        actions.push(Action::add(add));
+
+        // TODO: Pass StreamingUpdate operation
+        let mut tx = self.table.create_transaction(None);
+        let version = tx.commit_with(actions.as_slice(), None).await?;
+
+        info!("Committed Delta version {}", version);
+
+        Ok(version)
     }
 
     fn reset(&mut self) -> Result<(), DeltaWriterError> {
@@ -255,6 +282,10 @@ impl DeltaParquetWriter {
 
         Ok(data_path)
     }
+
+    pub fn arrow_schema(&self) -> Arc<arrow::datatypes::Schema> {
+        self.arrow_schema_ref.clone()
+    }
 }
 
 struct InMemValueIter<'a> {
@@ -284,7 +315,7 @@ impl<'a> Iterator for InMemValueIter<'a> {
 }
 
 /// Creates an Arrow RecordBatch from the passed JSON buffer.
-pub fn record_batch_from_json_buffer(
+pub fn record_batch_from_json(
     arrow_schema_ref: Arc<ArrowSchema>,
     json_buffer: &[Value],
 ) -> Result<RecordBatch, DeltaWriterError> {

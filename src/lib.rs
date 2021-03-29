@@ -1,28 +1,38 @@
 #[macro_use]
 extern crate lazy_static;
 
-use arrow::datatypes::Schema as ArrowSchema;
-use deltalake::{DeltaTableError, DeltaTransactionError, Schema};
+#[macro_use]
+extern crate maplit;
+
+use deltalake::{action, DeltaTableError, DeltaTransactionError};
 use futures::stream::StreamExt;
 use log::{debug, error, info, warn};
 use rdkafka::{
-    client::ClientContext,
     config::ClientConfig,
-    consumer::{CommitMode, Consumer, ConsumerContext, Rebalance, StreamConsumer},
+    consumer::{Consumer, ConsumerContext, Rebalance, StreamConsumer},
     error::KafkaError,
-    Message, Offset, TopicPartitionList,
+    util::Timeout,
+    ClientContext, Message, Offset, TopicPartitionList,
 };
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-mod deltalake_ext;
-mod transforms;
+pub mod deltalake_ext;
+pub mod transforms;
+pub mod write_ahead_log;
 
-use crate::deltalake_ext::{DeltaParquetWriter, DeltaWriterError};
+use crate::deltalake_ext::{DeltaWriterError, StreamingDeltaWriter};
 use crate::transforms::*;
+use crate::write_ahead_log::*;
+
+pub type DataTypeTransactionId = i64;
+
+type DataTypePartition = i32;
+type DataTypeOffset = i64;
 
 #[derive(thiserror::Error, Debug)]
 pub enum KafkaJsonToDeltaError {
@@ -50,23 +60,23 @@ pub enum KafkaJsonToDeltaError {
         source: DeltaWriterError,
     },
 
-    #[error("PartitionOffsets error: {source}")]
-    PartitionOffsets {
-        #[from]
-        source: PartitionOffsetsError,
-    },
-
     #[error("TransformError: {source}")]
     Transform {
         #[from]
         source: TransformError,
     },
 
-    #[error("Failed to start stream")]
-    StreamStartFailed,
+    #[error("WriteAheadLogError: {source}")]
+    WriteAheadLog {
+        #[from]
+        source: WriteAheadLogError,
+    },
 
-    #[error("Partition offset mutex is poisoned: {error_string}")]
-    PoisonedPartitionOffsetMutex { error_string: String },
+    #[error("ValueBufferError: {source}")]
+    ValueBuffer {
+        #[from]
+        source: ValueBufferError,
+    },
 
     #[error("A message was handled on partition {partition} but this partition is not tracked")]
     UntrackedTopicPartition { partition: i32 },
@@ -81,163 +91,23 @@ pub enum KafkaJsonToDeltaError {
     KafkaMessageDeserialization { partition: i32, offset: i64 },
 }
 
-#[derive(thiserror::Error, Debug)]
-pub enum PartitionOffsetsError {
-    #[error("A message was handled on partition {partition} but this partition is not tracked")]
-    UntrackedTopicPartition { partition: i32 },
-
-    #[error("Topic partition offset list is empty")]
-    MissingPartitionOffsets,
-
-    #[error("Kafka error: {source}")]
-    Kafka {
-        #[from]
-        source: KafkaError,
-    },
-}
-
-struct PartitionOffsets {
-    topic: String,
-    assigned: HashMap<i32, Option<i64>>,
-}
-
-impl PartitionOffsets {
-    pub fn new(topic: String) -> Self {
-        let assigned = HashMap::new();
-
-        Self { topic, assigned }
-    }
-
-    pub fn track_partition_offset(
-        &mut self,
-        partition: i32,
-        offset: i64,
-    ) -> Result<(), PartitionOffsetsError> {
-        let o = self
-            .assigned
-            .get_mut(&partition)
-            .ok_or(PartitionOffsetsError::UntrackedTopicPartition { partition })?;
-
-        *o = Some(offset);
-
-        Ok(())
-    }
-
-    pub fn reset_from_topic_partition_list(&mut self, topic_partition_list: &TopicPartitionList) {
-        self.assigned.clear();
-        for element in topic_partition_list.elements().iter() {
-            let offset = element.offset();
-            match offset {
-                Offset::Offset(o) => {
-                    self.assigned.insert(element.partition(), Some(o));
-                }
-                _ => {
-                    debug!("Read element with offset {:?}", offset);
-                    self.assigned.insert(element.partition(), None);
-                }
-            }
-        }
-    }
-
-    pub fn clear(&mut self) {
-        self.assigned.clear();
-    }
-
-    pub fn create_topic_partition_list(&self) -> Result<TopicPartitionList, PartitionOffsetsError> {
-        let mut tpl = TopicPartitionList::new();
-
-        for (k, v) in self.assigned.iter() {
-            if let Some(o) = v {
-                debug!(
-                    "Adding partition offset to new TopicPartitionList {}: {}",
-                    k, o
-                );
-                tpl.add_partition_offset(
-                    self.topic.as_str(),
-                    k.clone(),
-                    Offset::Offset(o.clone()),
-                )?;
-            }
-        }
-
-        Ok(tpl)
-    }
-}
-
-// TODO: This handles resetting partition offsets to scratch,
-// but we also need a way to handle file buffers
-/// A custom ConsumerContext implementation for updating partition assignments after a rebalance
-struct KafkaJsonToDeltaConsumerContext {
-    // pub partition_offsets: Arc<Mutex<HashMap<i32, Option<i64>>>>,
-    pub partition_offsets: Arc<Mutex<PartitionOffsets>>,
-}
-
-impl ClientContext for KafkaJsonToDeltaConsumerContext {}
-
-impl ConsumerContext for KafkaJsonToDeltaConsumerContext {
-    fn pre_rebalance(&self, rebalance: &Rebalance) {
-        debug!("Pre rebalance {:?}", rebalance);
-    }
-
-    fn post_rebalance(&self, rebalance: &Rebalance) {
-        debug!("Post rebalance {:?}", rebalance);
-
-        match rebalance {
-            Rebalance::Assign(tpl) => {
-                info!("Received new partition assignment list");
-                match self.partition_offsets.lock() {
-                    Ok(mut partition_offsets) => {
-                        partition_offsets.reset_from_topic_partition_list(tpl);
-                    }
-                    Err(e) => {
-                        error!("Error locking partition_offsets {:?}", e);
-                    }
-                }
-            }
-            Rebalance::Revoke => {
-                info!("Partition assignments revoked");
-                match self.partition_offsets.lock() {
-                    Ok(mut partition_offsets) => {
-                        partition_offsets.clear();
-                    }
-                    Err(e) => {
-                        error!("Error locking partition_offsets {:?}", e);
-                    }
-                }
-            }
-            Rebalance::Error(e) => {
-                warn!(
-                    "Unexpected Kafka error in post_rebalance invocation {:?}",
-                    e
-                );
-            }
-        }
-    }
-}
-
-impl KafkaJsonToDeltaConsumerContext {
-    fn new(partition_offsets: Arc<Mutex<PartitionOffsets>>) -> Self {
-        Self { partition_offsets }
-    }
-}
-
-type KafkaJsonToDeltaConsumer = StreamConsumer<KafkaJsonToDeltaConsumerContext>;
-
+/// Encapsulates a single topic-to-table ingestion stream.
 pub struct KafkaJsonToDelta {
+    app_id: String,
     topic: String,
     table_location: String,
     allowed_latency: u64,
     max_messages_per_batch: usize,
     min_bytes_per_file: usize,
     transforms: HashMap<String, String>,
-    consumer: KafkaJsonToDeltaConsumer,
-    partition_offsets: Arc<Mutex<PartitionOffsets>>,
+    consumer: StreamConsumer<Context>,
+    partition_assignment: Arc<Mutex<PartitionAssignment>>,
 }
 
-/// Encapsulates a single topic-to-table ingestion stream.
 impl KafkaJsonToDelta {
     /// Creates a new instance of KafkaJsonToDelta.
     pub fn new(
+        app_id: String,
         topic: String,
         table_location: String,
         kafka_brokers: String,
@@ -253,9 +123,7 @@ impl KafkaJsonToDelta {
         kafka_client_config
             .set("bootstrap.servers", kafka_brokers.clone())
             .set("group.id", consumer_group_id)
-            // No auto-commits. We will commit explicitly after completing Delta transactions
-            .set("enable.auto.commit", "false")
-            .set("enable.auto.offset.store", "false");
+            .set("enable.auto.commit", "true");
 
         if let Some(additional) = additional_kafka_settings {
             for (k, v) in additional.iter() {
@@ -263,14 +131,15 @@ impl KafkaJsonToDelta {
             }
         }
 
-        let partition_offsets = Arc::new(Mutex::new(PartitionOffsets::new(topic.clone())));
-        let consumer_context = KafkaJsonToDeltaConsumerContext::new(partition_offsets.clone());
+        let partition_assignment = Arc::new(Mutex::new(PartitionAssignment::new()));
+        let consumer_context = Context::new(partition_assignment.clone());
 
-        let consumer: KafkaJsonToDeltaConsumer = kafka_client_config
+        let consumer: StreamConsumer<Context> = kafka_client_config
             .create_with_context(consumer_context)
             .expect("Failed to create StreamConsumer");
 
         Self {
+            app_id,
             topic,
             table_location,
             allowed_latency,
@@ -278,7 +147,7 @@ impl KafkaJsonToDelta {
             min_bytes_per_file,
             transforms,
             consumer,
-            partition_offsets,
+            partition_assignment,
         }
     }
 
@@ -289,9 +158,7 @@ impl KafkaJsonToDelta {
     ) -> Result<(), KafkaJsonToDeltaError> {
         info!("Starting stream");
 
-        self.consumer
-            .subscribe(&[self.topic.as_str()])
-            .expect("Consumer subscription failed");
+        self.consumer.subscribe(&[self.topic.as_str()])?;
 
         let res = self.run_loop(cancellation_token).await;
 
@@ -308,38 +175,44 @@ impl KafkaJsonToDelta {
         &mut self,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<(), KafkaJsonToDeltaError> {
-        let mut delta_table = deltalake::open_table(self.table_location.as_str()).await?;
-        let mut json_buffer: Vec<Value> = Vec::new();
-        let mut stream = self.consumer.stream();
-        let metadata = delta_table.get_metadata()?.clone();
-        let schema = metadata.schema.clone();
         let mut delta_writer =
-            DeltaParquetWriter::for_table_path_with_schema(delta_table.table_path.clone(), &schema)
+            StreamingDeltaWriter::for_table_path(self.table_location.clone()).await?;
+        let mut value_buffers = ValueBuffers::new();
+
+        let transformer = Transformer::from_transforms(&self.transforms)?;
+        let wal = write_ahead_log::new_write_ahead_log(self.app_id.to_string()).await?;
+
+        // Initialize starting offsets from the last completed WAL entry
+        let last_tx_version =
+            delta_writer.last_transaction_version(self.app_id.to_string().as_str());
+
+        if let Some(tx_version) = last_tx_version {
+            let previous_wal_entry = wal.get_entry_by_transaction_id(tx_version).await?;
+            self.init_offsets(&previous_wal_entry.partition_offsets)
                 .await?;
+        }
 
-        let arrow_schema_ref = Arc::new(<ArrowSchema as From<&Schema>>::from(
-            &metadata.clone().schema,
-        ));
-        let partition_cols = metadata.partition_columns;
-
+        let mut stream = self.consumer.stream();
         let mut latency_timer = Instant::now();
 
-        let expressions = compile_transforms(&self.transforms)?;
-
-        let transformer = TransformContext::new(expressions);
-
-        // Handle each message on the Kafka topic in a loop.
         while let Some(message) = stream.next().await {
+            // Exit if the cancellation token is set
             if let Some(token) = cancellation_token {
                 if token.is_cancelled() {
                     return Ok(());
                 }
             }
 
-            debug!("Handling Kafka message.");
-
             match message {
                 Ok(m) => {
+                    info!(
+                        "Handling message at partition {} offset {}",
+                        m.partition(),
+                        m.offset()
+                    );
+
+                    // Deserialize
+                    // TODO: Add better deserialization error handling, ideally send to a dlq
                     let mut value = match deserialize_message(&m) {
                         Ok(v) => v,
                         Err(KafkaJsonToDeltaError::KafkaMessageNoPayload { .. }) => continue,
@@ -347,123 +220,152 @@ impl KafkaJsonToDelta {
                         Err(e) => return Err(e),
                     };
 
+                    // Transform
+                    // TODO: Add better transform failure handling, ideally send to a dlq
                     match transformer.transform(&mut value, &m) {
-                        Ok(_) => {
-                            debug!("Transformed value {:?}", value);
-                        }
                         Err(e) => {
-                            // TODO: Add better transform failure handling, ideally send to a dlq
                             error!("Message transform failed {:?}", e);
                             continue;
                         }
+                        _ => {}
                     }
 
-                    // Append to json buffer
-                    json_buffer.push(value);
-
-                    // TODO: the rest of this method needs a good cleanup so individual chunks can
-                    // be unit tested
-
-                    debug!("Added JSON message to buffer.");
-
+                    // Buffer
+                    let partition = m.partition();
+                    if value_buffers.is_tracking(partition) {
+                        // This is the 99% case. We are already tracking this partition. Just
+                        // buffer it.
+                        info!(
+                            "Already tracking partition {}. Buffering message - partition {}, offset: {}",
+                            m.partition(),
+                            m.partition(),
+                            m.offset()
+                        );
+                        value_buffers.add(partition, m.offset(), value);
+                    } else if let Some(tx_version) =
+                        delta_writer.last_transaction_version(self.app_id.as_str())
                     {
-                        // Track the partition and offset for this message to commit later when flushing
-                        // the json buffer
-                        let mut partition_offsets = self.partition_offsets.lock().map_err(|e| {
-                            KafkaJsonToDeltaError::PoisonedPartitionOffsetMutex {
-                                error_string: e.to_string(),
-                            }
-                        })?;
+                        // Since this is an untracked partition and a Delta transaction exists for
+                        // the table already, we need to update partition assignments, seek the
+                        // consumer and wait the next iteration of the run_loop.
+                        info!("Paritition {} is not tracked in value_buffers but a transaction exists in the delta log. Updating partition assignment and skipping message. Will process this same message again after consumer seek - partition {}, offset: {}", partition, partition, m.offset());
 
-                        partition_offsets.track_partition_offset(m.partition(), m.offset())?;
+                        update_partition_assignment(
+                            self.partition_assignment.clone(),
+                            wal.clone(),
+                            Some(tx_version),
+                            &mut value_buffers,
+                            self.topic.as_str(),
+                            &self.consumer,
+                        )
+                        .await?;
+                        continue;
+                    } else {
+                        // Since there is no delta transaction - this should be the first message
+                        // available on the partition.
+                        // Update partition assignment and buffer.
+                        update_partition_assignment(
+                            self.partition_assignment.clone(),
+                            wal.clone(),
+                            None,
+                            &mut value_buffers,
+                            self.topic.as_str(),
+                            &self.consumer,
+                        )
+                        .await?;
+                        info!(
+                            "NOT tracking partition {}, but there is no existing delta transaction. Buffering message - partition {}, offset: {}",
+                            m.partition(),
+                            m.partition(),
+                            m.offset()
+                        );
+
+                        value_buffers.add(partition, m.offset(), value);
                     }
 
-                    //
-                    // When the json batch contains max_messages_per_batch messages
-                    // or the allowed_latency has elapsed, write a record batch.
-                    //
-
-                    let should_complete_record_batch = json_buffer.len()
-                        == self.max_messages_per_batch
-                        || latency_timer.elapsed().as_secs() >= self.allowed_latency;
-
-                    debug!(
-                        "Should complete record batch? {}, json_buffer.len: {}. timer.elapsed: {}",
-                        should_complete_record_batch,
-                        json_buffer.len(),
-                        latency_timer.elapsed().as_secs()
+                    info!(
+                        "Latency timer at {} nanos",
+                        latency_timer.elapsed().as_nanos()
                     );
 
-                    if should_complete_record_batch {
-                        info!("Creating Arrow RecordBatch from JSON message buffer.");
+                    // Finalize arrow record batch
+                    if self.should_complete_record_batch(&value_buffers, &latency_timer) {
+                        info!("Creating Arrow RecordBatch.");
 
-                        // Convert the json buffer to an arrow record batch.
-                        let record_batch = deltalake_ext::record_batch_from_json_buffer(
-                            arrow_schema_ref.clone(),
-                            json_buffer.as_slice(),
+                        let (values, partition_offsets) = consume_value_buffers(
+                            self.partition_assignment.clone(),
+                            &mut value_buffers,
+                        )
+                        .await?;
+
+                        let record_batch = deltalake_ext::record_batch_from_json(
+                            delta_writer.arrow_schema(),
+                            values.as_slice(),
                         )?;
 
-                        // Clear the json buffer so we can start clean on the next round.
-                        json_buffer.clear();
+                        // Since we are writing a record batch to the in-memory parquet file, value buffers must be marked
+                        // dirty so we know we have to drop all buffers and re-seek if a rebalance occurs before the next file write.
+                        value_buffers.mark_dirty();
 
-                        // Write the arrow record batch to our delta writer that wraps an in memory cursor for tracking bytes.
-                        delta_writer
-                            .write_record_batch(&partition_cols, &record_batch)
-                            .await?;
+                        delta_writer.write_record_batch(&record_batch).await?;
 
-                        // When the memory buffer meets min bytes per file or allowed latency is met, complete the file and start a new one.
-                        let should_complete_file = delta_writer.buffer_len()
-                            >= self.min_bytes_per_file
-                            || latency_timer.elapsed().as_secs() >= self.allowed_latency;
-
-                        debug!(
-                            "Should complete file? {}. delta_writer.buffer_len: {}. timer.elapsed: {}",
-                            should_complete_file,
-                            delta_writer.buffer_len(),
+                        info!(
+                            "Record batch written. Current latency is {:?} seconds",
                             latency_timer.elapsed().as_secs()
                         );
 
-                        if should_complete_file {
-                            info!("Completing parquet file write.");
-
-                            let add = delta_writer.complete_file(&partition_cols).await?;
-                            let action = deltalake::action::Action::add(add);
-
-                            // Create and commit a delta transaction to add the new data file to table state.
-                            let mut tx = delta_table.create_transaction(None);
-                            // TODO: Pass an Operation::StreamingUpdate(...) for operation, and a tx action containing the partition offset version
-                            let committed_version = tx.commit_with(&[action], None).await?;
-
-                            // Reset the timer to track allowed latency for the next file
+                        // Finalize file and write Delta transaction
+                        if self.should_complete_file(&delta_writer, &latency_timer) {
+                            // Reset the latency timer to track allowed latency for the next file
                             latency_timer = Instant::now();
 
-                            info!("Comitted Delta version {}", committed_version);
-                        }
+                            info!("Writing parquet file");
 
-                        // TODO: Kafka partition offsets shall eventually be written to a separate write-ahead-log
-                        // to maintain consistency with the data written in each version of the delta log.
-                        // The offset commit to Kafka shall be specifically for consumer lag monitoring support.
+                            // Lookup the last transaction version from the Delta Log
+                            let last_tx_version =
+                                delta_writer.last_transaction_version(self.app_id.as_str());
 
-                        // Commit all assigned partition offsets to Kafka so consumer lag monitors know where we are.
+                            // Create the new WAL entry
+                            let wal_entry = if let Some(tx_version) = last_tx_version {
+                                let last_wal_entry =
+                                    wal.get_entry_by_transaction_id(tx_version).await?;
+                                last_wal_entry.prepare_next(&partition_offsets)
+                            } else {
+                                WriteAheadLogEntry::new(
+                                    1,
+                                    TransactionState::Prepared,
+                                    None, /*delta table version starts out empty*/
+                                    partition_offsets.clone(),
+                                )
+                            };
+                            wal.put_entry(&wal_entry).await?;
 
-                        let partition_offsets = self.partition_offsets.lock().map_err(|e| {
-                            KafkaJsonToDeltaError::PoisonedPartitionOffsetMutex {
-                                error_string: e.to_string(),
+                            // Complete the file
+                            let txn = action::Action::txn(action::Txn {
+                                appId: self.app_id.clone(),
+                                version: wal_entry.transaction_id,
+                                lastUpdated: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_millis()
+                                    as i64,
+                            });
+                            let commit_result = delta_writer.write_file(&mut vec![txn]).await;
+                            match commit_result {
+                                Ok(version) => {
+                                    wal.complete_entry(wal_entry.transaction_id, version)
+                                        .await?;
+                                }
+                                Err(_) => {
+                                    wal.abort_entry(wal_entry.transaction_id).await?;
+                                    break;
+                                }
                             }
-                        })?;
-
-                        let topic_partition_list =
-                            partition_offsets.create_topic_partition_list()?;
-
-                        info!("Committing offsets");
-
-                        let _ = self
-                            .consumer
-                            .commit(&topic_partition_list, CommitMode::Async)?;
+                        }
                     }
                 }
                 Err(e) => {
-                    // TODO: What does this error really imply? Determine if this should stop the stream.
+                    // TODO: What does an error unwrapping the BorrowedMessage mean? Determine if this should stop the stream.
                     error!(
                         "Error getting BorrowedMessage while processing stream {:?}",
                         e
@@ -474,6 +376,135 @@ impl KafkaJsonToDelta {
 
         Ok(())
     }
+
+    fn should_complete_record_batch(
+        &self,
+        value_buffers: &ValueBuffers,
+        latency_timer: &Instant,
+    ) -> bool {
+        let should = value_buffers.len() == self.max_messages_per_batch
+            || latency_timer.elapsed().as_millis() >= (self.allowed_latency * 1000) as u128;
+
+        info!("Should complete record batch? {}", should);
+        info!("Value buffers len is {}", value_buffers.len());
+
+        should
+    }
+
+    fn should_complete_file(
+        &self,
+        delta_writer: &StreamingDeltaWriter,
+        latency_timer: &Instant,
+    ) -> bool {
+        let should = delta_writer.buffer_len() >= self.min_bytes_per_file
+            || latency_timer.elapsed().as_secs() >= self.allowed_latency;
+
+        info!("Should complete file? {}", should);
+        info!(
+            "Latency timer at {} secs",
+            latency_timer.elapsed().as_secs()
+        );
+        info!("Delta buffer len at {} bytes", delta_writer.buffer_len());
+
+        should
+    }
+
+    async fn init_offsets(
+        &mut self,
+        offsets: &HashMap<DataTypePartition, DataTypeOffset>,
+    ) -> Result<(), KafkaJsonToDeltaError> {
+        let topic_partition_list = self.consumer.assignment()?;
+
+        let mut partition_assignment = self.partition_assignment.lock().await;
+        let partitions = partition_vec_from_topic_partition_list(&topic_partition_list);
+
+        partition_assignment.update_assignment(&partitions);
+        partition_assignment.update_offsets(offsets);
+
+        let assignment = partition_assignment.assignment();
+
+        // Seek the consumer to current offsets
+        for (k, v) in assignment.iter() {
+            match v {
+                Some(offset) => {
+                    info!(
+                        "init_offsets: Seeking consumer to offset {} for partition {}",
+                        offset, k
+                    );
+                    self.consumer.seek(
+                        self.topic.as_str(),
+                        *k,
+                        Offset::Offset(*offset),
+                        Timeout::Never,
+                    )?;
+                }
+                _ => {
+                    info!(
+                        "Partition {} has no recorded offset. Not seeking consumer. Default starting offsets will be applied.",
+                        k
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+// NOTE: Lifetime constraint for write_ahead_log param is a workaround for
+// https://github.com/rust-lang/rust/issues/63033
+async fn update_partition_assignment<'a>(
+    partition_assignment: Arc<Mutex<PartitionAssignment>>,
+    write_ahead_log: Arc<dyn WriteAheadLog + 'a + Send + Sync>,
+    transaction_id: Option<DataTypeTransactionId>,
+    value_buffers: &mut ValueBuffers,
+    topic: &str,
+    consumer: &StreamConsumer<Context>,
+) -> Result<(), KafkaJsonToDeltaError> {
+    let mut partition_assignment = partition_assignment.lock().await;
+
+    // Update offsets from the previous transaction id if one exists
+    if let Some(transaction_id) = transaction_id {
+        let previous_wal_entry = write_ahead_log
+            .get_entry_by_transaction_id(transaction_id)
+            .await?;
+
+        partition_assignment.update_offsets(&previous_wal_entry.partition_offsets);
+    }
+
+    let assignment = partition_assignment.assignment();
+    // Extract the offsets for newly tracked partitions and seek the consumer.
+    // Essentially, we are catching up with the last assignment from the most recent
+    // rebalance event here and we will start buffering messages correctly on the next
+    // iteraton of run_loop.
+    // `run_loop` call context must `continue` the run loop without processing further.
+    // Basically *drop/do-not-append* the current message since it will not be at the correct offset since
+    // the partition was previously untracked and we are only now doing the `consumer.seek` while
+    // holding the partition_assignment lock.
+    // It would be nice to seek the consumer immediately on rebalance since we acquire a
+    // partition_assignment lock there anyway, instead of waiting to
+    // seek the consumer within `run_loop` but I haven't been able to figure out how to do that
+    // with the available rdkafka API for handling rebalance.
+    value_buffers.update_partitions(assignment)?;
+    for (k, v) in assignment.iter() {
+        match v {
+            Some(offset) => {
+                info!(
+                    "update_partition_assignment: Seeking consumer to offset {} for partition: {}",
+                    offset, k
+                );
+                consumer.seek(topic, *k, Offset::Offset(*offset), Timeout::Never)?;
+            }
+            _ => {
+                info!(
+                    "Partition {} has no recorded offset. Not seeking consumer.",
+                    k
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn deserialize_message<M>(m: &M) -> Result<serde_json::Value, KafkaJsonToDeltaError>
@@ -510,4 +541,316 @@ where
     };
 
     Ok(value)
+}
+
+async fn consume_value_buffers(
+    partition_assignment: Arc<Mutex<PartitionAssignment>>,
+    buffers: &mut ValueBuffers,
+) -> Result<(Vec<Value>, HashMap<DataTypePartition, DataTypeOffset>), KafkaJsonToDeltaError> {
+    let mut partition_assignment = partition_assignment.lock().await;
+
+    let ConsumedBuffers {
+        values,
+        partition_offsets,
+    } = buffers.consume();
+
+    partition_assignment.update_offsets(&partition_offsets);
+
+    let partition_offsets = partition_assignment.partition_offsets();
+
+    Ok((values, partition_offsets))
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum ValueBufferError {
+    #[error("Illegal tracked buffer state for partition {partition}.")]
+    IllegalTrackedBufferState { partition: DataTypePartition },
+}
+
+pub struct ValueBuffers {
+    buffers: HashMap<DataTypePartition, ValueBuffer>,
+    len: usize,
+    partitions: Vec<DataTypePartition>,
+    dirty: bool,
+}
+
+impl ValueBuffers {
+    pub fn new() -> Self {
+        Self {
+            buffers: HashMap::new(),
+            len: 0,
+            partitions: Vec::new(),
+            dirty: false,
+        }
+    }
+
+    pub fn for_partitions(partitions: Vec<DataTypePartition>) -> Self {
+        Self {
+            buffers: HashMap::new(),
+            len: 0,
+            partitions,
+            dirty: false,
+        }
+    }
+
+    pub fn add(&mut self, partition: DataTypePartition, offset: DataTypeOffset, value: Value) {
+        let buffer = self
+            .buffers
+            .entry(partition)
+            .or_insert_with(|| ValueBuffer::new());
+        buffer.add(value, offset);
+        self.len += 1;
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn consume(&mut self) -> ConsumedBuffers {
+        let mut partition_offsets = HashMap::new();
+
+        let values = self
+            .buffers
+            .iter_mut()
+            .filter_map(|(partition, buffer)| {
+                if buffer.non_empty() {
+                    let (values, offset) = buffer.consume();
+                    partition_offsets.insert(partition.clone(), offset);
+                    Some(values)
+                } else {
+                    None
+                }
+            })
+            .flatten()
+            .collect();
+
+        self.len = 0;
+
+        ConsumedBuffers {
+            values,
+            partition_offsets,
+        }
+    }
+
+    pub fn update_partitions(
+        &mut self,
+        assigned_partitions: &HashMap<DataTypePartition, Option<DataTypeOffset>>,
+    ) -> Result<(), ValueBufferError> {
+        // Drop all buffers that are no longer assigned
+        let partitions = self.partitions.iter();
+        for p in partitions {
+            if !assigned_partitions.contains_key(&p) {
+                let buffer = self.buffers.remove(&p);
+
+                if let Some(b) = buffer {
+                    self.len = self.len - b.values.len();
+                }
+            }
+        }
+
+        // If self has been marked dirty (due to a rebalance after a consume),
+        // reset all buffers and offsets and mark not dirty.
+        if self.dirty {
+            for (k, v) in self.buffers.iter_mut() {
+                match assigned_partitions.get(k) {
+                    Some(offset_option) => {
+                        v.reset(*offset_option);
+                    }
+                    _ => {
+                        // This should never happen since we removed all unassigned buffers above.
+                        return Err(ValueBufferError::IllegalTrackedBufferState { partition: *k });
+                    }
+                }
+            }
+        }
+
+        // Add all partitions that were not previously assigned.
+        for (k, _) in assigned_partitions.iter() {
+            if !self.is_tracking(*k) {
+                self.buffers.insert(*k, ValueBuffer::new());
+            }
+        }
+
+        // Set the list of currently assigned partitions.
+        self.partitions = assigned_partitions.keys().map(|k| *k).collect();
+
+        // Since we have synced up with the currently assigned partitiions and offsets, we can mark
+        // ourselves clean.
+        self.dirty = false;
+
+        Ok(())
+    }
+
+    pub fn is_tracking(&self, partition: DataTypePartition) -> bool {
+        self.partitions.contains(&partition)
+    }
+
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+}
+
+pub struct ConsumedBuffers {
+    pub values: Vec<Value>,
+    pub partition_offsets: HashMap<DataTypePartition, DataTypeOffset>,
+}
+
+pub struct ValueBuffer {
+    last_offset: Option<DataTypeOffset>,
+    values: Vec<Value>,
+}
+
+impl ValueBuffer {
+    fn new() -> Self {
+        Self {
+            last_offset: None,
+            values: Vec::new(),
+        }
+    }
+
+    fn add(&mut self, value: Value, offset: DataTypeOffset) {
+        self.last_offset = Some(offset);
+        self.values.push(value);
+    }
+
+    fn reset(&mut self, offset: Option<DataTypeOffset>) {
+        self.last_offset = offset;
+        self.values.clear();
+    }
+
+    fn consume(&mut self) -> (Vec<Value>, DataTypeOffset) {
+        let consumed = (self.values.drain(0..).collect(), self.last_offset.unwrap());
+        self.last_offset = None;
+        consumed
+    }
+
+    fn non_empty(&self) -> bool {
+        self.last_offset != None
+    }
+}
+
+pub struct Context {
+    partition_assignment: Arc<Mutex<PartitionAssignment>>,
+}
+
+impl ClientContext for Context {}
+
+impl ConsumerContext for Context {
+    fn pre_rebalance(&self, rebalance: &Rebalance) {
+        info!("Pre rebalance {:?}", rebalance);
+    }
+
+    fn post_rebalance(&self, rebalance: &Rebalance) {
+        info!("Post rebalance {:?}", rebalance);
+
+        match rebalance {
+            Rebalance::Assign(tpl) => {
+                info!("Received new partition assignment list");
+                let partitions = partition_vec_from_topic_partition_list(tpl);
+                let partitions = Arc::new(partitions);
+                on_rebalance_assign(self.partition_assignment.clone(), partitions.clone());
+            }
+            Rebalance::Revoke => {
+                info!("Partition assignments revoked");
+                on_rebalance_revoke(self.partition_assignment.clone());
+            }
+            Rebalance::Error(e) => {
+                warn!(
+                    "Unexpected Kafka error in post_rebalance invocation {:?}",
+                    e
+                );
+            }
+        }
+    }
+}
+
+fn partition_vec_from_topic_partition_list(
+    topic_partition_list: &TopicPartitionList,
+) -> Vec<DataTypePartition> {
+    topic_partition_list
+        .to_topic_map()
+        .iter()
+        .map(|((_, p), _)| *p)
+        .collect()
+}
+
+fn on_rebalance_assign(
+    partition_assignment: Arc<Mutex<PartitionAssignment>>,
+    partitions: Arc<Vec<DataTypePartition>>,
+) {
+    let _fut = tokio::spawn(async move {
+        let mut partition_assignment = partition_assignment.lock().await;
+        partition_assignment.update_assignment(&partitions);
+    });
+}
+
+fn on_rebalance_revoke(partition_assignment: Arc<Mutex<PartitionAssignment>>) {
+    let _fut = tokio::spawn(async move {
+        let mut partition_assignment = partition_assignment.lock().await;
+        partition_assignment.clear();
+    });
+}
+
+impl Context {
+    pub fn new(partition_assignment: Arc<Mutex<PartitionAssignment>>) -> Self {
+        Self {
+            partition_assignment,
+        }
+    }
+}
+
+pub struct PartitionAssignment {
+    assignment: HashMap<DataTypePartition, Option<DataTypeOffset>>,
+}
+
+impl PartitionAssignment {
+    pub fn new() -> Self {
+        Self {
+            assignment: HashMap::new(),
+        }
+    }
+
+    pub fn update_assignment(&mut self, partitions: &Vec<DataTypePartition>) {
+        self.assignment.retain(|p, _| partitions.contains(p));
+        for p in partitions {
+            if !self.assignment.contains_key(p) {
+                self.assignment.insert(*p, None);
+            }
+        }
+    }
+
+    pub fn update_offsets(&mut self, updated_offsets: &HashMap<DataTypePartition, DataTypeOffset>) {
+        for (k, v) in updated_offsets {
+            if let Some(entry) = self.assignment.get_mut(&k) {
+                *entry = Some(*v);
+            } else {
+                warn!("Partition {} is not part of the assignment.", k);
+            }
+        }
+    }
+
+    pub fn partitions(&self) -> Vec<DataTypePartition> {
+        self.assignment.keys().map(|k| *k).collect()
+    }
+
+    pub fn assignment(&self) -> &HashMap<DataTypePartition, Option<DataTypeOffset>> {
+        &self.assignment
+    }
+
+    pub fn partition_offsets(&self) -> HashMap<DataTypePartition, DataTypeOffset> {
+        let partition_offsets = self
+            .assignment
+            .iter()
+            .filter_map(|(k, v)| match v {
+                Some(o) => Some((*k, *o)),
+                None => None,
+            })
+            .collect();
+
+        partition_offsets
+    }
+
+    pub fn clear(&mut self) {
+        self.assignment.clear();
+    }
 }
