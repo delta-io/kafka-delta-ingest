@@ -168,7 +168,13 @@ impl DeltaParquetWriter {
         &mut self,
         partition_cols: &Vec<String>,
     ) -> Result<Add, DeltaWriterError> {
-        // Close the arrow writer to flush remaining bytes and write the parquet footer
+        // Close the arrow writer to flush remaining bytes and write the parquet footer.
+        // TODO: https://github.com/apache/arrow/pull/9850/files will return parquet_format::FileMetaData which
+        // can be used to pull the statistics needed for the add action.
+        // `FileMetaData` has a vec of `RowGroup` which has a vec of `ColumnMetaData` which has
+        // `Statistics` which contains min, max, null and distinct count.
+        // See
+        // https://github.com/sunchao/parquet-format-rs/blob/b0d5bcb51a919837310c7dccd5141ea956346357/src/parquet_format.rs
         self.arrow_writer.close()?;
 
         let path = self.next_data_path(partition_cols, &self.partition_values)?;
