@@ -3,12 +3,16 @@ version: '3.9'
 services:
   kafka:
     image: wurstmeister/kafka
+    depends_on: 
+      - zookeeper
     ports:
       - "9092:9092"
     environment:
       KAFKA_ADVERTISED_HOST_NAME: localhost
       KAFKA_CREATE_TOPICS: "example:3:1"
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+    healthcheck:
+      test: ["CMD", "bash", "-c", "unset", "JMX_PORT", ";", "kafka-topics.sh", "--zookeeper", "zookeeper:2181", "--list"]
 
   zookeeper:
     image: wurstmeister/zookeeper
@@ -28,4 +32,15 @@ services:
       - HOST_TMP_FOLDER=${TMPDIR}
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:4566/health" ]
+
+  test_stack:
+    image: localstack/localstack  
+    depends_on: 
+      - kafka
+      - localstack
+    entrypoint: "/bin/bash"
+    command:
+      - /localstack-create_dynamodb_test_tables.sh
+    volumes:
+      - "./bin/localstack-create_dynamodb_test_tables.sh:/localstack-create_dynamodb_test_tables.sh"
 

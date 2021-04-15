@@ -31,7 +31,7 @@ use uuid::Uuid;
 const LOCALSTACK_ENDPOINT: &str = "http://0.0.0.0:4566";
 
 const TEST_APP_ID: &str = "e2e_smoke_test";
-const TEST_BROKER: &str = "localhost:9092";
+const TEST_BROKER: &str = "0.0.0.0:9092";
 const TEST_CONSUMER_GROUP_ID: &str = "kafka_delta_ingest";
 const TEST_DELTA_TABLE_LOCATION: &str = "./tests/data/e2e_smoke_test";
 
@@ -163,7 +163,7 @@ fn cleanup_delta_files(table_location: &str) {
 
 async fn create_topic(topic: &str) {
     let mut admin_client_config = ClientConfig::new();
-    admin_client_config.set("bootstrap.servers", "localhost:9092");
+    admin_client_config.set("bootstrap.servers", TEST_BROKER);
 
     let admin_client: AdminClient<_> = admin_client_config
         .create()
@@ -203,7 +203,7 @@ async fn cleanup_write_ahead_log() {
 async fn produce_example(topic: &str) {
     let mut producer_config = ClientConfig::new();
 
-    producer_config.set("bootstrap.servers", "localhost:9092");
+    producer_config.set("bootstrap.servers", TEST_BROKER);
 
     let producer: FutureProducer = producer_config.create().expect("Producer creation failed");
 
@@ -284,7 +284,7 @@ async fn cancel_consumer_after_duration(
     tokio::time::sleep(duration).await;
 
     let mut producer_config = ClientConfig::new();
-    producer_config.set("bootstrap.servers", "localhost:9092");
+    producer_config.set("bootstrap.servers", TEST_BROKER);
     let producer: FutureProducer = producer_config.create().expect("Producer creation failed");
 
     debug!("Cancelling stream");
