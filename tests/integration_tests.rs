@@ -116,6 +116,8 @@ fn setup() {
     INIT.call_once(|| {
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("error")).init();
         env::set_var("AWS_ENDPOINT_URL", LOCALSTACK_ENDPOINT);
+        env::set_var("AWS_ACCESS_KEY_ID", "test");
+        env::set_var("AWS_SECRET_ACCESS_KEY", "test");
     });
 }
 
