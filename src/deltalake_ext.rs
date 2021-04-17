@@ -11,7 +11,7 @@ use deltalake::{
     DeltaDataTypeVersion, DeltaTable, DeltaTableError, DeltaTransactionError, Schema,
     StorageBackend, StorageError, UriError,
 };
-use log::info;
+use log::{debug, info};
 use parquet::{
     arrow::ArrowWriter,
     basic::Compression,
@@ -20,6 +20,7 @@ use parquet::{
 };
 use serde_json::Value;
 use std::collections::HashMap;
+use std::convert::TryFrom;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -107,7 +108,7 @@ impl StreamingDeltaWriter {
         // Initialize an arrow schema ref from the delta table schema
         let metadata = table.get_metadata()?.clone();
         let schema = metadata.schema.clone();
-        let arrow_schema = <ArrowSchema as From<&Schema>>::from(&schema);
+        let arrow_schema = <ArrowSchema as TryFrom<&Schema>>::try_from(&schema).unwrap();
         let arrow_schema_ref = Arc::new(arrow_schema);
         let partition_columns = metadata.partition_columns;
 
@@ -138,10 +139,18 @@ impl StreamingDeltaWriter {
         })
     }
 
-    pub fn last_transaction_version(&self, app_id: &str) -> Option<DeltaDataTypeVersion> {
+    pub async fn last_transaction_version(
+        &mut self,
+        app_id: &str,
+    ) -> Result<Option<DeltaDataTypeVersion>, DeltaWriterError> {
+        // self.table.update().await?;
         let tx_versions = self.table.get_app_transaction_version();
 
-        tx_versions.get(app_id).map(|v| v.to_owned())
+        let v = tx_versions.get(app_id).map(|v| v.to_owned());
+
+        debug!("Transaction version {:?}", v);
+
+        Ok(v)
     }
 
     /// Writes the record batch in-memory and updates internal state accordingly.
@@ -188,6 +197,8 @@ impl StreamingDeltaWriter {
         &mut self,
         actions: &mut Vec<Action>,
     ) -> Result<DeltaDataTypeVersion, DeltaWriterError> {
+        info!("Writing parquet file.");
+
         // Close the arrow writer to flush remaining bytes and write the parquet footer
         self.arrow_writer.close()?;
 
@@ -208,10 +219,14 @@ impl StreamingDeltaWriter {
             .put_obj(storage_path.as_str(), obj_bytes.as_slice())
             .await?;
 
+        info!("Parquet file written.");
+
         let num_records = self.num_records;
 
         // After data is written, re-initialize internal state to handle another file
         self.reset()?;
+
+        info!("Writing Delta transaction.");
 
         let add = create_add(&self.partition_values, path, file_size, num_records)?;
 

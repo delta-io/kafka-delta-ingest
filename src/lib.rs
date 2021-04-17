@@ -123,7 +123,7 @@ impl KafkaJsonToDelta {
         kafka_client_config
             .set("bootstrap.servers", kafka_brokers.clone())
             .set("group.id", consumer_group_id)
-            .set("enable.auto.commit", "true");
+            .set("enable.auto.commit", "false");
 
         if let Some(additional) = additional_kafka_settings {
             for (k, v) in additional.iter() {
@@ -183,10 +183,11 @@ impl KafkaJsonToDelta {
         let wal = write_ahead_log::new_write_ahead_log(self.app_id.to_string()).await?;
 
         // Initialize starting offsets from the last completed WAL entry
-        let last_tx_version =
-            delta_writer.last_transaction_version(self.app_id.to_string().as_str());
+        let last_tx_version = delta_writer
+            .last_transaction_version(self.app_id.to_string().as_str())
+            .await;
 
-        if let Some(tx_version) = last_tx_version {
+        if let Ok(Some(tx_version)) = last_tx_version {
             let previous_wal_entry = wal.get_entry_by_transaction_id(tx_version).await?;
             self.init_offsets(&previous_wal_entry.partition_offsets)
                 .await?;
@@ -242,8 +243,9 @@ impl KafkaJsonToDelta {
                             m.offset()
                         );
                         value_buffers.add(partition, m.offset(), value);
-                    } else if let Some(tx_version) =
-                        delta_writer.last_transaction_version(self.app_id.as_str())
+                    } else if let Ok(Some(tx_version)) = delta_writer
+                        .last_transaction_version(self.app_id.as_str())
+                        .await
                     {
                         // Since this is an untracked partition and a Delta transaction exists for
                         // the table already, we need to update partition assignments, seek the
@@ -322,11 +324,16 @@ impl KafkaJsonToDelta {
                             info!("Writing parquet file");
 
                             // Lookup the last transaction version from the Delta Log
-                            let last_tx_version =
-                                delta_writer.last_transaction_version(self.app_id.as_str());
+                            let last_tx_version = delta_writer
+                                .last_transaction_version(self.app_id.as_str())
+                                .await;
 
                             // Create the new WAL entry
-                            let wal_entry = if let Some(tx_version) = last_tx_version {
+                            let wal_entry = if let Ok(Some(tx_version)) = last_tx_version {
+                                info!(
+                                    "Delta table last transaction version for {} is {}.",
+                                    self.app_id, tx_version
+                                );
                                 let last_wal_entry =
                                     wal.get_entry_by_transaction_id(tx_version).await?;
                                 last_wal_entry.prepare_next(&partition_offsets)
@@ -351,14 +358,16 @@ impl KafkaJsonToDelta {
                                     as i64,
                             });
                             let commit_result = delta_writer.write_file(&mut vec![txn]).await;
+
                             match commit_result {
                                 Ok(version) => {
                                     wal.complete_entry(wal_entry.transaction_id, version)
                                         .await?;
                                 }
-                                Err(_) => {
+                                Err(e) => {
+                                    error!("Delta commit failed. Aborting write ahead log entry.");
                                     wal.abort_entry(wal_entry.transaction_id).await?;
-                                    break;
+                                    return Err(KafkaJsonToDeltaError::DeltaWriter { source: e });
                                 }
                             }
                         }
