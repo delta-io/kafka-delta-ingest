@@ -10,7 +10,6 @@ use std::sync::Once;
 
 use kafka_delta_ingest::write_ahead_log;
 use kafka_delta_ingest::write_ahead_log::{TransactionState, WriteAheadLogEntry};
-use kafka_delta_ingest::DataTypeTransactionId;
 
 // NOTE: This test file depends on kafka and localstack docker services
 // Run:
@@ -158,7 +157,7 @@ fn setup() {
     });
 }
 
-async fn delete_entry_if_exists(transaction_id: DataTypeTransactionId) {
+async fn delete_entry_if_exists(transaction_id: i64) {
     let client = DynamoDbClient::new(Region::Custom {
         name: "custom".to_string(),
         endpoint: LOCALSTACK_ENDPOINT.to_string(),

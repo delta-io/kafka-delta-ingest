@@ -53,8 +53,12 @@ async fn e2e_smoke_test() {
     // Start a stream and a producer
     //
 
-    let mut additional_config = HashMap::new();
-    additional_config.insert("auto.offset.reset".to_string(), "earliest".to_string());
+    let mut additional_kafka_settings = HashMap::new();
+    additional_kafka_settings.insert("auto.offset.reset".to_string(), "earliest".to_string());
+
+    let allowed_latency = 1500;
+    let max_messages_per_batch = 2;
+    let min_bytes_per_file = 370;
 
     let mut transforms = HashMap::new();
     transforms.insert(
@@ -63,22 +67,19 @@ async fn e2e_smoke_test() {
     );
     transforms.insert("_kafka_offset".to_string(), "kafka.offset".to_string());
 
-    let allowed_latency = 1500;
-    let max_messages_per_batch = 2;
-    let min_bytes_per_file = 370;
-
     let mut stream = KafkaJsonToDelta::new(
-        TEST_APP_ID.to_string(),
         topic.to_string(),
         TEST_DELTA_TABLE_LOCATION.to_string(),
         TEST_BROKER.to_string(),
         TEST_CONSUMER_GROUP_ID.to_string(),
-        Some(additional_config),
+        Some(additional_kafka_settings),
+        TEST_APP_ID.to_string(),
         allowed_latency,
         max_messages_per_batch,
         min_bytes_per_file,
         transforms,
-    );
+    )
+    .unwrap();
 
     let token = CancellationToken::new();
 

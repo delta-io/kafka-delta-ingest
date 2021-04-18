@@ -83,7 +83,7 @@ pub enum DeltaWriterError {
     },
 }
 
-pub struct StreamingDeltaWriter {
+pub struct DeltaWriter {
     table_path: String,
     table: DeltaTable,
     storage: Box<dyn StorageBackend>,
@@ -96,12 +96,12 @@ pub struct StreamingDeltaWriter {
     num_records: i64,
 }
 
-impl StreamingDeltaWriter {
+impl DeltaWriter {
     /// Initialize the writer from the given table path and delta schema
     pub async fn for_table_path(
         table_path: String,
         // schema: &Schema,
-    ) -> Result<StreamingDeltaWriter, DeltaWriterError> {
+    ) -> Result<DeltaWriter, DeltaWriterError> {
         let table = deltalake::open_table(&table_path.as_str()).await?;
         let storage = deltalake::get_backend_for_uri(table_path.as_str())?;
 
@@ -148,7 +148,7 @@ impl StreamingDeltaWriter {
 
         let v = tx_versions.get(app_id).map(|v| v.to_owned());
 
-        debug!("Transaction version {:?}", v);
+        debug!("Transaction version is {:?}", v);
 
         Ok(v)
     }
