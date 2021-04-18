@@ -5,29 +5,24 @@ authors = ["R. Tyler Croy <rtyler@scribd.com>", "Christian Williams <christianw@
 edition = "2018"
 
 [dependencies]
-anyhow = "1.0"
+anyhow = "1"
 async-trait = "0.1"
-bytes = "~1.0"
-cfg-if = "1"
 chrono = "0"
 clap = { version = ">=3.0.0-beta.2,<4", features = ["color"] }
-crossbeam = { version = "0" }
 env_logger = "0"
 futures = "0.3"
 jmespatch = { version = "0.3", features = ["sync"] }
 lazy_static = "1"
 log = "0"
-maplit = "1.0.2"
-rdkafka = "~0.25.0"
-regex = "1"
+maplit = "1"
+rdkafka = "0.25"
 rusoto_core = { version = "0.46" }
 rusoto_credential = { version = "0.46" }
 rusoto_s3 = { version = "0.46" }
 rusoto_dynamodb = { version = "0.46" }
-serde = { version = "1.0", features = ["derive"] }
-serde_derive = "1.0"
-serde_json = "1.0"
-thiserror = "1.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0", features = ["fs"] }
 tokio-util = "0.6.3"
