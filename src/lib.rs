@@ -197,13 +197,6 @@ impl KafkaJsonToDelta {
         info!("Starting run loop.");
 
         while let Some(message) = stream.next().await {
-            // Exit if the cancellation token is set
-            if let Some(token) = cancellation_token {
-                if token.is_cancelled() {
-                    return Ok(());
-                }
-            }
-
             match message {
                 Ok(m) => {
                     debug!(
@@ -269,7 +262,7 @@ impl KafkaJsonToDelta {
                         continue;
                     } else {
                         info!(
-                            "NOT tracking partition {}, but there is no existing delta transaction. Buffering message - partition {}, offset: {}",
+                            "NOT currently tracking partition {}, but there is no existing delta transaction. Buffering message (partition {}, offset: {}) and updating assignment.",
                             m.partition(),
                             m.partition(),
                             m.offset()
@@ -318,8 +311,8 @@ impl KafkaJsonToDelta {
                         delta_writer.write_record_batch(&record_batch).await?;
 
                         info!(
-                            "Record batch written. Current latency is {:?} seconds",
-                            latency_timer.elapsed().as_secs()
+                            "Record batch written. Current latency is {} milliseconds",
+                            latency_timer.elapsed().as_millis()
                         );
 
                         // Finalize file and write Delta transaction
@@ -377,6 +370,14 @@ impl KafkaJsonToDelta {
                                     return Err(KafkaJsonToDeltaError::DeltaWriter { source: e });
                                 }
                             }
+                        }
+                    }
+
+                    // Exit if the cancellation token is set
+                    if let Some(token) = cancellation_token {
+                        if token.is_cancelled() {
+                            info!("Found cancellation token set after handling partition {} offset {}. Stopping run loop.", m.partition(), m.offset());
+                            return Ok(());
                         }
                     }
                 }

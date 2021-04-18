@@ -18,15 +18,13 @@ use serde_json::json;
 use std::env;
 use std::sync::Once;
 use std::{collections::HashMap, fs, path::PathBuf};
-use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 // NOTE: This test file depends on kafka and localstack docker services
 // Run:
 // `docker-compose up`
-// `bin/localstack-create_dynamodb_test_tables.sh`
-// `RUST_LOG=debug cargo test -- --ignored --nocapture`
+// `RUST_LOG=debug cargo test -- --nocapture`
 
 const LOCALSTACK_ENDPOINT: &str = "http://0.0.0.0:4566";
 
@@ -85,11 +83,9 @@ async fn e2e_smoke_test() {
 
     // Start and join a future for produce, consume and cancel
     let consume_future = stream.start(Some(&token));
-    let produce_future = produce_example(topic.as_str());
-    let cancel_future =
-        cancel_consumer_after_duration(Duration::from_secs(10), &token, topic.as_str());
+    let produce_future = produce_example(topic.as_str(), &token);
 
-    let _ = tokio::join!(consume_future, produce_future, cancel_future);
+    let _ = tokio::join!(consume_future, produce_future);
 
     //
     // Load the DeltaTable and make assertions about it
@@ -203,7 +199,7 @@ async fn cleanup_write_ahead_log() {
     }
 }
 
-async fn produce_example(topic: &str) {
+async fn produce_example(topic: &str, token: &CancellationToken) {
     let mut producer_config = ClientConfig::new();
 
     producer_config.set("bootstrap.servers", TEST_BROKER);
@@ -212,7 +208,7 @@ async fn produce_example(topic: &str) {
 
     // first message
 
-    debug!("Sending message");
+    debug!("Sending message 1");
     let m1 = serde_json::to_string(&json!({
         "id": "1",
         "value": 1,
@@ -222,11 +218,11 @@ async fn produce_example(topic: &str) {
     let _ = producer
         .send(future_from_json(topic, &m1), Timeout::Never)
         .await;
-    std::thread::sleep(std::time::Duration::from_secs(1));
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
     // second message
 
-    debug!("Sending message");
+    debug!("Sending message 2");
     let m2 = serde_json::to_string(&json!({
         "id": "2",
         "value": 2,
@@ -236,16 +232,11 @@ async fn produce_example(topic: &str) {
     let _ = producer
         .send(future_from_json(topic, &m2), Timeout::Never)
         .await;
-    std::thread::sleep(std::time::Duration::from_millis(1100));
-
-    // wait a tick
-
-    debug!("Waiting around for a bit...");
-    std::thread::sleep(std::time::Duration::from_secs(3));
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
     // third message
 
-    debug!("Sending message");
+    debug!("Sending message 3");
     let m3 = serde_json::to_string(&json!({
         "id": "3",
         "value": 3,
@@ -255,11 +246,16 @@ async fn produce_example(topic: &str) {
     let _ = producer
         .send(future_from_json(topic, &m3), Timeout::Never)
         .await;
-    std::thread::sleep(std::time::Duration::from_secs(1));
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    // set the cancellation token so the consume stream stops after the next message
+
+    debug!("Setting cancellation token.");
+    token.cancel();
 
     // fourth message
 
-    debug!("Sending message");
+    debug!("Sending message 4");
     let m4 = serde_json::to_string(&json!({
         "id": "4",
         "value": 4,
@@ -269,41 +265,10 @@ async fn produce_example(topic: &str) {
     let _ = producer
         .send(future_from_json(topic, &m4), Timeout::Never)
         .await;
-    // std::thread::sleep(std::time::Duration::from_secs(1));
 
     debug!("All done sending messages.");
 }
 
 fn future_from_json<'a>(topic: &'a str, message: &'a String) -> FutureRecord<'a, String, String> {
     FutureRecord::to(topic).payload(message)
-}
-
-async fn cancel_consumer_after_duration(
-    duration: Duration,
-    token: &CancellationToken,
-    topic: &str,
-) {
-    debug!("Sleeping");
-    tokio::time::sleep(duration).await;
-
-    let mut producer_config = ClientConfig::new();
-    producer_config.set("bootstrap.servers", TEST_BROKER);
-    let producer: FutureProducer = producer_config.create().expect("Producer creation failed");
-
-    debug!("Cancelling stream");
-
-    token.cancel();
-
-    // HACK: Trigger the next loop iteration with an extra message so the cancellation token state is picked up. Ultimately, the KafkaJsonToDelta API needs to listen for cancellation events.
-
-    let jsonx = serde_json::to_string(&json!({
-        "id": "X",
-        "value": 999,
-        "modified": "2021-03-01",
-    }))
-    .unwrap();
-    let m: FutureRecord<String, String> = FutureRecord::to(topic).payload(&jsonx);
-    let _ = producer
-        .send(m, Timeout::After(std::time::Duration::from_secs(0)))
-        .await;
 }
