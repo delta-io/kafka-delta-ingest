@@ -14,8 +14,7 @@ use kafka_delta_ingest::write_ahead_log::{TransactionState, WriteAheadLogEntry};
 // NOTE: This test file depends on kafka and localstack docker services
 // Run:
 // `docker-compose up`
-// `bin/localstack-create_dynamodb_test_tables.sh`
-// `RUST_LOG=debug cargo test -- --ignored --nocapture`
+// `RUST_LOG=debug cargo test -- --nocapture`
 
 const TEST_LOG_NAME: &str = "write_ahead_log_test";
 const LOCALSTACK_ENDPOINT: &str = "http://0.0.0.0:4566";

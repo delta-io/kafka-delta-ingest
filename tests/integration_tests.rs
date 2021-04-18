@@ -5,6 +5,10 @@ extern crate kafka_delta_ingest;
 
 use kafka_delta_ingest::KafkaJsonToDelta;
 use log::debug;
+use parquet::{
+    file::reader::{FileReader, SerializedFileReader},
+    record::RowAccessor,
+};
 use rdkafka::{
     admin::{AdminClient, AdminOptions, NewTopic, TopicReplication},
     producer::FutureProducer,
@@ -16,6 +20,7 @@ use rusoto_core::Region;
 use rusoto_dynamodb::*;
 use serde_json::json;
 use std::env;
+use std::fs::File;
 use std::sync::Once;
 use std::{collections::HashMap, fs, path::PathBuf};
 use tokio_util::sync::CancellationToken;
@@ -81,7 +86,7 @@ async fn e2e_smoke_test() {
 
     let token = CancellationToken::new();
 
-    // Start and join a future for produce, consume and cancel
+    // Start and join a future for produce, consume
     let consume_future = stream.start(Some(&token));
     let produce_future = produce_example(topic.as_str(), &token);
 
@@ -106,7 +111,38 @@ async fn e2e_smoke_test() {
 
     assert_eq!(2, file_paths.len(), "Table should contain 2 data files");
 
-    // TODO: Add additional assertions about the table
+    //
+    // Reload the table and validate some data
+    //
+
+    let delta_table = deltalake::open_table(TEST_DELTA_TABLE_LOCATION)
+        .await
+        .unwrap();
+
+    let files = delta_table.get_file_paths();
+
+    let mut row_num = 0;
+
+    for f in files.iter() {
+        let p = SerializedFileReader::new(File::open(f).unwrap()).unwrap();
+        let mut row_iter = p.get_row_iter(None).unwrap();
+
+        let r = row_iter.next().unwrap();
+        row_num += 1;
+
+        assert_eq!(&row_num.to_string(), r.get_string(0).unwrap());
+        assert_eq!(row_num, r.get_int(1).unwrap());
+        assert_eq!("2021-03-01T14:38:58Z", r.get_string(2).unwrap());
+        assert_eq!("2021-03-01", r.get_string(3).unwrap());
+
+        let r = row_iter.next().unwrap();
+        row_num += 1;
+
+        assert_eq!(&row_num.to_string(), r.get_string(0).unwrap());
+        assert_eq!(row_num, r.get_int(1).unwrap());
+        assert_eq!("2021-03-01T14:38:58Z", r.get_string(2).unwrap());
+        assert_eq!("2021-03-01", r.get_string(3).unwrap());
+    }
 }
 
 fn setup() {
