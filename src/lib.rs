@@ -182,7 +182,7 @@ impl KafkaJsonToDelta {
         info!("Initializing last Delta transaction version before starting run loop.");
 
         let last_txn_version = delta_writer
-            .last_transaction_version(self.app_id.to_string().as_str())
+            .last_transaction_version(self.app_id.as_str())
             .await;
 
         if let Ok(Some(txn_version)) = last_txn_version {
