@@ -21,8 +21,8 @@ use std::time::Instant;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-pub mod deltalake_ext;
-pub mod transforms;
+mod deltalake_ext;
+mod transforms;
 pub mod write_ahead_log;
 
 use crate::deltalake_ext::{DeltaWriter, DeltaWriterError};
