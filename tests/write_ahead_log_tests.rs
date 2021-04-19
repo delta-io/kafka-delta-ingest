@@ -147,6 +147,147 @@ async fn prepare_and_abort_entry() {
     );
 }
 
+#[tokio::test]
+async fn complete_aborted_should_fail() {
+    setup();
+
+    let tx_id = 3;
+
+    delete_entry_if_exists(tx_id).await;
+
+    let write_ahead_log = write_ahead_log::new_write_ahead_log(TEST_LOG_NAME.to_owned())
+        .await
+        .unwrap();
+
+    let entry = WriteAheadLogEntry::new(
+        tx_id,
+        TransactionState::Prepared,
+        None,
+        hashmap! {
+                0 => 2,
+                1 => 1,
+        },
+    );
+
+    let _ = write_ahead_log.put_entry(&entry).await.unwrap();
+    let _ = write_ahead_log.abort_entry(tx_id).await.unwrap();
+    let result = write_ahead_log.complete_entry(tx_id, 1).await;
+
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn complete_completed_should_fail() {
+    setup();
+
+    let tx_id = 4;
+
+    delete_entry_if_exists(tx_id).await;
+
+    let write_ahead_log = write_ahead_log::new_write_ahead_log(TEST_LOG_NAME.to_owned())
+        .await
+        .unwrap();
+
+    let entry = WriteAheadLogEntry::new(
+        tx_id,
+        TransactionState::Prepared,
+        None,
+        hashmap! {
+                0 => 2,
+                1 => 1,
+        },
+    );
+
+    let _ = write_ahead_log.put_entry(&entry).await.unwrap();
+    let _ = write_ahead_log.abort_entry(tx_id).await.unwrap();
+    let result = write_ahead_log.complete_entry(tx_id, 1).await;
+
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn abort_completed_should_fail() {
+    setup();
+
+    let tx_id = 5;
+
+    delete_entry_if_exists(tx_id).await;
+
+    let write_ahead_log = write_ahead_log::new_write_ahead_log(TEST_LOG_NAME.to_owned())
+        .await
+        .unwrap();
+
+    let entry = WriteAheadLogEntry::new(
+        tx_id,
+        TransactionState::Prepared,
+        None,
+        hashmap! {
+                0 => 2,
+                1 => 1,
+        },
+    );
+
+    let _ = write_ahead_log.put_entry(&entry).await.unwrap();
+    let _ = write_ahead_log.complete_entry(tx_id, 1).await.unwrap();
+    let result = write_ahead_log.abort_entry(tx_id).await;
+
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn put_completed_should_fail() {
+    setup();
+
+    let tx_id = 6;
+
+    delete_entry_if_exists(tx_id).await;
+
+    let write_ahead_log = write_ahead_log::new_write_ahead_log(TEST_LOG_NAME.to_owned())
+        .await
+        .unwrap();
+
+    let entry = WriteAheadLogEntry::new(
+        tx_id,
+        TransactionState::Completed,
+        None,
+        hashmap! {
+                0 => 2,
+                1 => 1,
+        },
+    );
+
+    let result = write_ahead_log.put_entry(&entry).await;
+
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn put_aborted_should_fail() {
+    setup();
+
+    let tx_id = 7;
+
+    delete_entry_if_exists(tx_id).await;
+
+    let write_ahead_log = write_ahead_log::new_write_ahead_log(TEST_LOG_NAME.to_owned())
+        .await
+        .unwrap();
+
+    let entry = WriteAheadLogEntry::new(
+        tx_id,
+        TransactionState::Aborted,
+        None,
+        hashmap! {
+                0 => 2,
+                1 => 1,
+        },
+    );
+
+    let result = write_ahead_log.put_entry(&entry).await;
+
+    assert!(result.is_err());
+}
+
 fn setup() {
     INIT.call_once(|| {
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("error")).init();

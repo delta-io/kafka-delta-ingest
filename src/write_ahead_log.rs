@@ -17,6 +17,9 @@ pub enum WriteAheadLogError {
     #[error("Transaction not found: {0}")]
     TransactionNotFound(DataTypeTransactionId),
 
+    #[error("Invalid transaction state for put entry: {0}")]
+    InvalidTransactionStateForPutEntry(TransactionState),
+
     #[error("The write ahead log entry with transaction id {0} is corrupted in storage")]
     CorruptedEntry(DataTypeTransactionId),
 
@@ -24,7 +27,7 @@ pub enum WriteAheadLogError {
     Dynamo(#[from] dynamodb::DynamoError),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum TransactionState {
     Prepared,
     Completed,
@@ -239,6 +242,12 @@ mod dynamodb {
         async fn put_entry(&self, entry: &WriteAheadLogEntry) -> Result<(), WriteAheadLogError> {
             debug!("Putting entry {:?}", entry);
 
+            if entry.transaction_state != TransactionState::Prepared {
+                return Err(WriteAheadLogError::InvalidTransactionStateForPutEntry(
+                    entry.transaction_state.clone(),
+                ));
+            }
+
             self.client
                 .put_item(put_item_input(self.table_name.clone(), entry))
                 .await
@@ -309,10 +318,14 @@ mod dynamodb {
     mod expressions {
         use super::constants::*;
 
+        pub fn transaction_id_not_exists() -> String {
+            format!("attribute_not_exists(#{})", TRANSACTION_ID_FIELD)
+        }
+
         pub fn is_in_state(transaction_state_field: &str) -> String {
             format!(
-                "#{} = :{}",
-                TRANSACTION_STATE_FIELD, transaction_state_field
+                "attribute_exists(#{}) AND #{} = :{}",
+                TRANSACTION_ID_FIELD, TRANSACTION_STATE_FIELD, transaction_state_field
             )
         }
 
@@ -377,9 +390,15 @@ mod dynamodb {
             },
         };
 
+        let names = hashmap! {
+            path_for_field(constants::TRANSACTION_ID_FIELD) => constants::TRANSACTION_ID_FIELD.to_string(),
+        };
+
         PutItemInput {
             table_name,
             item,
+            condition_expression: Some(expressions::transaction_id_not_exists()),
+            expression_attribute_names: Some(names),
             ..Default::default()
         }
     }
@@ -393,6 +412,7 @@ mod dynamodb {
         let existing_transaction_state_field = "existing_transaction_state";
 
         let mut names = hashmap! {
+            path_for_field(constants::TRANSACTION_ID_FIELD) => constants::TRANSACTION_ID_FIELD.to_string(),
             path_for_field(constants::TRANSACTION_STATE_FIELD) => constants::TRANSACTION_STATE_FIELD.to_string(),
         };
         let mut values = hashmap! {
