@@ -241,9 +241,9 @@ impl KafkaJsonToDelta {
                         // This is the 99% case. We are already tracking this partition. Just
                         // buffer it.
                         value_buffers.add(partition, m.offset(), value);
-                    } else if let Ok(Some(tx_version)) = delta_writer
+                    } else if let Some(tx_version) = delta_writer
                         .last_transaction_version(self.app_id.as_str())
-                        .await
+                        .await?
                     {
                         info!("Paritition {} is not tracked in value_buffers but a transaction exists in the delta log. Updating partition assignment and skipping message. Will process this same message again after consumer seek - partition {}, offset: {}", partition, partition, m.offset());
 
