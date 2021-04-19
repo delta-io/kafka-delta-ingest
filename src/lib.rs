@@ -325,10 +325,10 @@ impl KafkaJsonToDelta {
                             // Lookup the last transaction version from the Delta Log
                             let last_txn_version = delta_writer
                                 .last_transaction_version(self.app_id.as_str())
-                                .await;
+                                .await?;
 
                             // Create the new WAL entry
-                            let wal_entry = if let Ok(Some(txn_version)) = last_txn_version {
+                            let wal_entry = if let Some(txn_version) = last_txn_version {
                                 info!(
                                     "Delta table last txn version for {} is {}.",
                                     self.app_id, txn_version
@@ -345,6 +345,7 @@ impl KafkaJsonToDelta {
                                     partition_offsets.clone(),
                                 )
                             };
+
                             wal.put_entry(&wal_entry).await?;
 
                             // Complete the file
