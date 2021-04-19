@@ -98,9 +98,7 @@ pub struct DeltaWriter {
 
 impl DeltaWriter {
     /// Initialize the writer from the given table path and delta schema
-    pub async fn for_table_path(
-        table_path: String,
-    ) -> Result<DeltaWriter, DeltaWriterError> {
+    pub async fn for_table_path(table_path: String) -> Result<DeltaWriter, DeltaWriterError> {
         let table = deltalake::open_table(&table_path.as_str()).await?;
         let storage = deltalake::get_backend_for_uri(table_path.as_str())?;
 
