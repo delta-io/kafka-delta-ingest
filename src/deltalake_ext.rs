@@ -143,7 +143,6 @@ impl DeltaWriter {
         &mut self,
         app_id: &str,
     ) -> Result<Option<DeltaDataTypeVersion>, DeltaWriterError> {
-        // self.table.update().await?;
         let tx_versions = self.table.get_app_transaction_version();
 
         let v = tx_versions.get(app_id).map(|v| v.to_owned());
