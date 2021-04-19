@@ -183,9 +183,9 @@ impl KafkaJsonToDelta {
 
         let last_txn_version = delta_writer
             .last_transaction_version(self.app_id.as_str())
-            .await;
+            .await?;
 
-        if let Ok(Some(txn_version)) = last_txn_version {
+        if let Some(txn_version) = last_txn_version {
             let previous_wal_entry = wal.get_entry_by_transaction_id(txn_version).await?;
             self.init_offsets(&previous_wal_entry.partition_offsets)
                 .await?;
