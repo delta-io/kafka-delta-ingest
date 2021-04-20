@@ -84,7 +84,6 @@ pub enum DeltaWriterError {
 }
 
 pub struct DeltaWriter {
-    table_path: String,
     table: DeltaTable,
     storage: Box<dyn StorageBackend>,
     arrow_schema_ref: Arc<arrow::datatypes::Schema>,
@@ -123,7 +122,6 @@ impl DeltaWriter {
         )?;
 
         Ok(Self {
-            table_path,
             table,
             storage,
             arrow_schema_ref,
@@ -205,7 +203,7 @@ impl DeltaWriter {
 
         let storage_path = self
             .storage
-            .join_path(self.table_path.as_str(), path.as_str());
+            .join_path(self.table.table_path.as_str(), path.as_str());
 
         //
         // TODO: Wrap in retry loop to handle temporary network errors
