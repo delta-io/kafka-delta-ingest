@@ -3,7 +3,7 @@ use jmespatch::{
     Context, ErrorReason, Expression, JmespathError, Rcvar, Runtime, RuntimeError, Variable,
 };
 use rdkafka::Message;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::sync::Arc;
@@ -57,7 +57,7 @@ impl InvalidTypeError {
             offset: context.offset,
             expected: expected.to_owned(),
             actual: actual.to_string(),
-            position: position,
+            position,
         }
     }
 }
@@ -73,10 +73,12 @@ lazy_static! {
 
 pub fn compile_transforms(
     definitions: &HashMap<String, String>,
-) -> Result<HashMap<String, MessageTransform>, TransformError> {
-    let mut transforms = HashMap::new();
+) -> Result<Vec<(ValuePath, MessageTransform)>, TransformError> {
+    let mut transforms = Vec::new();
 
     for (k, v) in definitions.iter() {
+        let p = ValuePath::from_str(k);
+
         let t = match v.as_str() {
             "kafka.partition" => MessageTransform::KafkaMetaTransform(KafkaMetaProperty::Partition),
             "kafka.offset" => MessageTransform::KafkaMetaTransform(KafkaMetaProperty::Offset),
@@ -89,7 +91,7 @@ pub fn compile_transforms(
             }
         };
 
-        transforms.insert(k.to_owned(), t);
+        transforms.push((p, t));
     }
 
     Ok(transforms)
@@ -167,15 +169,70 @@ pub enum MessageTransform {
     ExpressionTransform(Expression<'static>),
 }
 
+pub struct ValuePath {
+    parts: Vec<String>,
+}
+
+impl ValuePath {
+    fn from_str(path: &str) -> Self {
+        let parts: Vec<String> = path.split(".").map(|s| s.to_string()).collect();
+
+        ValuePath { parts }
+    }
+
+    fn part_at(&self, index: usize) -> Option<&str> {
+        self.parts.get(index).map(|s| s.as_ref())
+    }
+
+    fn len(&self) -> usize {
+        self.parts.len()
+    }
+}
+
+fn set_value(object: &mut Map<String, Value>, path: &ValuePath, path_index: usize, value: Value) {
+    match value {
+        // Don't set if the extracted value is null.
+        Value::Null => { /* noop */ }
+        _ => {
+            let part = path.part_at(path_index);
+
+            if let Some(property) = part {
+                if path_index == path.len() - 1 {
+                    // this is the leaf property - set value on the current object in context.
+                    object.insert(property.to_string(), value);
+                } else {
+                    if let Some(next_o) = object
+                        .get_mut(property)
+                        .map(|v| v.as_object_mut())
+                        .flatten()
+                    {
+                        // the next object already exists on the object. recurse.
+                        set_value(next_o, path, path_index + 1, value);
+                    } else {
+                        // this is not the leaf property and the parent object does not exist yet.
+                        // create an object, then recurse.
+                        let next_o = Value::Object(Map::new());
+                        object.insert(property.to_string(), next_o);
+                        set_value(
+                            &mut object.get_mut(property).unwrap().as_object_mut().unwrap(),
+                            path,
+                            path_index + 1,
+                            value,
+                        );
+                    }
+                }
+            }
+
+            // recursion ends when we run out of path parts.
+        }
+    }
+}
+
 pub struct Transformer {
-    transforms: HashMap<String, MessageTransform>,
+    transforms: Vec<(ValuePath, MessageTransform)>,
 }
 
 impl Transformer {
-    pub fn new(transforms: HashMap<String, MessageTransform>) -> Self {
-        Self { transforms }
-    }
-
     pub fn from_transforms(transforms: &HashMap<String, String>) -> Result<Self, TransformError> {
         let transforms = compile_transforms(transforms)?;
 
@@ -190,7 +247,7 @@ impl Transformer {
 
         match value.as_object_mut() {
             Some(map) => {
-                for (property, message_transform) in self.transforms.iter() {
+                for (value_path, message_transform) in self.transforms.iter() {
                     let property_value = match message_transform {
                         MessageTransform::ExpressionTransform(expression) => {
                             let variable = expression.search(&data)?;
@@ -214,7 +271,7 @@ impl Transformer {
                         }
                     };
 
-                    map.insert(property.to_string(), property_value);
+                    set_value(map, value_path, 0, property_value);
                 }
                 Ok(())
             }
@@ -224,7 +281,6 @@ impl Transformer {
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use rdkafka::message::OwnedMessage;
@@ -275,6 +331,37 @@ mod tests {
     }
 
     #[test]
+    fn set_value_sets_recursively() {
+        let mut val = json!(
+            {
+                "name": {
+                    "last": "Doe"
+                },
+            }
+        );
+
+        let new_value_path = ValuePath::from_str("name.first");
+        let new_value = Value::String("John".to_string());
+
+        set_value(
+            &mut val.as_object_mut().unwrap(),
+            &new_value_path,
+            0,
+            new_value,
+        );
+
+        assert_eq!(
+            json!({
+                "name": {
+                    "first": "John",
+                    "last": "Doe"
+                }
+            }),
+            val
+        );
+    }
+
+    #[test]
     fn transforms_with_substr() {
         let mut test_value = json!({
             "name": "A",
@@ -298,9 +385,7 @@ mod tests {
             "substr(modified, `0`, `10`)".to_string(),
         );
 
-        let expressions = compile_transforms(&transforms).unwrap();
-
-        let transformer = Transformer::new(expressions);
+        let transformer = Transformer::from_transforms(&transforms).unwrap();
 
         let _ = transformer
             .transform(&mut test_value, &test_message)
@@ -341,9 +426,7 @@ mod tests {
         );
         transforms.insert("_kafka_topic".to_string(), "kafka.topic".to_string());
 
-        let expressions = compile_transforms(&transforms).unwrap();
-
-        let transformer = Transformer::new(expressions);
+        let transformer = Transformer::from_transforms(&&transforms).unwrap();
 
         let _ = transformer
             .transform(&mut test_value, &test_message)
