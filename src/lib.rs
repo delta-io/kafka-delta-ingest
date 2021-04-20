@@ -626,14 +626,12 @@ impl ValueBuffers {
         let values = self
             .buffers
             .iter_mut()
-            .filter_map(|(partition, buffer)| {
-                if buffer.non_empty() {
-                    let (values, offset) = buffer.consume();
+            .filter_map(|(partition, buffer)| match buffer.consume() {
+                Some((values, offset)) => {
                     partition_offsets.insert(partition.clone(), offset);
                     Some(values)
-                } else {
-                    None
                 }
+                None => None,
             })
             .flatten()
             .collect();
@@ -732,17 +730,15 @@ impl ValueBuffer {
         self.values.clear();
     }
 
-    fn consume(&mut self) -> (Vec<Value>, DataTypeOffset) {
-        let consumed = (
-            std::mem::replace(&mut self.values, vec![]),
-            self.last_offset.unwrap(),
-        );
-        self.last_offset = None;
-        consumed
-    }
-
-    fn non_empty(&self) -> bool {
-        self.last_offset != None
+    fn consume(&mut self) -> Option<(Vec<Value>, DataTypeOffset)> {
+        match self.last_offset {
+            Some(last_offset) => {
+                let consumed = (std::mem::replace(&mut self.values, vec![]), last_offset);
+                self.last_offset = None;
+                Some(consumed)
+            }
+            None => None,
+        }
     }
 }
 
@@ -765,7 +761,7 @@ impl ConsumerContext for Context {
                 info!("Received new partition assignment list");
                 let partitions = partition_vec_from_topic_partition_list(tpl);
                 let partitions = Arc::new(partitions);
-                on_rebalance_assign(self.partition_assignment.clone(), partitions.clone());
+                on_rebalance_assign(self.partition_assignment.clone(), partitions);
             }
             Rebalance::Revoke => {
                 info!("Partition assignments revoked");
