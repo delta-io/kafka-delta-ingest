@@ -167,13 +167,19 @@ pub enum MessageTransform {
     ExpressionTransform(Expression<'static>),
 }
 
-pub struct TransformContext {
+pub struct Transformer {
     transforms: HashMap<String, MessageTransform>,
 }
 
-impl TransformContext {
+impl Transformer {
     pub fn new(transforms: HashMap<String, MessageTransform>) -> Self {
         Self { transforms }
+    }
+
+    pub fn from_transforms(transforms: &HashMap<String, String>) -> Result<Self, TransformError> {
+        let transforms = compile_transforms(transforms)?;
+
+        Ok(Self { transforms })
     }
 
     pub fn transform<M>(&self, value: &mut Value, kafka_message: &M) -> Result<(), TransformError>
@@ -227,6 +233,48 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn substr_returns_will_from_william() {
+        let args = &[
+            Arc::new(Variable::String("William".to_owned())),
+            Arc::new(Variable::Number(
+                serde_json::Number::from_f64(0f64).unwrap(),
+            )),
+            Arc::new(Variable::Number(
+                serde_json::Number::from_f64(4f64).unwrap(),
+            )),
+        ];
+
+        let runtime = Runtime::new();
+        let mut context = Context::new("X", &runtime);
+
+        let s = substr(args, &mut context).unwrap();
+        let s = s.as_string().unwrap().as_str();
+
+        assert_eq!("Will", s);
+    }
+
+    #[test]
+    fn substr_returns_liam_from_william() {
+        let args = &[
+            Arc::new(Variable::String("William".to_owned())),
+            Arc::new(Variable::Number(
+                serde_json::Number::from_f64(3f64).unwrap(),
+            )),
+            Arc::new(Variable::Number(
+                serde_json::Number::from_f64(4f64).unwrap(),
+            )),
+        ];
+
+        let runtime = Runtime::new();
+        let mut context = Context::new("X", &runtime);
+
+        let s = substr(args, &mut context).unwrap();
+        let s = s.as_string().unwrap().as_str();
+
+        assert_eq!("liam", s);
+    }
+
+    #[test]
     fn transforms_with_substr() {
         let mut test_value = json!({
             "name": "A",
@@ -252,7 +300,7 @@ mod tests {
 
         let expressions = compile_transforms(&transforms).unwrap();
 
-        let transformer = TransformContext::new(expressions);
+        let transformer = Transformer::new(expressions);
 
         let _ = transformer
             .transform(&mut test_value, &test_message)
@@ -295,7 +343,7 @@ mod tests {
 
         let expressions = compile_transforms(&transforms).unwrap();
 
-        let transformer = TransformContext::new(expressions);
+        let transformer = Transformer::new(expressions);
 
         let _ = transformer
             .transform(&mut test_value, &test_message)
@@ -317,47 +365,5 @@ mod tests {
         assert_eq!(0i64, kafka_offset);
         assert_eq!(0i64, kafka_partition);
         assert_eq!("test", kafka_topic);
-    }
-
-    #[test]
-    fn substr_returns_will_from_william() {
-        let args = &[
-            Arc::new(Variable::String("William".to_owned())),
-            Arc::new(Variable::Number(
-                serde_json::Number::from_f64(0f64).unwrap(),
-            )),
-            Arc::new(Variable::Number(
-                serde_json::Number::from_f64(4f64).unwrap(),
-            )),
-        ];
-
-        let runtime = Runtime::new();
-        let mut context = Context::new("X", &runtime);
-
-        let s = substr(args, &mut context).unwrap();
-        let s = s.as_string().unwrap().as_str();
-
-        assert_eq!("Will", s);
-    }
-
-    #[test]
-    fn substr_returns_liam_from_william() {
-        let args = &[
-            Arc::new(Variable::String("William".to_owned())),
-            Arc::new(Variable::Number(
-                serde_json::Number::from_f64(3f64).unwrap(),
-            )),
-            Arc::new(Variable::Number(
-                serde_json::Number::from_f64(4f64).unwrap(),
-            )),
-        ];
-
-        let runtime = Runtime::new();
-        let mut context = Context::new("X", &runtime);
-
-        let s = substr(args, &mut context).unwrap();
-        let s = s.as_string().unwrap().as_str();
-
-        assert_eq!("liam", s);
     }
 }
