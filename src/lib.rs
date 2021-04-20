@@ -733,7 +733,10 @@ impl ValueBuffer {
     }
 
     fn consume(&mut self) -> (Vec<Value>, DataTypeOffset) {
-        let consumed = (self.values.drain(0..).collect(), self.last_offset.unwrap());
+        let consumed = (
+            std::mem::replace(&mut self.values, vec![]),
+            self.last_offset.unwrap(),
+        );
         self.last_offset = None;
         consumed
     }
