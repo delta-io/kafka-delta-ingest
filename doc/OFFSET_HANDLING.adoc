@@ -58,8 +58,9 @@ clear()::
     * Within the rebalance revoke handler to clear all partitions. 
 
 NOTE: `update_partition_assignment` is called within the `run_loop` when `ValueBuffers.is_tracking(partition)` is `false` which indicates that the partition of the consumed message within the `run_loop` iteration has not been initialized yet due to a new assignment during rebalance. There are two variant states to handle:
-1. A Delta transaction and WAL entry exist. In this case, the message must be discarded and the consumer must seek to the appropriate offset for the partition. The offset to seek to is indicated by the latest WAL entry.
-2. No Delta transaction has been written to the table yet (i.e. no data has been written to the Delta table). In this case, the message should be buffered since the auto offset reset policy will indicate the appropriate starting offset.
+
+  1. A Delta transaction and WAL entry exist. In this case, the message must be discarded and the consumer must seek to the appropriate offset for the partition. The offset to seek to is indicated by the latest WAL entry.
+  2. No Delta transaction has been written to the table yet (i.e. no data has been written to the Delta table). In this case, the message should be buffered since the auto offset reset policy will indicate the appropriate starting offset.
 
 
 ==== Context
