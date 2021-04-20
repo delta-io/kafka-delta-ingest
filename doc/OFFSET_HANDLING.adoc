@@ -1,0 +1,72 @@
+
+= Offset Handling
+
+== Overview
+
+Kafka consumer groups allow for managed scaling of application workloads. For Kafka Delta Ingest, the application workload amounts to the job of writing all the messages written to a specific topic to a specific Delta Lake table. 
+
+Kafka partitions define the maximum parallelism available to consumer groups. At any given time, no two consumers within a consumer group are assigned the same partition. Each consumer within a consumer group may be assigned more than one partition. If the number of consumers _C_ is greater than the number of partitions _P_, _C_ - _P_ consumers will be completely idle.
+
+When consumers are added or removed from a consumer group, a Kafka rebalance event occurs. Upon rebalance, Kafka revokes a subset of partitions assigned to existing consumers, and assigns them to the newly added consumers - thereby reducing the average number of partitions assigned to each consumer.
+
+The ability to have multiple consumers in a consumer group and handle rebalance events is critical to the scalability of Kafka Delta Ingest. However, it presents an awkward problem to solve since Kafka Delta Ingest spends a significant amount of time _buffering_. 
+
+When a rebalance event occurs and the partitions assigned to a single consumer are _reduced_, a subset of messages buffered by that consumer _must_ *NOT* be written by that consumer since another consumer within the same group will be assigned the same partition and pick up from the last offsets stored in the write ahead log. Ultimately, the consumer should drop those unassigned buffers before writing. 
+
+When a rebalance event occurs and the partitions assigned to a single consumer are _increased_, the consumer will begin receiving messages for _new_ partitions. Before buffering any messages received on newly assigned partitions, the consumer _must_ consult the write ahead log, find the last committed offsets for newly assigned partitions and _seek_ the consumer. Any messages received on newly assigned partitions between the rebalance event and the consumer seek _must_ be ignored (i.e. *NOT* buffered).
+
+== Implementation
+
+=== Pieces and Parts
+
+Unfortunately, you will likely have to read this twice because there are inter-dependencies in the explanation.
+
+==== ValueBuffers
+
+The `ValueBuffers` struct maintains a map from partition to buffer. It provides the following methods:
+
+add(partition, offset, value):: Adds a message to the buffer for the specified partition and stores offset as the last buffered offset for the partition.
+consume() -> ConsumedBuffers:: Returns a `ConsumedBuffers` struct that contains a flattened list of all buffered values and a hashmap containing the latest offset for each partition represented by the flattened list.
+update_partitions(assigned_partitions):: Updates internal state to match the given list of currently assigned partitions. This amounts to dropping any buffers that are no longer assigned, adding any new partitions to the assigned list, and setting the current offset for each currently assigned partition. The `assigned_partitions` parameter defines the partitions and offsets relevant to each mutation. If state is `dirty` (see `mark_dirty`) resets offsets for all partitions, otherwise, only sets offsets for newly assigned partitions.
+is_tracking(partition) -> bool:: Returns a boolean indicating whether internal state is currently aware of the `partition`. This may be used to allow the calling context to avoid locking between rebalance events.
+mark_dirty():: Sets an internal flag indicating that buffers have been consumed once and that external state may require a full reset of internal offsets if a rebalance occurs before the next call to consume. This flag is used by `update_partitions` to decide whether to reset offsets for already tracked partitions, or retain the offsets stored in memory.
+
+NOTE: Since ValueBuffers tracks messages by partition, if the `run_loop` has not written a record batch to the in-memory parquet buffer before discovering revoked partitions, ValueBuffers may drop only the buffers associated with revoked partitions. If a record batch has already been written to the in-memory parquet buffer, all buffers must be dropped, and the consumer must be seeked to the last prior committed offsets for all currently assigned partitions - even those which have already been buffered.
+
+==== PartitionAssignment
+
+The `PartitionAssignment` struct maintains a map from partition to optional offset. The optional offset will be `None` if there is no recorded offset in the write ahead log. In this case, the offset to seek from will be based on the `auto.offset.reset` policy configured in the Kafka consumer. The struct provides the following methods:
+
+update_assignment(partitions):: 
+  Drops partitions that are not in the given assignment. Adds new partitions not currently in the assignment. Called in two places:::
+    * Within `init_offsets` to set the initial partitions before the first iteration of the `run_loop`.
+    * From the rebalance event handler when new partitions are added or removed.
+update_offsets(updated_offsets):: 
+  Updates offsets for all partitions in the current assignment. Logs a warning for any partition not in the current assignment. Called in three places:::
+    * Within `init_offsets` to set the initial offsets before the first iteration of the `run_loop`. 
+    * Within `update_partition_assignment` to set offsets from the most recent WAL entry when processing a message from a partition that is not tracked yet. 
+    * Within `consume_value_buffers` to set offsets to match the consumed `ValueBuffers`.
+assignment() -> map<partition, option<offset>>:: 
+  Returns a reference to the current map of partition to offset. Called in two places:::
+    * Within `init_offsets` to get the current list of partition offsets to seek to. 
+    * Within `update_partition_assignment` to set partitions and offsets for value buffers.
+partition_offsets() -> map<partition, offset>:: 
+  Returns a map of current partitions that have offsets recorded. Called in one place:::
+    * Within `consume_value_buffers` to get the current list of partition offsets that should be stored when data is committed.
+clear():: 
+  Fully clears internal state. After calling `clear`, `PartitionAssignment` will have an empty state. Called in one place:::
+    * Within the rebalance revoke handler to clear all partitions. 
+
+NOTE: `update_partition_assignment` is called within the `run_loop` when `ValueBuffers.is_tracking(partition)` is `false` which indicates that the partition of the consumed message within the `run_loop` iteration has not been initialized yet due to a new assignment during rebalance. There are two variant states to handle:
+1. A Delta transaction and WAL entry exist. In this case, the message must be discarded and the consumer must seek to the appropriate offset for the partition. The offset to seek to is indicated by the latest WAL entry.
+2. No Delta transaction has been written to the table yet (i.e. no data has been written to the Delta table). In this case, the message should be buffered since the auto offset reset policy will indicate the appropriate starting offset.
+
+
+==== Context
+
+The `Context` struct implements the `rdkafka::consumer::ConsumerContext` trait to hook rebalance events. The context instance holds an `Arc<tokio::sync::Mutex<>>` wrapping the same `PartitionAssignment` used in `run_loop`. 
+
+* When handling a rebalance assignment event, it invokes the `PartitionAssignment` `update_assignment` method - passing the current assignment.
+* When handling a rebalance revoke event, it invokes the `PartitionAssignment` `clear` method - which clears all partitions from the current partition assignment.
+
+Since rebalance events are handled on a separate thread from the run loop and the consumer is not seekable in the rebalance context, the `run_loop` must handle buffer synchronization and consumer seek when it discovers a change in partition assignments due to a rebalance event.
