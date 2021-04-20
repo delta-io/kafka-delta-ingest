@@ -17,10 +17,6 @@ When a rebalance event occurs and the partitions assigned to a single consumer a
 
 == Implementation
 
-=== Pieces and Parts
-
-Unfortunately, you will likely have to read this twice because there are inter-dependencies in the explanation.
-
 ==== ValueBuffers
 
 The `ValueBuffers` struct maintains a map from partition to buffer. It provides the following methods:
