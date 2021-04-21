@@ -212,13 +212,13 @@ fn set_value(object: &mut Map<String, Value>, path: &ValuePath, path_index: usiz
                         // this is not the leaf property and the parent object does not exist yet.
                         // create an object, then recurse.
                         let next_o = Value::Object(Map::new());
-                        object.insert(property.to_string(), next_o);
                         set_value(
-                            &mut object.get_mut(property).unwrap().as_object_mut().unwrap(),
+                            &mut next_o,
                             path,
                             path_index + 1,
                             value,
                         );
+                        object.insert(property.to_string(), next_o);
                     }
                 }
             }
