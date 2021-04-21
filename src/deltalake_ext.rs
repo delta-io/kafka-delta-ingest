@@ -11,13 +11,14 @@ use deltalake::{
     DeltaDataTypeVersion, DeltaTable, DeltaTableError, DeltaTransactionError, Schema,
     StorageBackend, StorageError, UriError,
 };
-use log::{debug, info};
+use log::{debug, info, warn};
 use parquet::{
     arrow::ArrowWriter,
     basic::Compression,
     errors::ParquetError,
     file::{properties::WriterProperties, writer::InMemoryWriteableCursor},
 };
+use parquet_format::FileMetaData;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::convert::TryFrom;
@@ -168,9 +169,6 @@ impl DeltaWriter {
         // TODO: Verify that this RecordBatch contains partition values that agree with previous partition values (if any) for the current writer context
         self.partition_values = partition_values;
 
-        // TODO: collect/update column stats
-        // @nevi-me makes a fantastic recommendation to expose stats from the parquet crate if possible in https://github.com/delta-io/kafka-delta-ingest/pull/1#discussion_r585878860
-
         // write the record batch to the held arrow writer
         self.arrow_writer.write(record_batch)?;
 
@@ -193,8 +191,7 @@ impl DeltaWriter {
     ) -> Result<DeltaDataTypeVersion, DeltaWriterError> {
         info!("Writing parquet file.");
 
-        // Close the arrow writer to flush remaining bytes and write the parquet footer
-        self.arrow_writer.close()?;
+        let metadata = self.arrow_writer.close()?;
 
         let path = self.next_data_path(&self.partition_columns, &self.partition_values)?;
 
@@ -233,6 +230,37 @@ impl DeltaWriter {
         info!("Committed Delta version {}", version);
 
         Ok(version)
+    }
+
+    pub fn stats_from_metadata(metadata: &FileMetaData) -> Stats {
+        let min_values = HashMap::new();
+        let max_values = HashMap::new();
+        let null_count = HashMap::new();
+
+        for row_group in metadata.row_groups.iter() {
+            for column in row_group.columns.iter() {
+                let statistics = column
+                    .meta_data
+                    .as_ref()
+                    .map(|m| m.statistics.as_ref())
+                    .flatten();
+
+                if let Some(stats) = statistics {
+                    todo!()
+                } else {
+                    warn!("Empty statistics in parquet file metadata.");
+                }
+            }
+        }
+
+        let stats = Stats {
+            numRecords: metadata.num_rows,
+            minValues: min_values,
+            maxValues: max_values,
+            nullCount: null_count,
+        };
+
+        todo!()
     }
 
     fn reset(&mut self) -> Result<(), DeltaWriterError> {
