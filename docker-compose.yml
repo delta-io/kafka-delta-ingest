@@ -9,7 +9,7 @@ services:
       - "9092:9092"
     environment:
       KAFKA_ADVERTISED_HOST_NAME: localhost
-      KAFKA_CREATE_TOPICS: "example:3:1"
+      KAFKA_CREATE_TOPICS: "example:3:1,web_requests:3:1"
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
     healthcheck:
       test: ["CMD", "bash", "-c", "unset", "JMX_PORT", ";", "kafka-topics.sh", "--zookeeper", "zookeeper:2181", "--list"]
