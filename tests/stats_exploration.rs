@@ -10,10 +10,11 @@ use parquet::{
         statistics::Statistics,
         writer::InMemoryWriteableCursor,
     },
-    schema::types::{ColumnDescriptor, SchemaDescriptor},
+    schema::types::{ColumnDescriptor, ColumnPath, SchemaDescriptor},
 };
 use parquet_format::FileMetaData;
 use serde_json::{json, Number, Value};
+use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::sync::Arc;
 
@@ -48,6 +49,10 @@ fn handle_file_metadata(file_metadata: &FileMetaData) {
     let schema_descriptor = schema_descriptor_from_file_metadata(file_metadata).unwrap();
     let leaves = schema_descriptor.columns();
 
+    let mut null_counts: HashMap<ColumnPath, u64> = HashMap::new();
+    let mut max_values: HashMap<ColumnPath, Value> = HashMap::new();
+    let mut min_values: HashMap<ColumnPath, Value> = HashMap::new();
+
     for row_group in file_metadata.row_groups.iter() {
         let rg =
             RowGroupMetaData::from_thrift(schema_descriptor.clone(), row_group.clone()).unwrap();
@@ -56,35 +61,79 @@ fn handle_file_metadata(file_metadata: &FileMetaData) {
             let column_metadata = rg.column(i);
             let column_descr_ptr = leaves[i].clone();
 
-            let column = &row_group.columns[i];
+            println!(
+                "Column path: {}, Physical type: {}, Logical type: {:?}, Max rep level: {}, max def level: {}",
+                column_metadata.column_path(),
+                column_descr_ptr.physical_type(),
+                column_descr_ptr.logical_type(),
+                column_descr_ptr.max_rep_level(),
+                column_descr_ptr.max_def_level(),
+            );
 
             if let Some(statistics) = column_metadata.statistics() {
-                handle_column(column_metadata, column_descr_ptr);
+                let column_path = column_metadata.column_path();
+
+                if statistics.has_min_max_set() {
+                    let (min, max) = stats_as_tuple(statistics, column_descr_ptr.clone());
+
+                    println!("min: {}, max: {}", min, max);
+
+                    if let Some(v) = max_values.get_mut(column_path) {
+                        match lhs_greater(&max, v) {
+                            Ok(maybe) if maybe => {
+                                *v = max;
+                            }
+                            Err(s) => {
+                                println!("{}", s);
+                            }
+                            _ => { /* noop */ }
+                        }
+                    } else {
+                        max_values.insert(column_path.clone(), max);
+                    }
+
+                    if let Some(v) = min_values.get_mut(column_path) {
+                        match lhs_greater(v, &min) {
+                            Ok(maybe) if maybe => {
+                                *v = min;
+                            }
+                            Err(s) => {
+                                println!("{}", s);
+                            }
+                            _ => { /* noop */ }
+                        }
+                    } else {
+                        min_values.insert(column_path.clone(), min);
+                    }
+
+                    if let Some(v) = null_counts.get_mut(column_path) {
+                        *v += statistics.null_count();
+                    } else {
+                        null_counts.insert(column_path.clone(), statistics.null_count());
+                    }
+                }
+
+                println!("null count: {}", statistics.null_count());
             }
         }
+    }
 
-        break;
+    println!("Max values:");
+    for (k, v) in max_values.iter() {
+        println!("{} -> {:?}", k, v);
+    }
+
+    println!("Min values:");
+    for (k, v) in min_values.iter() {
+        println!("{} -> {:?}", k, v);
+    }
+
+    println!("Null counts:");
+    for (k, v) in null_counts.iter() {
+        println!("{} -> {:?}", k, v);
     }
 }
 
-fn handle_column(column_metadata: &ColumnChunkMetaData, column_descr: Arc<ColumnDescriptor>) {
-    println!(
-        "Column path: {}, Physical type: {}, Logical type: {:?}",
-        column_metadata.column_path(),
-        column_descr.physical_type(),
-        column_descr.logical_type(),
-    );
-
-    if let Some(statistics) = column_metadata.statistics() {
-        if statistics.has_min_max_set() {
-            let (min, max) = stats_as_tuple(statistics, column_descr.clone());
-
-            println!("min: {}, max: {}", min, max);
-        }
-
-        println!("null count: {}", statistics.null_count());
-    }
-}
 fn stats_as_tuple(statistics: &Statistics, column_descr: Arc<ColumnDescriptor>) -> (Value, Value) {
     match statistics {
         Statistics::Int32(typed_stats) => {
@@ -145,6 +194,24 @@ fn is_utf8(opt: Option<LogicalType>) -> bool {
     match opt.as_ref() {
         Some(LogicalType::STRING(_)) => true,
         _ => false,
+    }
+}
+
+fn lhs_greater(lhs: &Value, rhs: &Value) -> Result<bool, String> {
+    match (lhs, rhs) {
+        (Value::Null, Value::Null) => Ok(false),
+        (Value::String(lhs), Value::String(rhs)) => Ok(lhs > rhs),
+        (Value::Number(lhs), Value::Number(rhs)) if lhs.is_u64() && rhs.is_u64() => {
+            Ok(lhs.as_u64() > rhs.as_u64())
+        }
+        (Value::Number(lhs), Value::Number(rhs)) if lhs.is_i64() && rhs.is_i64() => {
+            Ok(lhs.as_i64() > rhs.as_i64())
+        }
+        (Value::Number(lhs), Value::Number(rhs)) if lhs.is_f64() && rhs.is_f64() => {
+            Ok(lhs.as_f64() > rhs.as_f64())
+        }
+        (Value::Bool(lhs), Value::Bool(rhs)) => Ok(lhs > rhs),
+        _ => Err("Could not compare values".to_string()),
     }
 }
 
@@ -323,7 +390,6 @@ fn some_data() -> Vec<Value> {
                 "value": "tuv",
             }],
             "some_string": "hello world",
-            "some_int": 42,
             "some_long": 99i64,
             "some_float": 3.141f32,
             "some_double": 3.141f64,
