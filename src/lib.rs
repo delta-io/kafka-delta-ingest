@@ -21,7 +21,7 @@ use std::time::Instant;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-mod deltalake_ext;
+pub mod deltalake_ext;
 mod transforms;
 pub mod write_ahead_log;
 
