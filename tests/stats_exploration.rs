@@ -1,4 +1,11 @@
-use arrow::datatypes::Schema as ArrowSchema;
+use arrow::{
+    array::{
+        as_boolean_array, as_primitive_array, make_array, ArrayData, ArrayRef, BooleanArray,
+        BooleanBufferBuilder, StringBuilder,
+    },
+    buffer::MutableBuffer,
+    datatypes::{DataType, Field, Schema as ArrowSchema},
+};
 use deltalake::Schema;
 use kafka_delta_ingest::deltalake_ext::record_batch_from_json;
 use parquet::{
@@ -42,7 +49,331 @@ async fn inspect_parquet() {
 
     let file_metadata = arrow_writer.close().unwrap();
 
-    handle_file_metadata(&file_metadata);
+    // handle_file_metadata(&file_metadata);
+    handle_file_metadata2(&file_metadata);
+}
+
+fn handle_file_metadata2(file_metadata: &FileMetaData) {
+    let schema_descriptor = schema_descriptor_from_file_metadata(file_metadata).unwrap();
+    let row_group_metadata: Vec<RowGroupMetaData> = file_metadata
+        .row_groups
+        .iter()
+        .map(|rg| RowGroupMetaData::from_thrift(schema_descriptor.clone(), rg.clone()).unwrap())
+        .collect();
+    for i in 0..schema_descriptor.num_columns() {
+        let column_descr = schema_descriptor.column(i);
+        let statistics: Vec<&Statistics> = row_group_metadata
+            .iter()
+            .filter_map(|g| g.column(i).statistics())
+            .collect();
+
+        // let (min, max) = stats_min_and_max(&statistics, column_descr.clone());
+        let (min, max) = stats_min_and_max2(&statistics, column_descr.clone());
+
+        let null_count: u64 = statistics.iter().map(|s| s.null_count()).sum();
+
+        println!("Stats for column {:?}", column_descr.path());
+        println!("Min: {:?}, Max: {:?}", min, max);
+        println!("Null count {}", null_count);
+    }
+}
+
+fn stats_min_and_max2(
+    statistics: &[&Statistics],
+    column_descr: Arc<ColumnDescriptor>,
+) -> (Option<Value>, Option<Value>) {
+    let stats_with_min_max: Vec<&Statistics> = statistics
+        .iter()
+        .filter(|s| s.has_min_max_set())
+        .map(|s| *s)
+        .collect();
+
+    if stats_with_min_max.len() == 0 {
+        return (None, None);
+    }
+
+    match stats_with_min_max.first() {
+        Some(Statistics::ByteArray(_)) if is_utf8(column_descr.logical_type()) => {
+            min_and_max_for_string(&stats_with_min_max)
+        }
+        Some(Statistics::ByteArray(_)) => {
+            panic!();
+        }
+        Some(Statistics::FixedLenByteArray(_)) => {
+            panic!();
+        }
+        Some(stats) => min_and_max_for_primitive(*stats, &stats_with_min_max),
+        _ => {
+            panic!();
+        }
+    }
+}
+
+fn min_and_max_for_string(stats_with_min_max: &Vec<&Statistics>) -> (Option<Value>, Option<Value>) {
+    let min_strings = stats_with_min_max
+        .iter()
+        .filter_map(|s| std::str::from_utf8(s.min_bytes()).ok());
+
+    let min_string = min_strings.min();
+    let min_value = min_string.map(|s| Value::String(s.to_string()));
+
+    let max_strings = stats_with_min_max
+        .iter()
+        .filter_map(|s| std::str::from_utf8(s.max_bytes()).ok());
+
+    let max_string = max_strings.max();
+    let max_value = max_string.map(|s| Value::String(s.to_string()));
+
+    return (min_value, max_value);
+}
+
+fn min_and_max_for_primitive(
+    type_sample: &Statistics,
+    stats_with_min_max: &Vec<&Statistics>,
+) -> (Option<Value>, Option<Value>) {
+    match type_sample {
+        Statistics::Int32(_) => {
+            let typed = stats_with_min_max.iter().map(|s| match s {
+                Statistics::Int32(typed) => (Some(typed.min()), Some(typed.max())),
+                _ => (None, None),
+            });
+            let min = typed
+                .clone()
+                .filter_map(|(min, _)| min)
+                .min()
+                .map(|min| Value::Number(Number::from(*min)));
+
+            let max = typed
+                .filter_map(|(_, max)| max)
+                .max()
+                .map(|max| Value::Number(Number::from(*max)));
+
+            (min, max)
+        }
+        Statistics::Int64(_) => {
+            let typed = stats_with_min_max.iter().map(|s| match s {
+                Statistics::Int64(typed) => (Some(typed.min()), Some(typed.max())),
+                _ => (None, None),
+            });
+            let min = typed
+                .clone()
+                .filter_map(|(min, _)| min)
+                .min()
+                .map(|min| Value::Number(Number::from(*min)));
+
+            let max = typed
+                .filter_map(|(_, max)| max)
+                .max()
+                .map(|max| Value::Number(Number::from(*max)));
+
+            (min, max)
+        }
+        Statistics::Int96(_) => {
+            panic!()
+        }
+        Statistics::Float(_) => {
+            let typed = stats_with_min_max.iter().map(|s| match s {
+                Statistics::Float(typed) => (Some(typed.min()), Some(typed.max())),
+                _ => (None, None),
+            });
+            let min = typed
+                .clone()
+                .filter_map(|(min, _)| min)
+                .fold(f32::INFINITY, |a, &b| a.min(b));
+            let min = Number::from_f64(min as f64).map(|n| Value::Number(n));
+
+            let max = typed
+                .filter_map(|(_, max)| max)
+                .fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+            let max = Number::from_f64(max as f64).map(|n| Value::Number(n));
+
+            (min, max)
+        }
+        Statistics::Double(_) => {
+            let typed = stats_with_min_max.iter().map(|s| match s {
+                Statistics::Double(typed) => (Some(typed.min()), Some(typed.max())),
+                _ => (None, None),
+            });
+            let min = typed
+                .clone()
+                .filter_map(|(min, _)| min)
+                .fold(f64::INFINITY, |a, &b| a.min(b));
+            let min = Number::from_f64(min).map(|n| Value::Number(n));
+
+            let max = typed
+                .clone()
+                .filter_map(|(_, max)| max)
+                .fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+            let max = Number::from_f64(max).map(|n| Value::Number(n));
+
+            (min, max)
+        }
+        Statistics::Boolean(_) => {
+            let typed = stats_with_min_max.iter().map(|s| match s {
+                Statistics::Boolean(typed) => (Some(typed.min()), Some(typed.max())),
+                _ => (None, None),
+            });
+            let min = typed
+                .clone()
+                .filter_map(|(min, _)| min)
+                .min()
+                .map(|min| Value::Bool(*min));
+
+            let max = typed
+                .filter_map(|(_, max)| max)
+                .max()
+                .map(|max| Value::Bool(*max));
+
+            (min, max)
+        }
+        _ => {
+            panic!();
+        }
+    }
+}
+
+fn stats_min_and_max(
+    statistics: &[&Statistics],
+    column_descr: Arc<ColumnDescriptor>,
+) -> (Option<Value>, Option<Value>) {
+    let stats_with_min_max: Vec<&Statistics> = statistics
+        .iter()
+        .filter(|s| s.has_min_max_set())
+        .map(|s| *s)
+        .collect();
+
+    if stats_with_min_max.len() == 0 {
+        return (None, None);
+    }
+
+    let (data_size, data_type) = match stats_with_min_max.first() {
+        Some(Statistics::Boolean(_)) => (std::mem::size_of::<bool>(), DataType::Boolean),
+        Some(Statistics::Int32(_)) => (std::mem::size_of::<i32>(), DataType::Int32),
+        Some(Statistics::Int64(_)) => (std::mem::size_of::<i64>(), DataType::Int64),
+        Some(Statistics::Float(_)) => (std::mem::size_of::<f32>(), DataType::Float32),
+        Some(Statistics::Double(_)) => (std::mem::size_of::<f64>(), DataType::Float64),
+        Some(Statistics::ByteArray(_)) if is_utf8(column_descr.logical_type()) => {
+            (0, DataType::Utf8)
+        }
+        Some(Statistics::ByteArray(_)) => {
+            panic!();
+        }
+        Some(Statistics::FixedLenByteArray(_)) => {
+            panic!();
+        }
+        Some(Statistics::Int96(_)) => {
+            panic!();
+        }
+        None => {
+            panic!();
+        }
+    };
+
+    if data_type == DataType::Utf8 {
+        return min_and_max_for_string(&stats_with_min_max);
+    }
+
+    let mut min_buffer = MutableBuffer::new(stats_with_min_max.len() * data_size);
+    let mut max_buffer = MutableBuffer::new(stats_with_min_max.len() * data_size);
+
+    for (min_bytes, max_bytes) in stats_with_min_max
+        .iter()
+        .map(|s| (s.min_bytes(), s.max_bytes()))
+    {
+        min_buffer.extend_from_slice(min_bytes);
+        max_buffer.extend_from_slice(max_bytes);
+    }
+
+    let mut min_builder = ArrayData::builder(data_type.clone())
+        .len(stats_with_min_max.len())
+        .add_buffer(min_buffer.into());
+    let min_data = min_builder.build();
+    let min_array = make_array(min_data);
+
+    let mut max_builder = ArrayData::builder(data_type.clone())
+        .len(stats_with_min_max.len())
+        .add_buffer(max_buffer.into());
+    let max_data = max_builder.build();
+    let max_array = make_array(max_data);
+
+    if data_type == DataType::Boolean {
+        let min_array = as_boolean_array(&min_array);
+        let min = arrow::compute::min_boolean(min_array);
+        let min = min.map(|b| Value::Bool(b));
+
+        let max_array = as_boolean_array(&max_array);
+        let max = arrow::compute::max_boolean(max_array);
+        let max = max.map(|b| Value::Bool(b));
+
+        return (min, max);
+    }
+
+    match data_type {
+        DataType::Int32 => {
+            let min_array = as_primitive_array::<arrow::datatypes::Int32Type>(&min_array);
+            let min = arrow::compute::min(min_array);
+            let min = min.map(|i| Value::Number(Number::from(i)));
+
+            let max_array = as_primitive_array::<arrow::datatypes::Int32Type>(&max_array);
+            let max = arrow::compute::max(max_array);
+            let max = max.map(|i| Value::Number(Number::from(i)));
+
+            (min, max)
+        }
+        DataType::Int64 => {
+            let min_array = as_primitive_array::<arrow::datatypes::Int64Type>(&min_array);
+            let min = arrow::compute::min(min_array);
+            let min = min.map(|i| Value::Number(Number::from(i)));
+
+            let max_array = as_primitive_array::<arrow::datatypes::Int64Type>(&max_array);
+            let max = arrow::compute::max(max_array);
+            let max = max.map(|i| Value::Number(Number::from(i)));
+
+            (min, max)
+        }
+        DataType::Float32 => {
+            let min_array = as_primitive_array::<arrow::datatypes::Float32Type>(&min_array);
+            let min = arrow::compute::min(min_array);
+            let min = min
+                .map(|f| Number::from_f64(f as f64).map(|n| Value::Number(n)))
+                .flatten();
+
+            let max_array = as_primitive_array::<arrow::datatypes::Float32Type>(&max_array);
+            let max = arrow::compute::max(max_array);
+            let max = max
+                .map(|f| Number::from_f64(f as f64).map(|n| Value::Number(n)))
+                .flatten();
+
+            (min, max)
+        }
+        DataType::Float64 => {
+            let min_array = as_primitive_array::<arrow::datatypes::Float64Type>(&min_array);
+            let min = arrow::compute::min(min_array);
+            let min = min
+                .map(|f| Number::from_f64(f).map(|n| Value::Number(n)))
+                .flatten();
+
+            let max_array = as_primitive_array::<arrow::datatypes::Float64Type>(&max_array);
+            let max = arrow::compute::max(max_array);
+            let max = max
+                .map(|f| Number::from_f64(f).map(|n| Value::Number(n)))
+                .flatten();
+
+            (min, max)
+        }
+        _ => {
+            panic!();
+        }
+    }
+
+    // let stats_min_bytes = stats_with_min_max.iter().map(|s| s.min_bytes());
+
+    // let stats_max_bytes = stats_with_min_max.iter().map(|s| s.min_bytes());
+
+    // todo!()
+    // arrow::compute::min(
+    // arrow::compute::min_string(
+    // arrow::compute::min_boolean(
 }
 
 fn handle_file_metadata(file_metadata: &FileMetaData) {
