@@ -15,6 +15,7 @@ jmespatch = { version = "0.3", features = ["sync"] }
 lazy_static = "1"
 log = "0"
 maplit = "1"
+# Version of parquet-format from https://github.com/apache/arrow-rs/blob/486524733639d3c9e60e44bb07a65c628958b7b6/parquet/Cargo.toml#L34
 parquet-format = "~2.6.1"
 rdkafka = "0.26"
 rusoto_core = { version = "0.46" }
