@@ -172,7 +172,8 @@ fn example_arrow_schema_from_json() -> Arc<ArrowSchema> {
       "metadata": {}
     }
     );
-    todo!()
+
+    Arc::new(ArrowSchema::from(&schema_json).unwrap())
 }
 
 fn example_delta_schema() -> DeltaSchema {
