@@ -24,6 +24,9 @@ fn inspect_parquet_footer() {
 
     let file_metadata = arrow_writer.close().unwrap();
 
+    // write out file for inspection
+    std::fs::write("../parquet_footer_test.parquet", cursor.data()).unwrap();
+
     for rg in file_metadata.row_groups.iter() {
         for c in rg.columns.iter() {
             let metadata = c.meta_data.as_ref().unwrap();
