@@ -31,9 +31,7 @@ tokio-util = "0.6.3"
 uuid = { version = "0.8", features = ["serde", "v4"] }
 
 arrow = { version = "4" }
-# arrow  = { git = "https://github.com/apache/arrow.git", rev = "9c1e5bd19347635ea9f373bcf93f2cea0231d50a" }
 deltalake = { git = "https://github.com/delta-io/delta-rs.git", rev = "83b8296fa5d55ebe050b022ed583dc57152221fe" }
-# parquet = { git = "https://github.com/apache/arrow.git", rev = "9c1e5bd19347635ea9f373bcf93f2cea0231d50a" }
 parquet = { version = "4" }
 
 [dev-dependencies]
