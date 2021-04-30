@@ -1,19 +1,33 @@
 use arrow::{datatypes::Schema as ArrowSchema, error::ArrowError, json::reader::Decoder};
 use deltalake::Schema as DeltaSchema;
-use parquet::{arrow::ArrowWriter, file::writer::InMemoryWriteableCursor};
+use parquet::{
+    arrow::ArrowWriter,
+    file::{
+        metadata::RowGroupMetaData, properties::WriterProperties, writer::InMemoryWriteableCursor,
+    },
+    schema::types::SchemaDescriptor,
+};
 use serde_json::{json, Value};
-use std::convert::TryFrom;
 use std::sync::Arc;
 
 #[test]
 fn inspect_parquet_footer() {
-    // let arrow_schema = example_arrow_schema_from_delta();
+    // Deserialize an arrow schema from a JSON representation.
     let arrow_schema = example_arrow_schema_from_json();
 
     let cursor = InMemoryWriteableCursor::default();
 
-    let mut arrow_writer =
-        ArrowWriter::try_new(cursor.clone(), arrow_schema.clone(), None).unwrap();
+    // stats enabled is defaulted to true, but just to be explicit...
+    let writer_properties = WriterProperties::builder()
+        .set_statistics_enabled(true)
+        .build();
+
+    let mut arrow_writer = ArrowWriter::try_new(
+        cursor.clone(),
+        arrow_schema.clone(),
+        Some(writer_properties),
+    )
+    .unwrap();
 
     let json_data = example_data();
     let mut json_iter = InMemValueIter::from_vec(json_data.as_slice());
@@ -24,8 +38,22 @@ fn inspect_parquet_footer() {
 
     let file_metadata = arrow_writer.close().unwrap();
 
-    // write out file for inspection
+    //
+    // write out file for external inspection with other tools
+    //
+
     std::fs::write("../parquet_footer_test.parquet", cursor.data()).unwrap();
+
+    //
+    // Check min/max stats in memory...
+    //
+    // when checking FileMetaData in memory, I can see min/max stats for everything but the list type fields.
+    // however, when reading the file back in with spark-shell, parquet-tools or pyarrow, there is bigger trouble
+    // 1. has min max is false for _all_ columns according to pyarrow (weird...? i saw they were
+    //    set in memory for non-list)
+    // 2. the parquet file appears to be corrupted. on a `show` - both spark-shell and parquet-tools throw exception for index of max level and is unable to present any data.
+
+    println!("## Thrift meta");
 
     for rg in file_metadata.row_groups.iter() {
         for c in rg.columns.iter() {
@@ -41,13 +69,31 @@ fn inspect_parquet_footer() {
             }
         }
     }
-}
 
-fn example_arrow_schema_from_delta() -> Arc<ArrowSchema> {
-    let delta_schema = example_delta_schema();
-    let arrow_schema = <ArrowSchema as TryFrom<&DeltaSchema>>::try_from(&delta_schema).unwrap();
+    let type_ = parquet::schema::types::from_thrift(file_metadata.schema.as_slice()).unwrap();
+    let schema_descriptor = Arc::new(SchemaDescriptor::new(type_));
 
-    Arc::new(arrow_schema)
+    println!();
+
+    println!("## Parquet meta");
+
+    let rg_metas = file_metadata
+        .row_groups
+        .iter()
+        .map(|rg| RowGroupMetaData::from_thrift(schema_descriptor.clone(), rg.clone()).unwrap());
+
+    for rg_meta in rg_metas {
+        for c in rg_meta.columns() {
+            println!("Path: {:?}", c.column_path());
+            let stats = c.statistics().unwrap();
+
+            if stats.has_min_max_set() {
+                println!("Has min/max");
+            } else {
+                println!("NO min/max");
+            }
+        }
+    }
 }
 
 fn example_arrow_schema_from_json() -> Arc<ArrowSchema> {
@@ -177,103 +223,6 @@ fn example_arrow_schema_from_json() -> Arc<ArrowSchema> {
     );
 
     Arc::new(ArrowSchema::from(&schema_json).unwrap())
-}
-
-fn example_delta_schema() -> DeltaSchema {
-    let schema_json = json!({
-      "type": "struct",
-      "fields": [
-        {
-          "name": "some_nested_object",
-          "type": {
-            "type": "struct",
-            "fields": [
-              {
-                "name": "kafka",
-                "type": {
-                  "type": "struct",
-                  "fields": [
-                    {
-                      "name": "offset",
-                      "type": "long",
-                      "nullable": true,
-                      "metadata": {}
-                    },
-                    {
-                      "name": "topic",
-                      "type": "string",
-                      "nullable": true,
-                      "metadata": {}
-                    },
-                    {
-                      "name": "partition",
-                      "type": "integer",
-                      "nullable": true,
-                      "metadata": {}
-                    }
-                  ]
-                },
-                "nullable": true,
-                "metadata": {}
-              }
-            ]
-          },
-          "nullable": true,
-          "metadata": {}
-        },
-        {
-          "name": "some_int_array",
-          "type": {
-            "type": "array",
-            "elementType": "integer",
-            "containsNull": false
-          },
-          "nullable": true,
-          "metadata": {}
-        },
-        {
-          "name": "some_struct_array",
-          "type": {
-            "type": "array",
-            "elementType": {
-              "type": "struct",
-              "fields": [
-                {
-                  "name": "id",
-                  "type": "string",
-                  "nullable": true,
-                  "metadata": {}
-                },
-                {
-                  "name": "value",
-                  "type": "string",
-                  "nullable": true,
-                  "metadata": {}
-                }
-              ]
-            },
-            "containsNull": false
-          },
-          "nullable": true,
-          "metadata": {}
-        },
-        {
-          "name": "some_string",
-          "type": "string",
-          "nullable": true,
-          "metadata": {}
-        },
-        {
-          "name": "some_int",
-          "type": "integer",
-          "nullable": true,
-          "metadata": {}
-        },
-      ]
-    });
-
-    let schema_string = serde_json::to_string(&schema_json).unwrap();
-    serde_json::from_str(&&schema_string).unwrap()
 }
 
 fn example_data() -> Vec<Value> {
