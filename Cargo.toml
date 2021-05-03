@@ -15,6 +15,7 @@ jmespatch = { version = "0.3", features = ["sync"] }
 lazy_static = "1"
 log = "0"
 maplit = "1"
+parquet-format = "~2.6.1"
 rdkafka = "0.26"
 rusoto_core = { version = "0.46" }
 rusoto_credential = { version = "0.46" }
@@ -28,10 +29,11 @@ tokio-stream = { version = "0", features = ["fs"] }
 tokio-util = "0.6.3"
 uuid = { version = "0.8", features = ["serde", "v4"] }
 
-arrow  = { git = "https://github.com/apache/arrow.git", rev = "05b36567bd8216bec71b796fe3bb6811c71abbec" }
-deltalake = { git = "https://github.com/delta-io/delta-rs.git", rev = "9cb718f64aa8abfdb00a1163bb400a3949c208a3" }
-parquet = { git = "https://github.com/apache/arrow.git", rev = "05b36567bd8216bec71b796fe3bb6811c71abbec" }
+arrow  = { git = "https://github.com/apache/arrow.git", rev = "9c1e5bd19347635ea9f373bcf93f2cea0231d50a" }
+deltalake = { git = "https://github.com/delta-io/delta-rs.git", rev = "38e5821b3a06db43e59c1dcca18eae818e11dd44" }
+parquet = { git = "https://github.com/apache/arrow.git", rev = "9c1e5bd19347635ea9f373bcf93f2cea0231d50a" }
 
 [dev-dependencies]
 utime = "0.3"
 serial_test = "*"
+

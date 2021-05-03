@@ -45,7 +45,7 @@ checksum = "23b62fc65de8e4e7f52534fb52b0f3ed04746ae267519eef2a83941e8085068b"
 [[package]]
 name = "arrow"
 version = "4.0.0-SNAPSHOT"
-source = "git+https://github.com/apache/arrow.git?rev=05b36567bd8216bec71b796fe3bb6811c71abbec#05b36567bd8216bec71b796fe3bb6811c71abbec"
+source = "git+https://github.com/apache/arrow.git?rev=9c1e5bd19347635ea9f373bcf93f2cea0231d50a#9c1e5bd19347635ea9f373bcf93f2cea0231d50a"
 dependencies = [
  "cfg_aliases",
  "chrono",
@@ -314,7 +314,7 @@ dependencies = [
 [[package]]
 name = "deltalake"
 version = "0.2.1"
-source = "git+https://github.com/delta-io/delta-rs.git?rev=9cb718f64aa8abfdb00a1163bb400a3949c208a3#9cb718f64aa8abfdb00a1163bb400a3949c208a3"
+source = "git+https://github.com/delta-io/delta-rs.git?rev=38e5821b3a06db43e59c1dcca18eae818e11dd44#38e5821b3a06db43e59c1dcca18eae818e11dd44"
 dependencies = [
  "anyhow",
  "arrow",
@@ -795,6 +795,7 @@ dependencies = [
  "log",
  "maplit",
  "parquet",
+ "parquet-format",
  "rdkafka",
  "rusoto_core",
  "rusoto_credential",
@@ -1159,7 +1160,7 @@ dependencies = [
 [[package]]
 name = "parquet"
 version = "4.0.0-SNAPSHOT"
-source = "git+https://github.com/apache/arrow.git?rev=05b36567bd8216bec71b796fe3bb6811c71abbec#05b36567bd8216bec71b796fe3bb6811c71abbec"
+source = "git+https://github.com/apache/arrow.git?rev=9c1e5bd19347635ea9f373bcf93f2cea0231d50a#9c1e5bd19347635ea9f373bcf93f2cea0231d50a"
 dependencies = [
  "arrow",
  "base64 0.12.3",
@@ -1380,9 +1381,9 @@ dependencies = [
 
 [[package]]
 name = "rdkafka"
-version = "0.25.0"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8acd8f5c5482fdf89e8878227bafa442d8c4409f6287391c85549ca83626c27"
+checksum = "af78bc431a82ef178c4ad6db537eb9cc25715a8591d27acc30455ee7227a76f4"
 dependencies = [
  "futures",
  "libc",
@@ -1397,9 +1398,9 @@ dependencies = [
 
 [[package]]
 name = "rdkafka-sys"
-version = "3.0.0+1.6.0"
+version = "4.0.0+1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca35e95c88e08cdc643b25744e38ccee7c93c7e90d1ac6850fe74cbaa40803c3"
+checksum = "54f24572851adfeb525fdc4a1d51185898e54fed4e8d8dba4fadb90c6b4f0422"
 dependencies = [
  "libc",
  "libz-sys",
@@ -2249,18 +2250,18 @@ checksum = "81a974bcdd357f0dca4d41677db03436324d45a4c9ed2d0b873a5a360ce41c36"
 
 [[package]]
 name = "zstd"
-version = "0.6.1+zstd.1.4.9"
+version = "0.7.0+zstd.1.4.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5de55e77f798f205d8561b8fe2ef57abfb6e0ff2abe7fd3c089e119cdb5631a3"
+checksum = "9428752481d8372e15b1bf779ea518a179ad6c771cca2d2c60e4fbff3cc2cd52"
 dependencies = [
  "zstd-safe",
 ]
 
 [[package]]
 name = "zstd-safe"
-version = "3.0.1+zstd.1.4.9"
+version = "3.1.0+zstd.1.4.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1387cabcd938127b30ce78c4bf00b30387dddf704e3f0881dbc4ff62b5566f8c"
+checksum = "5aa1926623ad7fe406e090555387daf73db555b948134b4d73eac5eb08fb666d"
 dependencies = [
  "libc",
  "zstd-sys",
@@ -2268,9 +2269,9 @@ dependencies = [
 
 [[package]]
 name = "zstd-sys"
-version = "1.4.20+zstd.1.4.9"
+version = "1.5.0+zstd.1.4.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ebd5b733d7cf2d9447e2c3e76a5589b4f5e5ae065c22a2bc0b023cbc331b6c8e"
+checksum = "4e6c094340240369025fc6b731b054ee2a834328fa584310ac96aa4baebdc465"
 dependencies = [
  "cc",
  "libc",

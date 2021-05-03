@@ -3,6 +3,7 @@ extern crate maplit;
 
 extern crate kafka_delta_ingest;
 
+use deltalake::action::Action;
 use kafka_delta_ingest::KafkaJsonToDelta;
 use log::debug;
 use parquet::{
@@ -21,6 +22,7 @@ use rusoto_dynamodb::*;
 use serde_json::json;
 use std::env;
 use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::sync::Once;
 use std::{collections::HashMap, fs, path::PathBuf};
 use tokio_util::sync::CancellationToken;
@@ -143,6 +145,48 @@ async fn e2e_smoke_test() {
         assert_eq!("2021-03-01T14:38:58Z", r.get_string(2).unwrap());
         assert_eq!("2021-03-01", r.get_string(3).unwrap());
     }
+
+    // read and assert on delta log stats in first log entry
+    // TODO: nested struct values are not handled yet, since parquet crate is not reporting these.
+
+    let delta_log_location = format!("{}/_delta_log", TEST_DELTA_TABLE_LOCATION);
+
+    let log_file = format!("{}/00000000000000000001.json", delta_log_location);
+    let log_file = BufReader::new(File::open(log_file).unwrap());
+    let action = log_file.lines().last().unwrap().unwrap();
+    let action = action.as_str();
+    let action: Action = serde_json::from_str(action).unwrap();
+
+    let stats = match action {
+        Action::add(add) => add.get_stats().unwrap().unwrap(),
+        _ => panic!(),
+    };
+
+    assert_eq!(2, stats.numRecords);
+    assert_eq!(
+        "1",
+        stats.minValues["id"].as_value().unwrap().as_str().unwrap()
+    );
+    assert_eq!(
+        1,
+        stats.minValues["value"]
+            .as_value()
+            .unwrap()
+            .as_i64()
+            .unwrap()
+    );
+    assert_eq!(
+        "2",
+        stats.maxValues["id"].as_value().unwrap().as_str().unwrap()
+    );
+    assert_eq!(
+        2,
+        stats.maxValues["value"]
+            .as_value()
+            .unwrap()
+            .as_i64()
+            .unwrap()
+    );
 }
 
 fn setup() {

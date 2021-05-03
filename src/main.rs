@@ -69,7 +69,7 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
             let consumer_group_id = ingest_matches.value_of("CONSUMER_GROUP").unwrap();
 
             let additional_kafka_properties = ingest_matches
-                .values_of("ADDITIONAL_KAFKA_PROPERTIES")
+                .values_of("ADDITIONAL_KAFKA_SETTINGS")
                 .map(Values::collect)
                 .unwrap_or_else(|| vec![]);
             let additional_kafka_settings: HashMap<String, String> = additional_kafka_properties

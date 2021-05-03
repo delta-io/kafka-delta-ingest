@@ -1,5 +1,6 @@
 use arrow::{
-    array::{as_primitive_array, Array},
+    array::{as_boolean_array, as_primitive_array, make_array, Array, ArrayData},
+    buffer::MutableBuffer,
     datatypes::Schema as ArrowSchema,
     datatypes::*,
     error::ArrowError,
@@ -7,18 +8,23 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use deltalake::{
-    action::{Action, Add, Stats},
+    action::{Action, Add, ColumnCountStat, ColumnValueStat, Stats},
     DeltaDataTypeVersion, DeltaTable, DeltaTableError, DeltaTransactionError, Schema,
     StorageBackend, StorageError, UriError,
 };
 use log::{debug, info};
 use parquet::{
     arrow::ArrowWriter,
-    basic::Compression,
+    basic::{Compression, LogicalType},
     errors::ParquetError,
-    file::{properties::WriterProperties, writer::InMemoryWriteableCursor},
+    file::{
+        metadata::RowGroupMetaData, properties::WriterProperties, statistics::Statistics,
+        writer::InMemoryWriteableCursor,
+    },
+    schema::types::{ColumnDescriptor, SchemaDescriptor},
 };
-use serde_json::Value;
+use parquet_format::FileMetaData;
+use serde_json::{Number, Value};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::sync::Arc;
@@ -168,9 +174,6 @@ impl DeltaWriter {
         // TODO: Verify that this RecordBatch contains partition values that agree with previous partition values (if any) for the current writer context
         self.partition_values = partition_values;
 
-        // TODO: collect/update column stats
-        // @nevi-me makes a fantastic recommendation to expose stats from the parquet crate if possible in https://github.com/delta-io/kafka-delta-ingest/pull/1#discussion_r585878860
-
         // write the record batch to the held arrow writer
         self.arrow_writer.write(record_batch)?;
 
@@ -193,8 +196,7 @@ impl DeltaWriter {
     ) -> Result<DeltaDataTypeVersion, DeltaWriterError> {
         info!("Writing parquet file.");
 
-        // Close the arrow writer to flush remaining bytes and write the parquet footer
-        self.arrow_writer.close()?;
+        let metadata = self.arrow_writer.close()?;
 
         let path = self.next_data_path(&self.partition_columns, &self.partition_values)?;
 
@@ -215,14 +217,12 @@ impl DeltaWriter {
 
         info!("Parquet file written.");
 
-        let num_records = self.num_records;
-
         // After data is written, re-initialize internal state to handle another file
         self.reset()?;
 
         info!("Writing Delta transaction.");
 
-        let add = create_add(&self.partition_values, path, file_size, num_records)?;
+        let add = create_add(&self.partition_values, path, file_size, &metadata)?;
 
         actions.push(Action::add(add));
 
@@ -297,6 +297,231 @@ impl DeltaWriter {
     }
 }
 
+fn delta_stats_from_file_metadata(file_metadata: &FileMetaData) -> Result<Stats, ParquetError> {
+    let type_ptr = parquet::schema::types::from_thrift(file_metadata.schema.as_slice());
+    let schema_descriptor = type_ptr.map(|type_| Arc::new(SchemaDescriptor::new(type_)))?;
+
+    let mut min_values: HashMap<String, ColumnValueStat> = HashMap::new();
+    let mut max_values: HashMap<String, ColumnValueStat> = HashMap::new();
+    let mut null_counts: HashMap<String, ColumnCountStat> = HashMap::new();
+
+    let row_group_metadata: Result<Vec<RowGroupMetaData>, ParquetError> = file_metadata
+        .row_groups
+        .iter()
+        .map(|rg| RowGroupMetaData::from_thrift(schema_descriptor.clone(), rg.clone()))
+        .collect();
+    let row_group_metadata = row_group_metadata?;
+
+    for i in 0..schema_descriptor.num_columns() {
+        let column_descr = schema_descriptor.column(i);
+        let column_path = column_descr.path();
+
+        // TODO: skip stats for lists and structs for now as these are missing in parquet crate column chunks
+        if column_path.parts().len() > 1 {
+            continue;
+        }
+
+        let statistics: Vec<&Statistics> = row_group_metadata
+            .iter()
+            .filter_map(|g| g.column(i).statistics())
+            .collect();
+
+        let (min, max) = stats_min_and_max(&statistics, column_descr.clone())?;
+
+        if let Some(min) = min {
+            let min = ColumnValueStat::Value(min);
+            min_values.insert(column_descr.name().to_string(), min);
+        }
+
+        if let Some(max) = max {
+            let max = ColumnValueStat::Value(max);
+            max_values.insert(column_descr.name().to_string(), max);
+        }
+
+        let null_count: u64 = statistics.iter().map(|s| s.null_count()).sum();
+        let null_count = ColumnCountStat::Value(null_count as i64);
+        null_counts.insert(column_descr.name().to_string(), null_count);
+    }
+
+    Ok(Stats {
+        numRecords: file_metadata.num_rows,
+        maxValues: max_values,
+        minValues: min_values,
+        nullCount: null_counts,
+    })
+}
+
+fn stats_min_and_max(
+    statistics: &[&Statistics],
+    column_descr: Arc<ColumnDescriptor>,
+) -> Result<(Option<Value>, Option<Value>), ParquetError> {
+    let stats_with_min_max: Vec<&Statistics> = statistics
+        .iter()
+        .filter(|s| s.has_min_max_set())
+        .map(|s| *s)
+        .collect();
+
+    if stats_with_min_max.len() == 0 {
+        return Ok((None, None));
+    }
+
+    let (data_size, data_type) = match stats_with_min_max.first() {
+        Some(Statistics::Boolean(_)) => (std::mem::size_of::<bool>(), DataType::Boolean),
+        Some(Statistics::Int32(_)) => (std::mem::size_of::<i32>(), DataType::Int32),
+        Some(Statistics::Int64(_)) => (std::mem::size_of::<i64>(), DataType::Int64),
+        Some(Statistics::Float(_)) => (std::mem::size_of::<f32>(), DataType::Float32),
+        Some(Statistics::Double(_)) => (std::mem::size_of::<f64>(), DataType::Float64),
+        Some(Statistics::ByteArray(_)) if is_utf8(column_descr.logical_type()) => {
+            (0, DataType::Utf8)
+        }
+        _ => {
+            // NOTE: Skips
+            // Statistics::Int96(_)
+            // Statistics::ByteArray(_)
+            // Statistics::FixedLenByteArray(_)
+
+            return Ok((None, None));
+        }
+    };
+
+    if data_type == DataType::Utf8 {
+        return Ok(min_max_strings_from_stats(&stats_with_min_max));
+    }
+
+    let arrow_buffer_capacity = stats_with_min_max.len() * data_size;
+
+    let min_array = arrow_array_from_bytes(
+        data_type.clone(),
+        arrow_buffer_capacity,
+        stats_with_min_max.iter().map(|s| s.min_bytes()).collect(),
+    );
+
+    let max_array = arrow_array_from_bytes(
+        data_type.clone(),
+        arrow_buffer_capacity,
+        stats_with_min_max.iter().map(|s| s.max_bytes()).collect(),
+    );
+
+    match data_type {
+        DataType::Boolean => {
+            let min = arrow::compute::min_boolean(as_boolean_array(&min_array));
+            let min = min.map(|b| Value::Bool(b));
+
+            let max = arrow::compute::max_boolean(as_boolean_array(&max_array));
+            let max = max.map(|b| Value::Bool(b));
+
+            Ok((min, max))
+        }
+        DataType::Int32 => {
+            let min_array = as_primitive_array::<arrow::datatypes::Int32Type>(&min_array);
+            let min = arrow::compute::min(min_array);
+            let min = min.map(|i| Value::Number(Number::from(i)));
+
+            let max_array = as_primitive_array::<arrow::datatypes::Int32Type>(&max_array);
+            let max = arrow::compute::max(max_array);
+            let max = max.map(|i| Value::Number(Number::from(i)));
+
+            Ok((min, max))
+        }
+        DataType::Int64 => {
+            let min_array = as_primitive_array::<arrow::datatypes::Int64Type>(&min_array);
+            let min = arrow::compute::min(min_array);
+            let min = min.map(|i| Value::Number(Number::from(i)));
+
+            let max_array = as_primitive_array::<arrow::datatypes::Int64Type>(&max_array);
+            let max = arrow::compute::max(max_array);
+            let max = max.map(|i| Value::Number(Number::from(i)));
+
+            Ok((min, max))
+        }
+        DataType::Float32 => {
+            let min_array = as_primitive_array::<arrow::datatypes::Float32Type>(&min_array);
+            let min = arrow::compute::min(min_array);
+            let min = min
+                .map(|f| Number::from_f64(f as f64).map(|n| Value::Number(n)))
+                .flatten();
+
+            let max_array = as_primitive_array::<arrow::datatypes::Float32Type>(&max_array);
+            let max = arrow::compute::max(max_array);
+            let max = max
+                .map(|f| Number::from_f64(f as f64).map(|n| Value::Number(n)))
+                .flatten();
+
+            Ok((min, max))
+        }
+        DataType::Float64 => {
+            let min_array = as_primitive_array::<arrow::datatypes::Float64Type>(&min_array);
+            let min = arrow::compute::min(min_array);
+            let min = min
+                .map(|f| Number::from_f64(f).map(|n| Value::Number(n)))
+                .flatten();
+
+            let max_array = as_primitive_array::<arrow::datatypes::Float64Type>(&max_array);
+            let max = arrow::compute::max(max_array);
+            let max = max
+                .map(|f| Number::from_f64(f).map(|n| Value::Number(n)))
+                .flatten();
+
+            Ok((min, max))
+        }
+        _ => Ok((None, None)),
+    }
+}
+
+fn arrow_array_from_bytes(
+    data_type: DataType,
+    capacity: usize,
+    byte_arrays: Vec<&[u8]>,
+) -> Arc<dyn Array> {
+    let mut buffer = MutableBuffer::new(capacity);
+
+    for arr in byte_arrays.iter() {
+        buffer.extend_from_slice(arr);
+    }
+
+    let builder = ArrayData::builder(data_type)
+        .len(byte_arrays.len())
+        .add_buffer(buffer.into());
+
+    let data = builder.build();
+
+    make_array(data)
+}
+
+fn min_max_strings_from_stats(
+    stats_with_min_max: &Vec<&Statistics>,
+) -> (Option<Value>, Option<Value>) {
+    let min_string_candidates = stats_with_min_max
+        .iter()
+        .filter_map(|s| str_opt_from_bytes(s.min_bytes()));
+
+    let min_value = min_string_candidates
+        .min()
+        .map(|s| Value::String(s.to_string()));
+
+    let max_string_candidates = stats_with_min_max
+        .iter()
+        .filter_map(|s| str_opt_from_bytes(s.max_bytes()));
+
+    let max_value = max_string_candidates
+        .max()
+        .map(|s| Value::String(s.to_string()));
+
+    return (min_value, max_value);
+}
+
+#[inline]
+fn is_utf8(opt: Option<LogicalType>) -> bool {
+    match opt.as_ref() {
+        Some(LogicalType::STRING(_)) => true,
+        _ => false,
+    }
+}
+
+fn str_opt_from_bytes(bytes: &[u8]) -> Option<&str> {
+    std::str::from_utf8(bytes).ok()
+}
+
 struct InMemValueIter<'a> {
     buffer: &'a [Value],
     current_index: usize,
@@ -361,18 +586,9 @@ fn create_add(
     partition_values: &HashMap<String, String>,
     path: String,
     size: i64,
-    num_records: i64,
+    file_metadata: &FileMetaData,
 ) -> Result<Add, DeltaWriterError> {
-    // Initialize a delta_rs stats object
-    let stats = Stats {
-        numRecords: num_records,
-        // TODO: calculate additional stats
-        // look at https://github.com/apache/arrow/blob/master/rust/arrow/src/compute/kernels/aggregate.rs for pulling these stats
-        minValues: HashMap::new(),
-        maxValues: HashMap::new(),
-        nullCount: HashMap::new(),
-    };
-    // Derive a stats string to include in the add action
+    let stats = delta_stats_from_file_metadata(file_metadata)?;
     let stats_string = serde_json::to_string(&stats)
         .or(Err(DeltaWriterError::StatsSerializationFailed { stats }))?;
 
@@ -391,10 +607,7 @@ fn create_add(
         modificationTime: modification_time,
         dataChange: true,
 
-        // TODO: calculate additional stats
         stats: Some(stats_string),
-        // TODO: implement stats_parsed for better performance gain
-        // https://github.com/delta-io/delta/blob/master/PROTOCOL.md#checkpoint-format
         stats_parsed: None,
         // ?
         tags: None,

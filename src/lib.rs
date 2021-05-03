@@ -21,7 +21,7 @@ use std::time::Instant;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-mod deltalake_ext;
+pub mod deltalake_ext;
 mod transforms;
 pub mod write_ahead_log;
 
@@ -119,6 +119,10 @@ impl KafkaJsonToDelta {
     ) -> Result<Self, KafkaJsonToDeltaError> {
         let mut kafka_client_config = ClientConfig::new();
 
+        info!("App id is {}", app_id);
+        info!("Kafka broker string is {}", kafka_brokers);
+        info!("Kafka consumer group id is {}", consumer_group_id);
+
         kafka_client_config
             .set("bootstrap.servers", kafka_brokers.clone())
             .set("group.id", consumer_group_id)
@@ -126,6 +130,7 @@ impl KafkaJsonToDelta {
 
         if let Some(additional) = additional_kafka_settings {
             for (k, v) in additional.iter() {
+                info!("Applying additional kafka setting {} = {}", k, v);
                 kafka_client_config.set(k, v);
             }
         }
