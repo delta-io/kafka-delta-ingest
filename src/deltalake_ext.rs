@@ -511,6 +511,7 @@ fn min_max_strings_from_stats(
     return (min_value, max_value);
 }
 
+[inline]
 fn is_utf8(opt: Option<LogicalType>) -> bool {
     match opt.as_ref() {
         Some(LogicalType::STRING(_)) => true,
