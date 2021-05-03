@@ -402,17 +402,16 @@ fn stats_min_and_max(
         stats_with_min_max.iter().map(|s| s.max_bytes()).collect(),
     );
 
-    if data_type == DataType::Boolean {
-        let min = arrow::compute::min_boolean(as_boolean_array(&min_array));
-        let min = min.map(|b| Value::Bool(b));
-
-        let max = arrow::compute::max_boolean(as_boolean_array(&max_array));
-        let max = max.map(|b| Value::Bool(b));
-
-        return Ok((min, max));
-    }
-
     match data_type {
+        DataType::Boolean => {
+            let min = arrow::compute::min_boolean(as_boolean_array(&min_array));
+            let min = min.map(|b| Value::Bool(b));
+
+            let max = arrow::compute::max_boolean(as_boolean_array(&max_array));
+            let max = max.map(|b| Value::Bool(b));
+
+            Ok((min, max))
+        }
         DataType::Int32 => {
             let min_array = as_primitive_array::<arrow::datatypes::Int32Type>(&min_array);
             let min = arrow::compute::min(min_array);
@@ -511,7 +510,7 @@ fn min_max_strings_from_stats(
     return (min_value, max_value);
 }
 
-[inline]
+#[inline]
 fn is_utf8(opt: Option<LogicalType>) -> bool {
     match opt.as_ref() {
         Some(LogicalType::STRING(_)) => true,
