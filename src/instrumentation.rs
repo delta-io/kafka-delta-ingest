@@ -90,19 +90,21 @@ pub trait Instrumentation {
         self.record_stat((StatTypes::RecordBatchStarted, 1)).await;
     }
 
-    async fn log_record_batch_completed(&self, buffered_record_batch_count: usize, timer: Instant) {
-        info!("Record batch completed");
+    async fn log_record_batch_completed(
+        &self,
+        buffered_record_batch_count: usize,
+        timer: &Instant,
+    ) {
+        let duration = timer.elapsed().as_micros() as i64;
+        info!("Record batch completed in {} microseconds", duration);
         self.record_stat((StatTypes::RecordBatchCompleted, 1)).await;
         self.record_stat((
             StatTypes::BufferedRecordBatches,
             buffered_record_batch_count as i64,
         ))
         .await;
-        self.record_stat((
-            StatTypes::RecordBatchWriteDuration,
-            timer.elapsed().as_millis() as i64,
-        ))
-        .await;
+        self.record_stat((StatTypes::RecordBatchWriteDuration, duration))
+            .await;
     }
 
     // delta writes
@@ -112,14 +114,12 @@ pub trait Instrumentation {
         self.record_stat((StatTypes::DeltaWriteStarted, 1)).await;
     }
 
-    async fn log_delta_write_completed(&self, timer: Instant) {
-        info!("Delta write completed");
+    async fn log_delta_write_completed(&self, timer: &Instant) {
+        let duration = timer.elapsed().as_micros() as i64;
+        info!("Delta write completed in {} microseconds", duration);
         self.record_stat((StatTypes::DeltaWriteCompleted, 1)).await;
-        self.record_stat((
-            StatTypes::DeltaWriteDuration,
-            timer.elapsed().as_millis() as i64,
-        ))
-        .await;
+        self.record_stat((StatTypes::DeltaWriteDuration, duration))
+            .await;
     }
 
     async fn log_delta_write_failed(&self) {
@@ -135,15 +135,16 @@ pub trait Instrumentation {
             .await;
     }
 
-    async fn log_write_ahead_log_completed(&self, timer: Instant) {
-        info!("Write ahead log entry completed");
+    async fn log_write_ahead_log_completed(&self, timer: &Instant) {
+        let duration = timer.elapsed().as_micros() as i64;
+        info!(
+            "Write ahead log entry completed in {} microseconds",
+            duration
+        );
         self.record_stat((StatTypes::WriteAheadLogEntryCompleted, 1))
             .await;
-        self.record_stat((
-            StatTypes::WriteAheadLogEntryCompleted,
-            timer.elapsed().as_millis() as i64,
-        ))
-        .await;
+        self.record_stat((StatTypes::WriteAheadLogEntryDuration, duration))
+            .await;
     }
 
     async fn log_write_ahead_log_aborted(&self) {
@@ -206,7 +207,9 @@ impl StatsHandler {
                 debug!("StatsHandler received stat {:?} with value {}", stat, val);
                 match stat {
                     // timers
-                    StatTypes::RecordBatchWriteDuration | StatTypes::DeltaWriteDuration => {
+                    StatTypes::RecordBatchWriteDuration
+                    | StatTypes::DeltaWriteDuration
+                    | StatTypes::WriteAheadLogEntryDuration => {
                         self.handle_timer(stat, val);
                     }
 
@@ -242,14 +245,8 @@ impl StatsHandler {
         let stat_string = stat.to_string();
         let key = stat_string.as_str();
 
-        let new_count = if let Some(value) = self.values.get(key) {
-            *value + count
-        } else {
-            count
-        };
-
-        self.metrics.gauge(key).value(new_count);
-        self.values.insert(stat_string, new_count);
+        self.metrics.gauge(key).value(count);
+        self.values.insert(stat_string, count);
     }
 
     fn handle_counter(&self, stat: StatTypes, count: i64) {
@@ -332,7 +329,8 @@ pub enum StatTypes {
     // timers
     #[strum(serialize = "recordbatch.write_duration")]
     RecordBatchWriteDuration,
-
+    #[strum(serialize = "wal.entry.duration")]
+    WriteAheadLogEntryDuration,
     #[strum(serialize = "delta.write.duration")]
     DeltaWriteDuration,
 

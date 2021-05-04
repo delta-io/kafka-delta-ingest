@@ -322,7 +322,7 @@ impl KafkaJsonToDelta {
 
                         self.log_record_batch_completed(
                             delta_writer.buffered_record_batch_count(),
-                            record_batch_timer,
+                            &record_batch_timer,
                         )
                         .await;
 
@@ -372,10 +372,10 @@ impl KafkaJsonToDelta {
                             let commit_result = delta_writer.write_file(&mut vec![txn]).await;
                             match commit_result {
                                 Ok(version) => {
-                                    self.log_delta_write_completed(delta_write_timer).await;
+                                    self.log_delta_write_completed(&delta_write_timer).await;
                                     wal.complete_entry(wal_entry.transaction_id, version)
                                         .await?;
-                                    self.log_write_ahead_log_completed(wal_timer).await;
+                                    self.log_write_ahead_log_completed(&wal_timer).await;
                                 }
                                 Err(e) => {
                                     wal.abort_entry(wal_entry.transaction_id).await?;
