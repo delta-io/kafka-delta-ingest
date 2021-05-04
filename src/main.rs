@@ -2,7 +2,7 @@
 extern crate clap;
 
 use clap::{AppSettings, Values};
-use kafka_delta_ingest::{KafkaJsonToDelta, instrumentation};
+use kafka_delta_ingest::{instrumentation, KafkaJsonToDelta};
 use log::{error, info};
 use std::collections::HashMap;
 
@@ -23,7 +23,7 @@ async fn main() -> anyhow::Result<()> {
             (@arg CONSUMER_GROUP: -g --consumer_group_id +takes_value default_value("kafka_delta_ingest") 
              "The consumer group id to use when subscribing to Kafka.")
 
-            (@arg ADDITIONAL_KAFKA_SETTINGS: -K --Kafka +multiple +takes_value validator(parse_kafka_property) 
+            (@arg ADDITIONAL_KAFKA_SETTINGS: -K --Kafka +multiple +takes_value validator(parse_kafka_property)
             r#"A list of additional settings to include when creating the Kafka consumer.
 
             Each additional setting should follow the pattern: "PROPERTY_NAME=PROPERTY_VALUE". For example:
@@ -46,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
             (@arg MIN_BYTES_PER_FILE: -b --min_bytes_per_file +takes_value default_value("134217728") 
              "The target minimum file size (in bytes) for each Delta file. File size may be smaller than this value if ALLOWED_LATENCY does not allow enough time to accumulate the specified number of bytes.")
 
-            (@arg TRANSFORM: -t --transform +multiple +takes_value validator(parse_transform) 
+            (@arg TRANSFORM: -t --transform +multiple +takes_value validator(parse_transform)
             r#"A list of transforms to apply to each Kafka message. 
 Each transform should follow the pattern: "PROPERTY: SOURCE". For example: 
 
@@ -65,7 +65,7 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
 * kafka.timestamp
 "#)
 
-            (@arg STATSD_ENDPOINT: -s --statsd_endpoint +takes_value 
+            (@arg STATSD_ENDPOINT: -s --statsd_endpoint +takes_value
              "The statsd endpoint to send statistics to.")
         )
     )
@@ -108,7 +108,9 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
                 .map(|t| parse_transform(t).unwrap())
                 .collect();
 
-            let stats_endpoint = ingest_matches.value_of("STATSD_ENDPOINT").unwrap_or("localhost:8125");
+            let stats_endpoint = ingest_matches
+                .value_of("STATSD_ENDPOINT")
+                .unwrap_or("localhost:8125");
             let stats_sender = instrumentation::init_stats(stats_endpoint, app_id)?;
 
             let mut stream = KafkaJsonToDelta::new(
