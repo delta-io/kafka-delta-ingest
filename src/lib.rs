@@ -4,9 +4,12 @@ extern crate lazy_static;
 #[macro_use]
 extern crate maplit;
 
+#[macro_use]
+extern crate strum_macros;
+
 use deltalake::{action, DeltaTableError, DeltaTransactionError};
 use futures::stream::StreamExt;
-use log::{debug, error, info, warn};
+use log::{error, info, warn};
 use rdkafka::{
     config::ClientConfig,
     consumer::{Consumer, ConsumerContext, Rebalance, StreamConsumer},
@@ -18,16 +21,20 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc::Sender, Mutex};
 use tokio_util::sync::CancellationToken;
 
 pub mod deltalake_ext;
+pub mod instrumentation;
 mod transforms;
 pub mod write_ahead_log;
 
-use crate::deltalake_ext::{DeltaWriter, DeltaWriterError};
 use crate::transforms::*;
 use crate::write_ahead_log::*;
+use crate::{
+    deltalake_ext::{DeltaWriter, DeltaWriterError},
+    instrumentation::{Instrumentation, Statistic},
+};
 
 type DataTypeTransactionId = i64;
 type DataTypePartition = i32;
@@ -101,6 +108,13 @@ pub struct KafkaJsonToDelta {
     transforms: HashMap<String, String>,
     consumer: StreamConsumer<Context>,
     partition_assignment: Arc<Mutex<PartitionAssignment>>,
+    stats_sender: Arc<Sender<Statistic>>,
+}
+
+impl Instrumentation for KafkaJsonToDelta {
+    fn stats_sender(&self) -> Arc<Sender<Statistic>> {
+        self.stats_sender.clone()
+    }
 }
 
 impl KafkaJsonToDelta {
@@ -116,6 +130,7 @@ impl KafkaJsonToDelta {
         max_messages_per_batch: usize,
         min_bytes_per_file: usize,
         transforms: HashMap<String, String>,
+        stats_channel: Arc<Sender<Statistic>>,
     ) -> Result<Self, KafkaJsonToDeltaError> {
         let mut kafka_client_config = ClientConfig::new();
 
@@ -151,6 +166,7 @@ impl KafkaJsonToDelta {
             transforms,
             consumer,
             partition_assignment,
+            stats_sender: stats_channel,
         })
     }
 
@@ -204,53 +220,50 @@ impl KafkaJsonToDelta {
         while let Some(message) = stream.next().await {
             match message {
                 Ok(m) => {
-                    debug!(
-                        "Handling message at partition {} offset {}",
-                        m.partition(),
-                        m.offset()
-                    );
+                    self.log_message_received(&m).await;
 
                     // Deserialize
                     // TODO: Add better deserialization error handling, ideally send to a dlq
                     let mut value = match deserialize_message(&m) {
-                        Ok(v) => v,
-                        Err(KafkaJsonToDeltaError::KafkaMessageNoPayload { .. }) => continue,
-                        Err(KafkaJsonToDeltaError::KafkaMessageDeserialization { .. }) => continue,
+                        Ok(v) => {
+                            self.log_message_deserialized(&m).await;
+                            v
+                        }
+                        Err(KafkaJsonToDeltaError::KafkaMessageNoPayload { .. }) => {
+                            self.log_message_deserialization_failed(&m).await;
+                            continue;
+                        }
+                        Err(KafkaJsonToDeltaError::KafkaMessageDeserialization { .. }) => {
+                            self.log_message_deserialization_failed(&m).await;
+                            continue;
+                        }
                         Err(e) => return Err(e),
                     };
-
-                    debug!("Deserialized message.");
 
                     // Transform
                     // TODO: Add better transform failure handling, ideally send to a dlq
                     match transformer.transform(&mut value, &m) {
-                        Err(e) => {
-                            error!("Message transform failed {:?}", e);
+                        Err(_) => {
+                            self.log_message_transform_failed(&m).await;
                             continue;
                         }
-                        _ => {}
+                        _ => {
+                            self.log_message_transformed(&m).await;
+                        }
                     }
-
-                    debug!("Transformed message.");
 
                     // Buffer
                     let partition = m.partition();
                     if value_buffers.is_tracking(partition) {
-                        debug!(
-                            "Already tracking partition {}. Buffering message - partition {}, offset: {}",
-                            m.partition(),
-                            m.partition(),
-                            m.offset()
-                        );
-
                         // This is the 99% case. We are already tracking this partition. Just
                         // buffer it.
                         value_buffers.add(partition, m.offset(), value);
+                        self.log_message_buffered(&m, value_buffers.len()).await;
                     } else if let Some(tx_version) = delta_writer
                         .last_transaction_version(self.app_id.as_str())
                         .await?
                     {
-                        info!("Paritition {} is not tracked in value_buffers but a transaction exists in the delta log. Updating partition assignment and skipping message. Will process this same message again after consumer seek - partition {}, offset: {}", partition, partition, m.offset());
+                        self.log_assignment_untracked_skipped(&m).await;
 
                         // Since this is an untracked partition and a Delta transaction exists for
                         // the table already, we need to update partition assignments, seek the
@@ -266,13 +279,6 @@ impl KafkaJsonToDelta {
                         .await?;
                         continue;
                     } else {
-                        info!(
-                            "NOT currently tracking partition {}, but there is no existing delta transaction. Buffering message (partition {}, offset: {}) and updating assignment.",
-                            m.partition(),
-                            m.partition(),
-                            m.offset()
-                        );
-
                         // Since there is no delta transaction - this should be the first message
                         // available on the partition.
                         // Update partition assignment and buffer.
@@ -287,16 +293,14 @@ impl KafkaJsonToDelta {
                         .await?;
 
                         value_buffers.add(partition, m.offset(), value);
-                    }
 
-                    debug!(
-                        "Latency timer at {} milliseconds.",
-                        latency_timer.elapsed().as_millis()
-                    );
+                        self.log_assignment_untracked_buffered(&m, value_buffers.len())
+                            .await;
+                    }
 
                     // Finalize arrow record batch
                     if self.should_complete_record_batch(&value_buffers, &latency_timer) {
-                        info!("Creating Arrow RecordBatch.");
+                        self.log_record_batch_started().await;
 
                         let (values, partition_offsets) = consume_value_buffers(
                             self.partition_assignment.clone(),
@@ -313,36 +317,36 @@ impl KafkaJsonToDelta {
                         // dirty so we know we have to drop all buffers and re-seek if a rebalance occurs before the next file write.
                         value_buffers.mark_dirty();
 
+                        let record_batch_timer = instrumentation::new_timer();
                         delta_writer.write_record_batch(&record_batch).await?;
 
-                        info!(
-                            "Record batch written. Current latency is {} milliseconds",
-                            latency_timer.elapsed().as_millis()
-                        );
+                        self.log_record_batch_completed(
+                            delta_writer.buffered_record_batch_count(),
+                            record_batch_timer,
+                        )
+                        .await;
 
                         // Finalize file and write Delta transaction
                         if self.should_complete_file(&delta_writer, &latency_timer) {
                             // Reset the latency timer to track allowed latency for the next file
                             latency_timer = Instant::now();
 
-                            info!("Writing parquet file.");
-
                             // Lookup the last transaction version from the Delta Log
                             let last_txn_version = delta_writer
                                 .last_transaction_version(self.app_id.as_str())
                                 .await?;
 
-                            // Create the new WAL entry
+                            // Prepare the new WAL entry
+                            let wal_timer = instrumentation::new_timer();
                             let wal_entry = if let Some(txn_version) = last_txn_version {
-                                info!(
-                                    "Delta table last txn version for {} is {}.",
-                                    self.app_id, txn_version
-                                );
+                                self.log_delta_tx_version_found(self.app_id.as_str(), txn_version)
+                                    .await;
                                 let last_wal_entry =
                                     wal.get_entry_by_transaction_id(txn_version).await?;
                                 last_wal_entry.prepare_next(&partition_offsets)
                             } else {
-                                info!("Delta table does not contain a txn for app id {}. Starting write-ahead-log from 1.", self.app_id);
+                                self.log_delta_tx_version_not_found(self.app_id.as_str())
+                                    .await;
                                 WriteAheadLogEntry::new(
                                     1,
                                     TransactionState::Prepared,
@@ -350,10 +354,11 @@ impl KafkaJsonToDelta {
                                     partition_offsets.clone(),
                                 )
                             };
-
                             wal.put_entry(&wal_entry).await?;
+                            self.log_write_ahead_log_prepared().await;
 
-                            // Complete the file
+                            // Complete the delta write
+                            let delta_write_timer = instrumentation::new_timer();
                             let txn = action::Action::txn(action::Txn {
                                 appId: self.app_id.clone(),
                                 version: wal_entry.transaction_id,
@@ -363,16 +368,19 @@ impl KafkaJsonToDelta {
                                     .as_millis()
                                     as i64,
                             });
+                            self.log_delta_write_started().await;
                             let commit_result = delta_writer.write_file(&mut vec![txn]).await;
-
                             match commit_result {
                                 Ok(version) => {
+                                    self.log_delta_write_completed(delta_write_timer).await;
                                     wal.complete_entry(wal_entry.transaction_id, version)
                                         .await?;
+                                    self.log_write_ahead_log_completed(wal_timer).await;
                                 }
                                 Err(e) => {
-                                    error!("Delta commit failed. Aborting write ahead log entry.");
                                     wal.abort_entry(wal_entry.transaction_id).await?;
+                                    self.log_write_ahead_log_aborted().await;
+                                    self.log_delta_write_failed().await;
                                     return Err(KafkaJsonToDeltaError::DeltaWriter { source: e });
                                 }
                             }
@@ -382,7 +390,7 @@ impl KafkaJsonToDelta {
                     // Exit if the cancellation token is set
                     if let Some(token) = cancellation_token {
                         if token.is_cancelled() {
-                            info!("Found cancellation token set after handling partition {} offset {}. Stopping run loop.", m.partition(), m.offset());
+                            self.log_stream_cancelled(&m).await;
                             return Ok(());
                         }
                     }
@@ -468,6 +476,32 @@ impl KafkaJsonToDelta {
 
         Ok(())
     }
+
+    // async fn log_message_received<M>(&self, m: &M)
+    // where
+    //     M: Message,
+    // {
+    //     debug!(
+    //         "Handling message at partition {} offset {}",
+    //         m.partition(),
+    //         m.offset()
+    //     );
+    //     let _ = self
+    //         .stats_channel
+    //         .send((StatTypes::MessageReceived, 1))
+    //         .await;
+    // }
+
+    // async fn log_message_deserialized<M>(&self, _m: &M)
+    // where
+    //     M: Message,
+    // {
+    //     debug!("Message deserialized");
+    //     let _ = self
+    //         .stats_channel
+    //         .send((StatTypes::MessageDeserialized, 1))
+    //         .await;
+    // }
 }
 
 // NOTE: Lifetime constraint for write_ahead_log param is a workaround for
@@ -751,7 +785,11 @@ pub struct Context {
     partition_assignment: Arc<Mutex<PartitionAssignment>>,
 }
 
-impl ClientContext for Context {}
+impl ClientContext for Context {
+    // fn stats(&self, statistics: Statistics) {
+    //     debug!("{:?}", statistics);
+    // }
+}
 
 impl ConsumerContext for Context {
     fn pre_rebalance(&self, rebalance: &Rebalance) {

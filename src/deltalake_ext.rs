@@ -98,7 +98,7 @@ pub struct DeltaWriter {
     arrow_writer: ArrowWriter<InMemoryWriteableCursor>,
     partition_columns: Vec<String>,
     partition_values: HashMap<String, String>,
-    num_records: i64,
+    buffered_record_batch_count: usize,
 }
 
 impl DeltaWriter {
@@ -136,7 +136,7 @@ impl DeltaWriter {
             arrow_writer,
             partition_columns,
             partition_values: HashMap::new(),
-            num_records: 0,
+            buffered_record_batch_count: 0,
         })
     }
 
@@ -177,8 +177,7 @@ impl DeltaWriter {
         // write the record batch to the held arrow writer
         self.arrow_writer.write(record_batch)?;
 
-        // increment num records (for the entire file) by the number of records in the handled batch
-        self.num_records += record_batch.num_rows() as i64;
+        self.buffered_record_batch_count += 1;
 
         Ok(())
     }
@@ -235,17 +234,21 @@ impl DeltaWriter {
         Ok(version)
     }
 
+    pub fn buffered_record_batch_count(&self) -> usize {
+        self.buffered_record_batch_count
+    }
+
     fn reset(&mut self) -> Result<(), DeltaWriterError> {
-        // Reset the internal cursor for the next file
+        // Reset the internal cursor for the next file.
         self.cursor = InMemoryWriteableCursor::default();
-        // Reset the internal arrow writer for the next file
+        // Reset buffered record batch count to 0.
+        self.buffered_record_batch_count = 0;
+        // Reset the internal arrow writer for the next file.
         self.arrow_writer = ArrowWriter::try_new(
             self.cursor.clone(),
             self.arrow_schema_ref.clone(),
             Some(self.writer_properties.clone()),
         )?;
-        // Reset the record count to start from zero for the next file
-        self.num_records = 0;
 
         Ok(())
     }
