@@ -476,32 +476,6 @@ impl KafkaJsonToDelta {
 
         Ok(())
     }
-
-    // async fn log_message_received<M>(&self, m: &M)
-    // where
-    //     M: Message,
-    // {
-    //     debug!(
-    //         "Handling message at partition {} offset {}",
-    //         m.partition(),
-    //         m.offset()
-    //     );
-    //     let _ = self
-    //         .stats_channel
-    //         .send((StatTypes::MessageReceived, 1))
-    //         .await;
-    // }
-
-    // async fn log_message_deserialized<M>(&self, _m: &M)
-    // where
-    //     M: Message,
-    // {
-    //     debug!("Message deserialized");
-    //     let _ = self
-    //         .stats_channel
-    //         .send((StatTypes::MessageDeserialized, 1))
-    //         .await;
-    // }
 }
 
 // NOTE: Lifetime constraint for write_ahead_log param is a workaround for

@@ -44,31 +44,6 @@ services:
       - 8125:8125/udp
       - 8126:8126
 
-  # statsd:
-  #   image: statsd/statsd
-  #   links:
-  #     - carbon:graphite
-  #   ports:
-  #     - 8125:8125/upd
-
-  # graphite-web:
-  #   image: dockerana/graphite
-  #   links:
-  #     - carbon
-  #   ports:
-  #     - 8000:8000
-  #   volumes_from:
-  #     - carbon
-
-  # carbon:
-  #   image: dockerana/carbon
-  #   ports:
-  #     - 2003:2003
-  #     - 2004:2004
-  #     - 7002:7002
-  #   volumes:
-  #     - /opt/graphite
-
   test_stack:
     image: localstack/localstack  
     depends_on: 
