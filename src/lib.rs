@@ -759,8 +759,7 @@ pub struct Context {
     partition_assignment: Arc<Mutex<PartitionAssignment>>,
 }
 
-impl ClientContext for Context {
-}
+impl ClientContext for Context {}
 
 impl ConsumerContext for Context {
     fn pre_rebalance(&self, rebalance: &Rebalance) {
