@@ -78,3 +78,18 @@ A tarball containing 100K line-delimited JSON messages is included in `tests/jso
 
 URLs sampled for the test data are sourced from Wikipedia's list of most popular websites - https://en.wikipedia.org/wiki/List_of_most_popular_websites.
 
+== Full Local Example
+
+Run:
+
+```
+docker-compose -f docker-compose-with-statsd
+```
+
+After stack is up and running:
+
+```
+./bin/consume-test-json.sh
+```
+
+

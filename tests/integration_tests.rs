@@ -4,7 +4,8 @@ extern crate maplit;
 extern crate kafka_delta_ingest;
 
 use deltalake::action::Action;
-use kafka_delta_ingest::KafkaJsonToDelta;
+use dipstick::{Input, Prefixed, Statsd};
+use kafka_delta_ingest::{instrumentation::StatsHandler, KafkaJsonToDelta};
 use log::debug;
 use parquet::{
     file::reader::{FileReader, SerializedFileReader},
@@ -72,6 +73,13 @@ async fn e2e_smoke_test() {
     );
     transforms.insert("_kafka_offset".to_string(), "kafka.offset".to_string());
 
+    let stast_scope = Statsd::send_to("localhost:8125")
+        .expect("Failed to create Statsd recorder")
+        .named(TEST_APP_ID)
+        .metrics();
+    let stats_handler = StatsHandler::new(stast_scope);
+    let stats_sender = stats_handler.tx.clone();
+
     let mut stream = KafkaJsonToDelta::new(
         topic.to_string(),
         TEST_DELTA_TABLE_LOCATION.to_string(),
@@ -83,6 +91,7 @@ async fn e2e_smoke_test() {
         max_messages_per_batch,
         min_bytes_per_file,
         transforms,
+        stats_sender,
     )
     .unwrap();
 

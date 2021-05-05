@@ -2,7 +2,7 @@
 extern crate clap;
 
 use clap::{AppSettings, Values};
-use kafka_delta_ingest::KafkaJsonToDelta;
+use kafka_delta_ingest::{instrumentation, KafkaJsonToDelta};
 use log::{error, info};
 use std::collections::HashMap;
 
@@ -17,10 +17,14 @@ async fn main() -> anyhow::Result<()> {
             (about: "Starts a stream that consumes from a Kafka topic and and writes to a Delta table")
             (@arg TOPIC: +required "The Kafka topic to stream from")
             (@arg TABLE_LOCATION: +required "The Delta table location to write to")
-            (@arg KAFKA_BROKERS: -k --kafka +required +takes_value default_value("localhost:9092") "The Kafka broker connection string to use when connecting to Kafka.")
-            (@arg CONSUMER_GROUP: -g --consumer_group_id +takes_value default_value("kafka_delta_ingest") "The consumer group id to use when subscribing to Kafka.")
 
-            (@arg ADDITIONAL_KAFKA_SETTINGS: -K --Kafka +multiple +takes_value validator(parse_kafka_property) r#"A list of additional settings to include when creating the Kafka consumer.
+            (@arg KAFKA_BROKERS: -k --kafka +takes_value default_value("localhost:9092") 
+             "The Kafka broker connection string to use when connecting to Kafka.")
+            (@arg CONSUMER_GROUP: -g --consumer_group_id +takes_value default_value("kafka_delta_ingest") 
+             "The consumer group id to use when subscribing to Kafka.")
+
+            (@arg ADDITIONAL_KAFKA_SETTINGS: -K --Kafka +multiple +takes_value validator(parse_kafka_property)
+            r#"A list of additional settings to include when creating the Kafka consumer.
 
             Each additional setting should follow the pattern: "PROPERTY_NAME=PROPERTY_VALUE". For example:
 
@@ -32,13 +36,18 @@ async fn main() -> anyhow::Result<()> {
 
              "#)
 
-            (@arg APP_ID: -a --app_id +takes_value default_value("kafka_delta_ingest") "The app id to use when writing to Delta.")
+            (@arg APP_ID: -a --app_id +takes_value default_value("kafka_delta_ingest") 
+             "The app id to use when writing to Delta.")
 
-            (@arg ALLOWED_LATENCY: -l --allowed_latency +takes_value default_value("300") "The allowed latency (in seconds) from the time a message is consumed to when it should be written to Delta.")
-            (@arg MAX_MESSAGES_PER_BATCH: -m --max_messages_per_batch +takes_value default_value("5000") "The maximum number of rows allowed in a parquet row group. This should approximate the number of bytes described by MIN_BYTES_PER_FILE.")
-            (@arg MIN_BYTES_PER_FILE: -b --min_bytes_per_file +takes_value default_value("134217728") "The target minimum file size (in bytes) for each Delta file. File size may be smaller than this value if ALLOWED_LATENCY does not allow enough time to accumulate the specified number of bytes.")
+            (@arg ALLOWED_LATENCY: -l --allowed_latency +takes_value default_value("300") 
+             "The allowed latency (in seconds) from the time a message is consumed to when it should be written to Delta.")
+            (@arg MAX_MESSAGES_PER_BATCH: -m --max_messages_per_batch +takes_value default_value("5000") 
+             "The maximum number of rows allowed in a parquet row group. This should approximate the number of bytes described by MIN_BYTES_PER_FILE.")
+            (@arg MIN_BYTES_PER_FILE: -b --min_bytes_per_file +takes_value default_value("134217728") 
+             "The target minimum file size (in bytes) for each Delta file. File size may be smaller than this value if ALLOWED_LATENCY does not allow enough time to accumulate the specified number of bytes.")
 
-            (@arg TRANSFORM: -t --transform +multiple +takes_value validator(parse_transform) r#"A list of transforms to apply to each Kafka message. 
+            (@arg TRANSFORM: -t --transform +multiple +takes_value validator(parse_transform)
+            r#"A list of transforms to apply to each Kafka message. 
 Each transform should follow the pattern: "PROPERTY: SOURCE". For example: 
 
 ... -t 'modified_date: substr(modified,`0`,`10`)' 'kafka_offset: kafka.offset'
@@ -55,6 +64,9 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
 * kafka.topic
 * kafka.timestamp
 "#)
+
+            (@arg STATSD_ENDPOINT: -s --statsd_endpoint +takes_value
+             "The statsd endpoint to send statistics to.")
         )
     )
     .setting(AppSettings::SubcommandRequiredElseHelp)
@@ -96,6 +108,11 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
                 .map(|t| parse_transform(t).unwrap())
                 .collect();
 
+            let stats_endpoint = ingest_matches
+                .value_of("STATSD_ENDPOINT")
+                .unwrap_or("localhost:8125");
+            let stats_sender = instrumentation::init_stats(stats_endpoint, app_id)?;
+
             let mut stream = KafkaJsonToDelta::new(
                 topic.to_string(),
                 table_location.to_string(),
@@ -107,6 +124,7 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
                 max_messages_per_batch,
                 min_bytes_per_file,
                 transforms,
+                stats_sender,
             )?;
 
             let _ = tokio::spawn(async move {
