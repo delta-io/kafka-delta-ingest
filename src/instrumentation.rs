@@ -16,13 +16,13 @@ pub fn init_stats(endpoint: &str, app_id: &str) -> Result<Sender<Statistic>, std
 
     let mut handler = StatsHandler::new(scope);
 
-    let channel = handler.tx.clone();
+    let sender = handler.tx.clone();
 
     task::spawn(async move {
         handler.run_loop().await;
     });
 
-    Ok(channel)
+    Ok(sender)
 }
 
 #[async_trait]
