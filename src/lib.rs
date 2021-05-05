@@ -760,9 +760,6 @@ pub struct Context {
 }
 
 impl ClientContext for Context {
-    // fn stats(&self, statistics: Statistics) {
-    //     debug!("{:?}", statistics);
-    // }
 }
 
 impl ConsumerContext for Context {
