@@ -108,11 +108,11 @@ pub struct KafkaJsonToDelta {
     transforms: HashMap<String, String>,
     consumer: StreamConsumer<Context>,
     partition_assignment: Arc<Mutex<PartitionAssignment>>,
-    stats_sender: Arc<Sender<Statistic>>,
+    stats_sender: Sender<Statistic>,
 }
 
 impl Instrumentation for KafkaJsonToDelta {
-    fn stats_sender(&self) -> Arc<Sender<Statistic>> {
+    fn stats_sender(&self) -> Sender<Statistic> {
         self.stats_sender.clone()
     }
 }
@@ -130,7 +130,7 @@ impl KafkaJsonToDelta {
         max_messages_per_batch: usize,
         min_bytes_per_file: usize,
         transforms: HashMap<String, String>,
-        stats_channel: Arc<Sender<Statistic>>,
+        stats_sender: Sender<Statistic>,
     ) -> Result<Self, KafkaJsonToDeltaError> {
         let mut kafka_client_config = ClientConfig::new();
 
@@ -166,7 +166,7 @@ impl KafkaJsonToDelta {
             transforms,
             consumer,
             partition_assignment,
-            stats_sender: stats_channel,
+            stats_sender,
         })
     }
 
@@ -317,7 +317,7 @@ impl KafkaJsonToDelta {
                         // dirty so we know we have to drop all buffers and re-seek if a rebalance occurs before the next file write.
                         value_buffers.mark_dirty();
 
-                        let record_batch_timer = instrumentation::new_timer();
+                        let record_batch_timer = Instant::now();
                         delta_writer.write_record_batch(&record_batch).await?;
 
                         self.log_record_batch_completed(
@@ -337,7 +337,7 @@ impl KafkaJsonToDelta {
                                 .await?;
 
                             // Prepare the new WAL entry
-                            let wal_timer = instrumentation::new_timer();
+                            let wal_timer = Instant::now();
                             let wal_entry = if let Some(txn_version) = last_txn_version {
                                 self.log_delta_tx_version_found(self.app_id.as_str(), txn_version)
                                     .await;
@@ -358,7 +358,7 @@ impl KafkaJsonToDelta {
                             self.log_write_ahead_log_prepared().await;
 
                             // Complete the delta write
-                            let delta_write_timer = instrumentation::new_timer();
+                            let delta_write_timer = Instant::now();
                             let txn = action::Action::txn(action::Txn {
                                 appId: self.app_id.clone(),
                                 version: wal_entry.transaction_id,

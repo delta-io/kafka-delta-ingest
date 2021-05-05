@@ -1,10 +1,8 @@
 use async_trait::async_trait;
-use dashmap::DashMap;
 use dipstick::{Input, InputScope, Prefixed, Statsd, StatsdScope};
 use log::{debug, error, info, warn};
 use rdkafka::message::{BorrowedMessage, Message};
 use std::convert::TryInto;
-use std::sync::Arc;
 use std::time::Instant;
 use tokio::{
     sync::mpsc::{channel, Receiver, Sender},
@@ -13,19 +11,18 @@ use tokio::{
 
 pub type Statistic = (StatTypes, i64);
 
-pub fn init_stats(endpoint: &str, app_id: &str) -> Result<Arc<Sender<Statistic>>, std::io::Error> {
+pub fn init_stats(endpoint: &str, app_id: &str) -> Result<Sender<Statistic>, std::io::Error> {
     let scope = Statsd::send_to(endpoint)?.named(app_id).metrics();
-    let scope_ref = Arc::new(scope);
 
-    let mut handler = StatsHandler::new(scope_ref.clone());
+    let mut handler = StatsHandler::new(scope);
 
-    let channel = Arc::new(handler.tx.clone());
+    let channel = handler.tx.clone();
 
     task::spawn(async move {
         handler.run_loop().await;
     });
 
-    Ok(channel.clone())
+    Ok(channel)
 }
 
 #[async_trait]
@@ -178,26 +175,20 @@ pub trait Instrumentation {
         let _ = self.stats_sender().send(statistic).await;
     }
 
-    fn stats_sender(&self) -> Arc<Sender<Statistic>>;
+    fn stats_sender(&self) -> Sender<Statistic>;
 }
 
 pub struct StatsHandler {
-    metrics: Arc<StatsdScope>,
-    values: Arc<DashMap<String, i64>>,
+    metrics: StatsdScope,
     rx: Receiver<Statistic>,
     pub tx: Sender<Statistic>,
 }
 
 impl StatsHandler {
-    pub fn new(metrics: Arc<StatsdScope>) -> StatsHandler {
+    pub fn new(metrics: StatsdScope) -> StatsHandler {
         let (tx, rx) = channel(1_000_000);
 
-        StatsHandler {
-            metrics,
-            values: Arc::new(DashMap::default()),
-            rx,
-            tx,
-        }
+        StatsHandler { metrics, rx, tx }
     }
 
     pub async fn run_loop(&mut self) {
@@ -237,8 +228,6 @@ impl StatsHandler {
         } else {
             error!("Failed to report timer to statsd with an i64 that couldn't fit into u64.");
         }
-
-        self.values.insert(stat_string, duration_us);
     }
 
     fn handle_gauge(&self, stat: StatTypes, count: i64) {
@@ -246,23 +235,15 @@ impl StatsHandler {
         let key = stat_string.as_str();
 
         self.metrics.gauge(key).value(count);
-        self.values.insert(stat_string, count);
     }
 
     fn handle_counter(&self, stat: StatTypes, count: i64) {
         let stat_string = stat.to_string();
         let key = stat_string.as_str();
 
-        let new_count = if let Some(value) = self.values.get(key) {
-            *value + count
-        } else {
-            count
-        };
-
         let sized_count: usize = count.try_into().expect("Could not convert to usize");
 
         self.metrics.counter(key).count(sized_count);
-        self.values.insert(stat_string, new_count);
     }
 }
 
@@ -282,10 +263,6 @@ fn info_message(description: &str, m: &BorrowedMessage) {
         m.partition(),
         m.offset()
     );
-}
-
-pub fn new_timer() -> Instant {
-    Instant::now()
 }
 
 #[derive(Debug, Display, Hash, PartialEq, Eq)]
