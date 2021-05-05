@@ -9,7 +9,6 @@ anyhow = "1"
 async-trait = "0.1"
 chrono = "0"
 clap = { version = ">=3.0.0-beta.2,<4", features = ["color"] }
-dashmap = "4.0"
 dipstick = "0.9"
 env_logger = "0"
 futures = "0.3"
