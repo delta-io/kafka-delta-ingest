@@ -141,7 +141,7 @@ impl DeltaWriter {
     }
 
     pub async fn last_transaction_version(
-        &mut self,
+        &self,
         app_id: &str,
     ) -> Result<Option<DeltaDataTypeVersion>, DeltaWriterError> {
         let tx_versions = self.table.get_app_transaction_version();
