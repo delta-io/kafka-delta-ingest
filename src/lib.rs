@@ -35,7 +35,6 @@ use crate::{
     deltalake_ext::{DeltaWriter, DeltaWriterError},
     instrumentation::{Instrumentation, Statistic},
 };
-use rdkafka::message::BorrowedMessage;
 
 type DataTypeTransactionId = i64;
 type DataTypePartition = i32;
@@ -96,39 +95,6 @@ pub enum KafkaJsonToDeltaError {
 
     #[error("Kafka message deserialization failed at partition {partition} offset {offset}")]
     KafkaMessageDeserialization { partition: i32, offset: i64 },
-}
-
-/// This error is used in stream run_loop to indicate whether the stream should
-/// jump straight to the next message with `Continue` or completely fail with `General` error.
-#[derive(thiserror::Error, Debug)]
-enum ProcessingError {
-    #[error("Continue to the next message")]
-    Continue,
-
-    #[error("KafkaJsonToDeltaError: {source}")]
-    General {
-        #[from]
-        source: KafkaJsonToDeltaError,
-    },
-}
-
-impl From<WriteAheadLogError> for ProcessingError {
-    fn from(e: WriteAheadLogError) -> Self {
-        ProcessingError::General { source: e.into() }
-    }
-}
-impl From<DeltaWriterError> for ProcessingError {
-    fn from(e: DeltaWriterError) -> Self {
-        ProcessingError::General { source: e.into() }
-    }
-}
-
-struct ProcessingState {
-    delta_writer: DeltaWriter,
-    value_buffers: ValueBuffers,
-    transformer: Transformer,
-    wal: Arc<dyn WriteAheadLog + Sync + Send>,
-    latency_timer: Instant,
 }
 
 /// Encapsulates a single topic-to-table ingestion stream.
@@ -224,268 +190,209 @@ impl KafkaJsonToDelta {
         res
     }
 
-    async fn init(&mut self, state: &ProcessingState) -> Result<(), KafkaJsonToDeltaError> {
-        info!("Initializing last Delta transaction version before starting run loop.");
-
-        let last_txn_version = state
-            .delta_writer
-            .last_transaction_version(self.app_id.as_str())
-            .await?;
-
-        if let Some(txn_version) = last_txn_version {
-            let previous_wal_entry = state.wal.get_entry_by_transaction_id(txn_version).await?;
-            self.init_offsets(&previous_wal_entry.partition_offsets)
-                .await?;
-        }
-
-        Ok(())
-    }
-
-    async fn process_message(
-        &mut self,
-        state: &mut ProcessingState,
-        msg: &BorrowedMessage<'_>,
-    ) -> Result<(), ProcessingError> {
-        let mut value = self.deserialize_message(msg).await?;
-        self.transform_value(state, &mut value, msg).await?;
-
-        if state.value_buffers.is_tracking(msg.partition()) {
-            // This is the 99% case. We are already tracking this partition. Just
-            // buffer it.
-            state
-                .value_buffers
-                .add(msg.partition(), msg.offset(), value);
-            self.log_message_buffered(msg, state.value_buffers.len())
-                .await;
-        } else {
-            self.handle_non_tracked_partition(state, msg, value).await?;
-        }
-
-        if self.should_complete_record_batch(&state.value_buffers, &state.latency_timer) {
-            self.finalize_record_batch(state).await?;
-        }
-
-        Ok(())
-    }
-
-    async fn deserialize_message(
-        &self,
-        msg: &BorrowedMessage<'_>,
-    ) -> Result<Value, ProcessingError> {
-        match deserialize_message(msg) {
-            Ok(v) => {
-                self.log_message_deserialized(msg).await;
-                Ok(v)
-            }
-            Err(KafkaJsonToDeltaError::KafkaMessageNoPayload { .. }) => {
-                self.log_message_deserialization_failed(msg).await;
-                Err(ProcessingError::Continue)
-            }
-            Err(KafkaJsonToDeltaError::KafkaMessageDeserialization { .. }) => {
-                self.log_message_deserialization_failed(msg).await;
-                Err(ProcessingError::Continue)
-            }
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    async fn transform_value(
-        &mut self,
-        state: &mut ProcessingState,
-        value: &mut Value,
-        msg: &BorrowedMessage<'_>,
-    ) -> Result<(), ProcessingError> {
-        // Transform
-        // TODO: Add better transform failure handling, ideally send to a dlq
-        match state.transformer.transform(value, msg) {
-            Err(_) => {
-                self.log_message_transform_failed(msg).await;
-                Err(ProcessingError::Continue)
-            }
-            _ => {
-                self.log_message_transformed(msg).await;
-                Ok(())
-            }
-        }
-    }
-
-    async fn handle_non_tracked_partition(
-        &self,
-        state: &mut ProcessingState,
-        msg: &BorrowedMessage<'_>,
-        value: Value,
-    ) -> Result<(), ProcessingError> {
-        if let Some(tx_version) = state
-            .delta_writer
-            .last_transaction_version(self.app_id.as_str())
-            .await?
-        {
-            self.log_assignment_untracked_skipped(msg).await;
-
-            // Since this is an untracked partition and a Delta transaction exists for
-            // the table already, we need to update partition assignments, seek the
-            // consumer and wait the next iteration of the run_loop.
-            update_partition_assignment(
-                self.partition_assignment.clone(),
-                state.wal.clone(),
-                Some(tx_version),
-                &mut state.value_buffers,
-                self.topic.as_str(),
-                &self.consumer,
-            )
-            .await?;
-            Err(ProcessingError::Continue)
-        } else {
-            // Since there is no delta transaction - this should be the first message
-            // available on the partition.
-            // Update partition assignment and buffer.
-            update_partition_assignment(
-                self.partition_assignment.clone(),
-                state.wal.clone(),
-                None,
-                &mut state.value_buffers,
-                self.topic.as_str(),
-                &self.consumer,
-            )
-            .await?;
-
-            state
-                .value_buffers
-                .add(msg.partition(), msg.offset(), value);
-
-            self.log_assignment_untracked_buffered(msg, state.value_buffers.len())
-                .await;
-            Ok(())
-        }
-    }
-
-    async fn finalize_record_batch(
-        &self,
-        state: &mut ProcessingState,
-    ) -> Result<(), ProcessingError> {
-        self.log_record_batch_started().await;
-
-        let (values, partition_offsets) =
-            consume_value_buffers(self.partition_assignment.clone(), &mut state.value_buffers)
-                .await?;
-
-        let record_batch = deltalake_ext::record_batch_from_json(
-            state.delta_writer.arrow_schema(),
-            values.as_slice(),
-        )?;
-
-        // Since we are writing a record batch to the in-memory parquet file, value buffers must be marked
-        // dirty so we know we have to drop all buffers and re-seek if a rebalance occurs before the next file write.
-        state.value_buffers.mark_dirty();
-
-        let record_batch_timer = Instant::now();
-        state.delta_writer.write_record_batch(&record_batch).await?;
-
-        self.log_record_batch_completed(
-            state.delta_writer.buffered_record_batch_count(),
-            &record_batch_timer,
-        )
-        .await;
-
-        // Finalize file and write Delta transaction
-        if self.should_complete_file(&state.delta_writer, &state.latency_timer) {
-            // Reset the latency timer to track allowed latency for the next file
-            state.latency_timer = Instant::now();
-
-            // Lookup the last transaction version from the Delta Log
-            let last_txn_version = state
-                .delta_writer
-                .last_transaction_version(self.app_id.as_str())
-                .await?;
-
-            // Prepare the new WAL entry
-            let wal_timer = Instant::now();
-            let wal_entry = if let Some(txn_version) = last_txn_version {
-                self.log_delta_tx_version_found(self.app_id.as_str(), txn_version)
-                    .await;
-
-                let last_wal_entry = state.wal.get_entry_by_transaction_id(txn_version).await?;
-
-                last_wal_entry.prepare_next(&partition_offsets)
-            } else {
-                self.log_delta_tx_version_not_found(self.app_id.as_str())
-                    .await;
-                WriteAheadLogEntry::new(
-                    1,
-                    TransactionState::Prepared,
-                    None, /*delta table version starts out empty*/
-                    partition_offsets.clone(),
-                )
-            };
-            state.wal.put_entry(&wal_entry).await?;
-            self.log_write_ahead_log_prepared().await;
-
-            // Complete the delta write
-            let delta_write_timer = Instant::now();
-            let txn = action::Action::txn(action::Txn {
-                appId: self.app_id.clone(),
-                version: wal_entry.transaction_id,
-                lastUpdated: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as i64,
-            });
-            self.log_delta_write_started().await;
-            let commit_result = state.delta_writer.write_file(&mut vec![txn]).await;
-            match commit_result {
-                Ok(version) => {
-                    self.log_delta_write_completed(&delta_write_timer).await;
-                    state
-                        .wal
-                        .complete_entry(wal_entry.transaction_id, version)
-                        .await?;
-                    self.log_write_ahead_log_completed(&wal_timer).await;
-                }
-                Err(e) => {
-                    state.wal.abort_entry(wal_entry.transaction_id).await?;
-                    self.log_write_ahead_log_aborted().await;
-                    self.log_delta_write_failed().await;
-                    return Err(e.into());
-                }
-            }
-        }
-
-        Ok(())
-    }
-
     async fn run_loop(
         &mut self,
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<(), KafkaJsonToDeltaError> {
-        let mut state = ProcessingState {
-            delta_writer: DeltaWriter::for_table_path(self.table_location.clone()).await?,
-            value_buffers: ValueBuffers::new(),
-            transformer: Transformer::from_transforms(&self.transforms)?,
-            wal: write_ahead_log::new_write_ahead_log(self.app_id.to_string()).await?,
-            latency_timer: Instant::now(),
-        };
+        let mut delta_writer = DeltaWriter::for_table_path(self.table_location.clone()).await?;
+        let mut value_buffers = ValueBuffers::new();
 
-        self.init(&state).await?;
+        let transformer = Transformer::from_transforms(&self.transforms)?;
+        let wal = write_ahead_log::new_write_ahead_log(self.app_id.to_string()).await?;
+
+        info!("Initializing last Delta transaction version before starting run loop.");
+
+        let last_txn_version = delta_writer
+            .last_transaction_version(self.app_id.as_str())
+            .await?;
+
+        if let Some(txn_version) = last_txn_version {
+            let previous_wal_entry = wal.get_entry_by_transaction_id(txn_version).await?;
+            self.init_offsets(&previous_wal_entry.partition_offsets)
+                .await?;
+        }
 
         let mut stream = self.consumer.stream();
-        //state.latency_timer = Instant::now(); TODO
+        let mut latency_timer = Instant::now();
 
         info!("Starting run loop.");
 
         while let Some(message) = stream.next().await {
             match message {
                 Ok(m) => {
-                    match self.process_message(&mut state, &m).await {
-                        Ok(_) | Err(ProcessingError::Continue) => {
-                            // Exit if the cancellation token is set
-                            if let Some(token) = cancellation_token {
-                                if token.is_cancelled() {
-                                    self.log_stream_cancelled(&m).await;
-                                    return Ok(());
+                    self.log_message_received(&m).await;
+
+                    // Deserialize
+                    // TODO: Add better deserialization error handling, ideally send to a dlq
+                    let mut value = match deserialize_message(&m) {
+                        Ok(v) => {
+                            self.log_message_deserialized(&m).await;
+                            v
+                        }
+                        Err(KafkaJsonToDeltaError::KafkaMessageNoPayload { .. }) => {
+                            self.log_message_deserialization_failed(&m).await;
+                            continue;
+                        }
+                        Err(KafkaJsonToDeltaError::KafkaMessageDeserialization { .. }) => {
+                            self.log_message_deserialization_failed(&m).await;
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    };
+
+                    // Transform
+                    // TODO: Add better transform failure handling, ideally send to a dlq
+                    match transformer.transform(&mut value, &m) {
+                        Err(_) => {
+                            self.log_message_transform_failed(&m).await;
+                            continue;
+                        }
+                        _ => {
+                            self.log_message_transformed(&m).await;
+                        }
+                    }
+
+                    // Buffer
+                    let partition = m.partition();
+                    if value_buffers.is_tracking(partition) {
+                        // This is the 99% case. We are already tracking this partition. Just
+                        // buffer it.
+                        value_buffers.add(partition, m.offset(), value);
+                        self.log_message_buffered(&m, value_buffers.len()).await;
+                    } else if let Some(tx_version) = delta_writer
+                        .last_transaction_version(self.app_id.as_str())
+                        .await?
+                    {
+                        self.log_assignment_untracked_skipped(&m).await;
+
+                        // Since this is an untracked partition and a Delta transaction exists for
+                        // the table already, we need to update partition assignments, seek the
+                        // consumer and wait the next iteration of the run_loop.
+                        update_partition_assignment(
+                            self.partition_assignment.clone(),
+                            wal.clone(),
+                            Some(tx_version),
+                            &mut value_buffers,
+                            self.topic.as_str(),
+                            &self.consumer,
+                        )
+                        .await?;
+                        continue;
+                    } else {
+                        // Since there is no delta transaction - this should be the first message
+                        // available on the partition.
+                        // Update partition assignment and buffer.
+                        update_partition_assignment(
+                            self.partition_assignment.clone(),
+                            wal.clone(),
+                            None,
+                            &mut value_buffers,
+                            self.topic.as_str(),
+                            &self.consumer,
+                        )
+                        .await?;
+
+                        value_buffers.add(partition, m.offset(), value);
+
+                        self.log_assignment_untracked_buffered(&m, value_buffers.len())
+                            .await;
+                    }
+
+                    // Finalize arrow record batch
+                    if self.should_complete_record_batch(&value_buffers, &latency_timer) {
+                        self.log_record_batch_started().await;
+
+                        let (values, partition_offsets) = consume_value_buffers(
+                            self.partition_assignment.clone(),
+                            &mut value_buffers,
+                        )
+                        .await?;
+
+                        let record_batch = deltalake_ext::record_batch_from_json(
+                            delta_writer.arrow_schema(),
+                            values.as_slice(),
+                        )?;
+
+                        // Since we are writing a record batch to the in-memory parquet file, value buffers must be marked
+                        // dirty so we know we have to drop all buffers and re-seek if a rebalance occurs before the next file write.
+                        value_buffers.mark_dirty();
+
+                        let record_batch_timer = Instant::now();
+                        delta_writer.write_record_batch(&record_batch).await?;
+
+                        self.log_record_batch_completed(
+                            delta_writer.buffered_record_batch_count(),
+                            &record_batch_timer,
+                        )
+                        .await;
+
+                        // Finalize file and write Delta transaction
+                        if self.should_complete_file(&delta_writer, &latency_timer) {
+                            // Reset the latency timer to track allowed latency for the next file
+                            latency_timer = Instant::now();
+
+                            // Lookup the last transaction version from the Delta Log
+                            let last_txn_version = delta_writer
+                                .last_transaction_version(self.app_id.as_str())
+                                .await?;
+
+                            // Prepare the new WAL entry
+                            let wal_timer = Instant::now();
+                            let wal_entry = if let Some(txn_version) = last_txn_version {
+                                self.log_delta_tx_version_found(self.app_id.as_str(), txn_version)
+                                    .await;
+                                let last_wal_entry =
+                                    wal.get_entry_by_transaction_id(txn_version).await?;
+                                last_wal_entry.prepare_next(&partition_offsets)
+                            } else {
+                                self.log_delta_tx_version_not_found(self.app_id.as_str())
+                                    .await;
+                                WriteAheadLogEntry::new(
+                                    1,
+                                    TransactionState::Prepared,
+                                    None, /*delta table version starts out empty*/
+                                    partition_offsets.clone(),
+                                )
+                            };
+                            wal.put_entry(&wal_entry).await?;
+                            self.log_write_ahead_log_prepared().await;
+
+                            // Complete the delta write
+                            let delta_write_timer = Instant::now();
+                            let txn = action::Action::txn(action::Txn {
+                                appId: self.app_id.clone(),
+                                version: wal_entry.transaction_id,
+                                lastUpdated: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_millis()
+                                    as i64,
+                            });
+                            self.log_delta_write_started().await;
+                            let commit_result = delta_writer.write_file(&mut vec![txn]).await;
+                            match commit_result {
+                                Ok(version) => {
+                                    self.log_delta_write_completed(&delta_write_timer).await;
+                                    wal.complete_entry(wal_entry.transaction_id, version)
+                                        .await?;
+                                    self.log_write_ahead_log_completed(&wal_timer).await;
+                                }
+                                Err(e) => {
+                                    wal.abort_entry(wal_entry.transaction_id).await?;
+                                    self.log_write_ahead_log_aborted().await;
+                                    self.log_delta_write_failed().await;
+                                    return Err(KafkaJsonToDeltaError::DeltaWriter { source: e });
                                 }
                             }
                         }
-                        Err(ProcessingError::General { source }) => return Err(source),
+                    }
+
+                    // Exit if the cancellation token is set
+                    if let Some(token) = cancellation_token {
+                        if token.is_cancelled() {
+                            self.log_stream_cancelled(&m).await;
+                            return Ok(());
+                        }
                     }
                 }
                 Err(e) => {
