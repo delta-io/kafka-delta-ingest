@@ -290,7 +290,7 @@ impl KafkaJsonToDelta {
     }
 
     async fn transform_value(
-        &mut self,
+        &self,
         state: &mut ProcessingState,
         value: &mut Value,
         msg: &BorrowedMessage<'_>,
