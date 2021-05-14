@@ -242,7 +242,7 @@ impl KafkaJsonToDelta {
     }
 
     async fn process_message(
-        &mut self,
+        &self,
         state: &mut ProcessingState,
         msg: &BorrowedMessage<'_>,
     ) -> Result<(), ProcessingError> {
