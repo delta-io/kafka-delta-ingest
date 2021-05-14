@@ -468,7 +468,7 @@ impl KafkaJsonToDelta {
         self.init(&state).await?;
 
         let mut stream = self.consumer.stream();
-        //state.latency_timer = Instant::now(); TODO
+        state.latency_timer = Instant::now();
 
         info!("Starting run loop.");
 
