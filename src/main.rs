@@ -2,7 +2,7 @@
 extern crate clap;
 
 use clap::{AppSettings, Values};
-use kafka_delta_ingest::{instrumentation, KafkaJsonToDelta};
+use kafka_delta_ingest::{instrumentation, KafkaJsonToDelta, Options};
 use log::{error, info};
 use std::collections::HashMap;
 
@@ -113,16 +113,20 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
                 .unwrap_or("localhost:8125");
             let stats_sender = instrumentation::init_stats(stats_endpoint, app_id)?;
 
-            let mut stream = KafkaJsonToDelta::new(
+            let options = Options::new(
                 topic.to_string(),
                 table_location.to_string(),
-                kafka_brokers.to_string(),
-                consumer_group_id.to_string(),
-                Some(additional_kafka_settings),
                 app_id.to_string(),
                 allowed_latency,
                 max_messages_per_batch,
                 min_bytes_per_file,
+            );
+
+            let mut stream = KafkaJsonToDelta::new(
+                options,
+                kafka_brokers.to_string(),
+                consumer_group_id.to_string(),
+                Some(additional_kafka_settings),
                 transforms,
                 stats_sender,
             )?;

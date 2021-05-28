@@ -21,7 +21,6 @@ rdkafka = "0.26"
 rusoto_core = { version = "0.46" }
 rusoto_credential = { version = "0.46" }
 rusoto_s3 = { version = "0.46" }
-rusoto_dynamodb = { version = "0.46" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 strum = "0.20"
@@ -32,9 +31,9 @@ tokio-stream = { version = "0", features = ["fs"] }
 tokio-util = "0.6.3"
 uuid = { version = "0.8", features = ["serde", "v4"] }
 
-arrow  = { git = "https://github.com/apache/arrow.git", rev = "9c1e5bd19347635ea9f373bcf93f2cea0231d50a" }
-deltalake = { git = "https://github.com/delta-io/delta-rs.git", rev = "38e5821b3a06db43e59c1dcca18eae818e11dd44" }
-parquet = { git = "https://github.com/apache/arrow.git", rev = "9c1e5bd19347635ea9f373bcf93f2cea0231d50a" }
+arrow  = { version = "4" }
+deltalake = { git = "https://github.com/delta-io/delta-rs.git", rev = "4d033d6be1e140d61cf7685d60c1c05bc3d72146", features = ["s3", "dynamodb"] }
+parquet = { version = "4" }
 
 [dev-dependencies]
 utime = "0.3"
