@@ -36,10 +36,13 @@ const WORKER_2: &str = "WORKER-2";
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn when_both_workers_started_simultaneously() {
-    let version = run_emails_s3_tests().await;
-    // when_both_workers_started_simultaneously 23!
-    // when_both_workers_started_sequentially
-    println!("when_both_workers_started_simultaneously = {}", version)
+    run_emails_s3_tests(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn when_rebalance_happens() {
+    run_emails_s3_tests(true).await;
 }
 
 struct TestScope {
@@ -49,14 +52,25 @@ struct TestScope {
     pub runtime: HashMap<&'static str, Runtime>,
 }
 
-async fn run_emails_s3_tests() -> i64 {
+async fn run_emails_s3_tests(initiate_rebalance: bool) {
+    init_logger();
     let scope = TestScope::new().await;
 
     let w1 = scope.create_and_start(WORKER_1).await;
-    let w2 = scope.create_and_start(WORKER_2).await;
 
-    // send expected TOTAL_MESSAGES messages
-    scope.send_messages(TEST_TOTAL_MESSAGES).await;
+    // in order to initiate rebalance we first send messages,
+    // ensure that worker 1 consumes  some of them and then crate worker 2,
+    // otherwise, to proceed without rebalance the two workers has to be created simultaneously
+    let w2 = if initiate_rebalance {
+        scope.send_messages(TEST_TOTAL_MESSAGES).await;
+        thread::sleep(Duration::from_secs(2));
+        scope.create_and_start(WORKER_2).await
+    } else {
+        let w = scope.create_and_start(WORKER_2).await;
+        thread::sleep(Duration::from_secs(5));
+        scope.send_messages(TEST_TOTAL_MESSAGES).await;
+        w
+    };
 
     // once we send our expected messages, it's time to send dummy ones so the run_loop will pick
     // up the cancellation token state change. It's started on dedicated thread with `is_running`
@@ -73,7 +87,7 @@ async fn run_emails_s3_tests() -> i64 {
 
     // wait until the destination table will get every expected message, we check this summing up
     // the each offset of each partition to get the TOTAL_MESSAGES value
-    let last_version = scope
+    scope
         .wait_on_total_offset(partitions, TEST_TOTAL_MESSAGES)
         .await;
 
@@ -91,12 +105,10 @@ async fn run_emails_s3_tests() -> i64 {
 
     scope.validate_data().await;
     scope.shutdown();
-    last_version
 }
 
 impl TestScope {
     async fn new() -> Self {
-        init_logger();
         let topic = format!("emails-{}", Uuid::new_v4());
         let table = prepare_table(&topic).await;
         let workers_token = Arc::new(CancellationToken::new());
@@ -196,7 +208,7 @@ impl TestScope {
         println!("All messages are sent");
     }
 
-    async fn wait_on_total_offset(&self, apps: Vec<String>, offset: i32) -> i64 {
+    async fn wait_on_total_offset(&self, apps: Vec<String>, offset: i32) {
         let mut table = deltalake::open_table(&self.table).await.unwrap();
         let expected_total = offset - TEST_PARTITIONS;
         loop {
@@ -213,7 +225,7 @@ impl TestScope {
             if total >= expected_total as i64 {
                 self.workers_token.cancel();
                 println!("All messages are in delta");
-                return table.version;
+                return;
             }
 
             println!("Expecting offsets in delta {}/{}...", total, expected_total);
