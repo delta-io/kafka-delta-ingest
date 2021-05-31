@@ -140,7 +140,7 @@ impl DeltaWriter {
         })
     }
 
-    pub async fn last_transaction_version(
+    pub fn last_transaction_version(
         &self,
         app_id: &str,
     ) -> Result<Option<DeltaDataTypeVersion>, DeltaWriterError> {

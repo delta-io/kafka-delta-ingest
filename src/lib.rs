@@ -244,8 +244,7 @@ impl KafkaJsonToDelta {
 
             let last_txn_version = state
                 .delta_writer
-                .last_transaction_version(&self.app_id_for_partition(partition))
-                .await?;
+                .last_transaction_version(&self.app_id_for_partition(partition))?;
 
             if let Some(v) = last_txn_version {
                 offsets.insert(partition, DataTypeOffset::from(v));
@@ -343,8 +342,7 @@ impl KafkaJsonToDelta {
 
         if let Some(offset) = state
             .delta_writer
-            .last_transaction_version(&self.app_id_for_partition(partition))
-            .await?
+            .last_transaction_version(&self.app_id_for_partition(partition))?
         {
             self.log_assignment_untracked_skipped(msg).await;
 
