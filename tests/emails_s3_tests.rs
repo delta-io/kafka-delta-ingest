@@ -28,7 +28,7 @@ const TEST_APP_ID: &str = "emails_test";
 const TEST_BROKER: &str = "0.0.0.0:9092";
 const TEST_CONSUMER_GROUP_ID: &str = "kafka_delta_ingest_emails";
 const TEST_PARTITIONS: i32 = 4;
-const TEST_TOTAL_MESSAGES: i32 = 200;
+const TEST_TOTAL_MESSAGES: i32 = 100;
 
 const WORKER_1: &str = "WORKER-1";
 const WORKER_2: &str = "WORKER-2";
@@ -40,13 +40,6 @@ async fn when_both_workers_started_simultaneously() {
     // when_both_workers_started_simultaneously 23!
     // when_both_workers_started_sequentially
     println!("when_both_workers_started_simultaneously = {}", version)
-}
-
-#[tokio::test(flavor = "multi_thread")]
-#[serial]
-async fn when_both_workers_started_sequentially() {
-    // let version = run_emails_s3_tests().await;
-    //println!("when_both_workers_started_sequentially = {}", version)
 }
 
 struct TestScope {
@@ -96,6 +89,7 @@ async fn run_emails_s3_tests() -> i64 {
     dummy_messages_token.cancel();
     dummy_messages_handle.await.unwrap();
 
+    scope.validate_data().await;
     scope.shutdown();
     last_version
 }
@@ -225,6 +219,14 @@ impl TestScope {
             println!("Expecting offsets in delta {}/{}...", total, expected_total);
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
+    }
+
+    async fn validate_data(&self) {
+        let table = deltalake::open_table(&self.table).await.unwrap();
+        let result = helpers::read_files_from_s3(table.get_file_paths()).await;
+        let r: Vec<i32> = (0..TEST_TOTAL_MESSAGES).collect();
+        println!("Got messages {}/{}", result.len(), TEST_TOTAL_MESSAGES);
+        assert_eq!(result, r);
     }
 }
 
