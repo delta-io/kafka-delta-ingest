@@ -112,8 +112,7 @@ pub struct Options {
     pub topic: String,
     /// Destination delta table location to produce messages into
     pub table_location: String,
-    /// Application identifier. Must be the same among concurrent workers. Used by delta protocol
-    /// to track offsets among topic partitions.
+    /// Unique per topic per environment. Must be the same for all processes that are part of a single job.
     pub app_id: String,
     /// Max desired latency from when a message is received to when it is written and
     /// committed to the target delta table (in seconds)
