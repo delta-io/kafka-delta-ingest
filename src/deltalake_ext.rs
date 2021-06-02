@@ -140,7 +140,7 @@ impl DeltaWriter {
         })
     }
 
-    pub async fn last_transaction_version(
+    pub fn last_transaction_version(
         &self,
         app_id: &str,
     ) -> Result<Option<DeltaDataTypeVersion>, DeltaWriterError> {
@@ -148,7 +148,7 @@ impl DeltaWriter {
 
         let v = tx_versions.get(app_id).map(|v| v.to_owned());
 
-        debug!("Transaction version is {:?}", v);
+        debug!("Transaction version is {:?} for {}", v, app_id);
 
         Ok(v)
     }
@@ -193,7 +193,7 @@ impl DeltaWriter {
         &mut self,
         actions: &mut Vec<Action>,
     ) -> Result<DeltaDataTypeVersion, DeltaWriterError> {
-        info!("Writing parquet file.");
+        debug!("Writing parquet file.");
 
         let metadata = self.arrow_writer.close()?;
 
@@ -214,12 +214,12 @@ impl DeltaWriter {
             .put_obj(storage_path.as_str(), obj_bytes.as_slice())
             .await?;
 
-        info!("Parquet file written.");
+        debug!("Parquet file written.");
 
         // After data is written, re-initialize internal state to handle another file
         self.reset()?;
 
-        info!("Writing Delta transaction.");
+        debug!("Writing Delta transaction.");
 
         let add = create_add(&self.partition_values, path, file_size, &metadata)?;
 

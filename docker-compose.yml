@@ -40,7 +40,7 @@ services:
       - localstack
     entrypoint: "/bin/bash"
     command:
-      - /localstack-create_dynamodb_test_tables.sh
+      - /localstack-setup_emails.sh
     volumes:
-      - "./bin/localstack-create_dynamodb_test_tables.sh:/localstack-create_dynamodb_test_tables.sh"
-
+      - "./bin/localstack-setup_emails.sh:/localstack-setup_emails.sh"
+      - "./tests/data/emails/:/data/emails"

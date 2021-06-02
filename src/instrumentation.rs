@@ -1,6 +1,7 @@
 use async_trait::async_trait;
+use deltalake::DeltaDataTypeVersion;
 use dipstick::{Input, InputScope, Prefixed, Statsd, StatsdScope};
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use rdkafka::message::{BorrowedMessage, Message};
 use std::convert::TryInto;
 use std::time::Instant;
@@ -83,7 +84,7 @@ pub trait Instrumentation {
     // record batches
 
     async fn log_record_batch_started(&self) {
-        info!("Record batch started");
+        debug!("Record batch started");
         self.record_stat((StatTypes::RecordBatchStarted, 1)).await;
     }
 
@@ -93,7 +94,7 @@ pub trait Instrumentation {
         timer: &Instant,
     ) {
         let duration = timer.elapsed().as_micros() as i64;
-        info!("Record batch completed in {} microseconds", duration);
+        debug!("Record batch completed in {} microseconds", duration);
         self.record_stat((StatTypes::RecordBatchCompleted, 1)).await;
         self.record_stat((
             StatTypes::BufferedRecordBatches,
@@ -111,9 +112,12 @@ pub trait Instrumentation {
         self.record_stat((StatTypes::DeltaWriteStarted, 1)).await;
     }
 
-    async fn log_delta_write_completed(&self, timer: &Instant) {
+    async fn log_delta_write_completed(&self, version: DeltaDataTypeVersion, timer: &Instant) {
         let duration = timer.elapsed().as_micros() as i64;
-        info!("Delta write completed in {} microseconds", duration);
+        debug!(
+            "Delta write for version {} has completed in {} microseconds",
+            version, duration
+        );
         self.record_stat((StatTypes::DeltaWriteCompleted, 1)).await;
         self.record_stat((StatTypes::DeltaWriteDuration, duration))
             .await;
@@ -122,32 +126,6 @@ pub trait Instrumentation {
     async fn log_delta_write_failed(&self) {
         info!("Delta write failed");
         self.record_stat((StatTypes::DeltaWriteFailed, 1)).await;
-    }
-
-    // write ahead log
-
-    async fn log_write_ahead_log_prepared(&self) {
-        info!("Write ahead log entry prepared");
-        self.record_stat((StatTypes::WriteAheadLogEntryPrepared, 1))
-            .await;
-    }
-
-    async fn log_write_ahead_log_completed(&self, timer: &Instant) {
-        let duration = timer.elapsed().as_micros() as i64;
-        info!(
-            "Write ahead log entry completed in {} microseconds",
-            duration
-        );
-        self.record_stat((StatTypes::WriteAheadLogEntryCompleted, 1))
-            .await;
-        self.record_stat((StatTypes::WriteAheadLogEntryDuration, duration))
-            .await;
-    }
-
-    async fn log_write_ahead_log_aborted(&self) {
-        warn!("Write ahead log entry aborted");
-        self.record_stat((StatTypes::WriteAheadLogEntryAborted, 1))
-            .await;
     }
 
     // delta tx

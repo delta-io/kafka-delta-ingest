@@ -1,25 +1,17 @@
-#[macro_use]
-extern crate maplit;
-
 extern crate kafka_delta_ingest;
+
+#[allow(dead_code)]
+mod helpers;
 
 use deltalake::action::Action;
 use dipstick::{Input, Prefixed, Statsd};
-use kafka_delta_ingest::{instrumentation::StatsHandler, KafkaJsonToDelta};
+use kafka_delta_ingest::{instrumentation::StatsHandler, KafkaJsonToDelta, Options};
 use log::debug;
 use parquet::{
     file::reader::{FileReader, SerializedFileReader},
     record::RowAccessor,
 };
-use rdkafka::{
-    admin::{AdminClient, AdminOptions, NewTopic, TopicReplication},
-    producer::FutureProducer,
-    producer::FutureRecord,
-    util::Timeout,
-    ClientConfig,
-};
-use rusoto_core::Region;
-use rusoto_dynamodb::*;
+use rdkafka::{producer::FutureProducer, producer::FutureRecord, util::Timeout, ClientConfig};
 use serde_json::json;
 use std::env;
 use std::fs::File;
@@ -51,9 +43,7 @@ async fn e2e_smoke_test() {
     cleanup_delta_files(TEST_DELTA_TABLE_LOCATION);
     // Create a topic specific to the test run
     let topic = format!("e2e_smoke_test-{}", Uuid::new_v4());
-    create_topic(topic.as_str()).await;
-    // Cleanup the write ahead log
-    cleanup_write_ahead_log().await;
+    helpers::create_topic(topic.as_str(), 1).await;
 
     //
     // Start a stream and a producer
@@ -80,16 +70,20 @@ async fn e2e_smoke_test() {
     let stats_handler = StatsHandler::new(stast_scope);
     let stats_sender = stats_handler.tx.clone();
 
-    let mut stream = KafkaJsonToDelta::new(
+    let opts = Options::new(
         topic.to_string(),
         TEST_DELTA_TABLE_LOCATION.to_string(),
-        TEST_BROKER.to_string(),
-        TEST_CONSUMER_GROUP_ID.to_string(),
-        Some(additional_kafka_settings),
         TEST_APP_ID.to_string(),
         allowed_latency,
         max_messages_per_batch,
         min_bytes_per_file,
+    );
+
+    let mut stream = KafkaJsonToDelta::new(
+        opts,
+        TEST_BROKER.to_string(),
+        TEST_CONSUMER_GROUP_ID.to_string(),
+        Some(additional_kafka_settings),
         transforms,
         stats_sender,
     )
@@ -246,45 +240,6 @@ fn cleanup_delta_files(table_location: &str) {
             }
             _ => {}
         }
-    }
-}
-
-async fn create_topic(topic: &str) {
-    let mut admin_client_config = ClientConfig::new();
-    admin_client_config.set("bootstrap.servers", TEST_BROKER);
-
-    let admin_client: AdminClient<_> = admin_client_config
-        .create()
-        .expect("AdminClient creation failed");
-    let admin_options = AdminOptions::default();
-    let num_partitions = 1;
-    let new_topic = NewTopic::new(topic, num_partitions, TopicReplication::Fixed(1));
-
-    admin_client
-        .create_topics(&[new_topic], &admin_options)
-        .await
-        .unwrap();
-}
-
-async fn cleanup_write_ahead_log() {
-    let client = DynamoDbClient::new(Region::Custom {
-        name: "custom".to_string(),
-        endpoint: LOCALSTACK_ENDPOINT.to_string(),
-    });
-
-    for n in 1i32..=2i32 {
-        let _ = client
-            .delete_item(DeleteItemInput {
-                key: hashmap! {
-                    "transaction_id".to_string() => AttributeValue {
-                        n: Some(n.to_string()),
-                        ..Default::default()
-                    },
-                },
-                table_name: TEST_APP_ID.to_string(),
-                ..Default::default()
-            })
-            .await;
     }
 }
 
