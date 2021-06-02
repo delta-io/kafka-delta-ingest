@@ -165,14 +165,14 @@ async fn e2e_smoke_test() {
         _ => panic!(),
     };
 
-    assert_eq!(2, stats.numRecords);
+    assert_eq!(2, stats.num_records);
     assert_eq!(
         "1",
-        stats.minValues["id"].as_value().unwrap().as_str().unwrap()
+        stats.min_values["id"].as_value().unwrap().as_str().unwrap()
     );
     assert_eq!(
         1,
-        stats.minValues["value"]
+        stats.min_values["value"]
             .as_value()
             .unwrap()
             .as_i64()
@@ -180,11 +180,11 @@ async fn e2e_smoke_test() {
     );
     assert_eq!(
         "2",
-        stats.maxValues["id"].as_value().unwrap().as_str().unwrap()
+        stats.max_values["id"].as_value().unwrap().as_str().unwrap()
     );
     assert_eq!(
         2,
-        stats.maxValues["value"]
+        stats.max_values["value"]
             .as_value()
             .unwrap()
             .as_i64()

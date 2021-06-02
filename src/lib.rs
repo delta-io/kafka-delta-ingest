@@ -463,9 +463,9 @@ impl KafkaJsonToDelta {
             let mut txns = Vec::new();
             for (partition, offset) in partition_offsets {
                 let txn = action::Action::txn(action::Txn {
-                    appId: self.app_id_for_partition(partition),
+                    app_id: self.app_id_for_partition(partition),
                     version: offset,
-                    lastUpdated: std::time::SystemTime::now()
+                    last_updated: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap()
                         .as_millis() as i64,
@@ -475,7 +475,7 @@ impl KafkaJsonToDelta {
             }
 
             self.log_delta_write_started().await;
-            let commit_result = state.delta_writer.write_file(&mut txns).await;
+            let commit_result = state.delta_writer.write_file(txns).await;
             match commit_result {
                 Ok(version) => {
                     self.log_delta_write_completed(version, &delta_write_timer)

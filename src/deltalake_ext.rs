@@ -191,8 +191,9 @@ impl DeltaWriter {
     /// Writes the existing parquet bytes to storage and resets internal state to handle another file.
     pub async fn write_file(
         &mut self,
-        actions: &mut Vec<Action>,
+        actions: Vec<Action>,
     ) -> Result<DeltaDataTypeVersion, DeltaWriterError> {
+        let mut actions = actions;
         debug!("Writing parquet file.");
 
         let metadata = self.arrow_writer.close()?;
@@ -227,7 +228,8 @@ impl DeltaWriter {
 
         // TODO: Pass StreamingUpdate operation
         let mut tx = self.table.create_transaction(None);
-        let version = tx.commit_with(actions.as_slice(), None).await?;
+        tx.add_actions(actions);
+        let version = tx.commit(None).await?;
 
         info!("Committed Delta version {}", version);
 
@@ -347,10 +349,10 @@ fn delta_stats_from_file_metadata(file_metadata: &FileMetaData) -> Result<Stats,
     }
 
     Ok(Stats {
-        numRecords: file_metadata.num_rows,
-        maxValues: max_values,
-        minValues: min_values,
-        nullCount: null_counts,
+        num_records: file_metadata.num_rows,
+        max_values,
+        min_values,
+        null_count: null_counts,
     })
 }
 
@@ -603,16 +605,12 @@ fn create_add(
     Ok(Add {
         path,
         size,
-
-        partitionValues: partition_values.to_owned(),
-        partitionValues_parsed: None,
-
-        modificationTime: modification_time,
-        dataChange: true,
-
+        partition_values: partition_values.to_owned(),
+        partition_values_parsed: None,
+        modification_time: modification_time,
+        data_change: true,
         stats: Some(stats_string),
         stats_parsed: None,
-        // ?
         tags: None,
     })
 }
