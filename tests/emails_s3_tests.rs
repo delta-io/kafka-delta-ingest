@@ -103,8 +103,7 @@ async fn run_emails_s3_tests(initiate_rebalance: bool) {
     dummy_messages_token.cancel();
     dummy_messages_handle.await.unwrap();
 
-    // the conflict resolution should be done before enabling these checks
-    // scope.validate_data().await;
+    scope.validate_data().await;
     scope.shutdown();
 }
 

@@ -30,10 +30,13 @@ use crate::{
     deltalake_ext::{DeltaWriter, DeltaWriterError},
     instrumentation::{Instrumentation, Statistic},
 };
+use deltalake::action::{Action, Add};
 use rdkafka::message::BorrowedMessage;
 
 type DataTypePartition = i32;
 type DataTypeOffset = i64;
+
+const DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS: u32 = 10_000_000;
 
 #[derive(thiserror::Error, Debug)]
 pub enum KafkaJsonToDeltaError {
@@ -243,7 +246,7 @@ impl KafkaJsonToDelta {
 
             let last_txn_version = state
                 .delta_writer
-                .last_transaction_version(&self.app_id_for_partition(partition))?;
+                .last_transaction_version(&self.app_id_for_partition(partition));
 
             if let Some(v) = last_txn_version {
                 offsets.insert(partition, DataTypeOffset::from(v));
@@ -341,7 +344,7 @@ impl KafkaJsonToDelta {
 
         if let Some(offset) = state
             .delta_writer
-            .last_transaction_version(&self.app_id_for_partition(partition))?
+            .last_transaction_version(&self.app_id_for_partition(partition))
         {
             self.log_assignment_untracked_skipped(msg).await;
 
@@ -454,38 +457,7 @@ impl KafkaJsonToDelta {
 
         // Finalize file and write Delta transaction
         if self.should_complete_file(&state.delta_writer, &state.latency_timer) {
-            // Reset the latency timer to track allowed latency for the next file
-            state.latency_timer = Instant::now();
-
-            // Complete the delta write
-            let delta_write_timer = Instant::now();
-
-            let mut txns = Vec::new();
-            for (partition, offset) in partition_offsets {
-                let txn = action::Action::txn(action::Txn {
-                    app_id: self.app_id_for_partition(partition),
-                    version: offset,
-                    last_updated: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as i64,
-                });
-
-                txns.push(txn);
-            }
-
-            self.log_delta_write_started().await;
-            let commit_result = state.delta_writer.write_file(txns).await;
-            match commit_result {
-                Ok(version) => {
-                    self.log_delta_write_completed(version, &delta_write_timer)
-                        .await;
-                }
-                Err(e) => {
-                    self.log_delta_write_failed().await;
-                    return Err(e.into());
-                }
-            }
+            self.complete_file(state, partition_offsets).await?;
         }
 
         Ok(())
@@ -630,6 +602,134 @@ impl KafkaJsonToDelta {
         let partition_offsets = partition_assignment.partition_offsets();
 
         Ok((values, partition_offsets))
+    }
+
+    async fn build_actions(
+        &self,
+        partition_offsets: &HashMap<DataTypePartition, DataTypeOffset>,
+        add: Add,
+    ) -> Vec<Action> {
+        let mut actions = Vec::new();
+        for (partition, offset) in partition_offsets.iter() {
+            let txn = action::Action::txn(action::Txn {
+                app_id: self.app_id_for_partition(*partition),
+                version: *offset,
+                last_updated: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as i64,
+            });
+
+            actions.push(txn);
+        }
+
+        actions.push(Action::add(add));
+        actions
+    }
+
+    async fn complete_file(
+        &self,
+        state: &mut ProcessingState,
+        partition_offsets: HashMap<DataTypePartition, DataTypeOffset>,
+    ) -> Result<(), KafkaJsonToDeltaError> {
+        // Reset the latency timer to track allowed latency for the next file
+        state.latency_timer = Instant::now();
+
+        let delta_write_timer = Instant::now();
+
+        self.log_delta_write_started().await;
+
+        // upload pending parquet file to delta store
+        // TODO remove it if we got conflict error? or it'll be considered as tombstone
+        let add = state.delta_writer.write_parquet_file().await?;
+
+        // update the table to get the latest version
+        // the consecutive updates will be made within error handles
+        state.delta_writer.update_table().await?;
+
+        let mut attempt_number: u32 = 0;
+
+        loop {
+            let version = state.delta_writer.table_version() + 1;
+            let actions = self.build_actions(&partition_offsets, add.clone()).await;
+            let commit_result = state.delta_writer.commit_version(version, actions).await;
+
+            match commit_result {
+                Ok(v) => {
+                    assert_eq!(v, version);
+                    self.log_delta_write_completed(version, &delta_write_timer)
+                        .await;
+                    return Ok(());
+                }
+                Err(e) => match e {
+                    DeltaTransactionError::VersionAlreadyExists { .. }
+                        if attempt_number > DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS + 1 =>
+                    {
+                        debug!("Transaction attempt failed. Attempts exhausted beyond max_retry_commit_attempts of {} so failing.", DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS);
+                        self.log_delta_write_failed().await;
+                        return Err(e.into());
+                    }
+                    DeltaTransactionError::VersionAlreadyExists { .. } => {
+                        state.delta_writer.update_table().await?;
+
+                        if self.are_partition_offsets_match(state, &partition_offsets) {
+                            attempt_number += 1;
+                            debug!("Transaction attempt failed. Incrementing attempt number to {} and retrying.", attempt_number);
+                        } else {
+                            info!("Transaction attempt failed. Got conflict partition offsets from delta store. Re-seeking consumer");
+                            self.reset_writer_and_partition_assignment(state).await?;
+                            // todo delete parquet file
+                            return Ok(());
+                        }
+                    }
+                    _ => {
+                        self.log_delta_write_failed().await;
+                        return Err(e.into());
+                    }
+                },
+            }
+        }
+    }
+
+    fn are_partition_offsets_match(
+        &self,
+        state: &mut ProcessingState,
+        partition_offsets: &HashMap<DataTypePartition, DataTypeOffset>,
+    ) -> bool {
+        for (partition, offset) in partition_offsets {
+            let version = state
+                .delta_writer
+                .last_transaction_version(&self.app_id_for_partition(*partition));
+
+            if let Some(v) = version {
+                if v != *offset {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    async fn reset_writer_and_partition_assignment(
+        &self,
+        state: &mut ProcessingState,
+    ) -> Result<(), KafkaJsonToDeltaError> {
+        let mut partition_assignment = self.partition_assignment.lock().await;
+        let mut map = HashMap::new();
+        for partition in partition_assignment.partitions() {
+            if let Some(offset) = state
+                .delta_writer
+                .last_transaction_version(&self.app_id_for_partition(partition))
+            {
+                map.insert(partition, offset);
+            }
+        }
+
+        partition_assignment.update_offsets(&map);
+
+        self.update_partition_assignment(state, None).await?;
+
+        Ok(())
     }
 }
 

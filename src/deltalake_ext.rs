@@ -12,7 +12,7 @@ use deltalake::{
     DeltaDataTypeVersion, DeltaTable, DeltaTableError, DeltaTransactionError, Schema,
     StorageBackend, StorageError, UriError,
 };
-use log::{debug, info};
+use log::debug;
 use parquet::{
     arrow::ArrowWriter,
     basic::{Compression, LogicalType},
@@ -140,17 +140,23 @@ impl DeltaWriter {
         })
     }
 
-    pub fn last_transaction_version(
-        &self,
-        app_id: &str,
-    ) -> Result<Option<DeltaDataTypeVersion>, DeltaWriterError> {
+    pub fn last_transaction_version(&self, app_id: &str) -> Option<DeltaDataTypeVersion> {
         let tx_versions = self.table.get_app_transaction_version();
 
         let v = tx_versions.get(app_id).map(|v| v.to_owned());
 
         debug!("Transaction version is {:?} for {}", v, app_id);
 
-        Ok(v)
+        v
+    }
+
+    pub async fn update_table(&mut self) -> Result<(), DeltaWriterError> {
+        self.table.update().await?;
+        Ok(())
+    }
+
+    pub fn table_version(&self) -> DeltaDataTypeVersion {
+        self.table.version
     }
 
     /// Writes the record batch in-memory and updates internal state accordingly.
@@ -189,11 +195,7 @@ impl DeltaWriter {
     }
 
     /// Writes the existing parquet bytes to storage and resets internal state to handle another file.
-    pub async fn write_file(
-        &mut self,
-        actions: Vec<Action>,
-    ) -> Result<DeltaDataTypeVersion, DeltaWriterError> {
-        let mut actions = actions;
+    pub async fn write_parquet_file(&mut self) -> Result<Add, DeltaWriterError> {
         debug!("Writing parquet file.");
 
         let metadata = self.arrow_writer.close()?;
@@ -220,20 +222,22 @@ impl DeltaWriter {
         // After data is written, re-initialize internal state to handle another file
         self.reset()?;
 
-        debug!("Writing Delta transaction.");
+        Ok(create_add(
+            &self.partition_values,
+            path,
+            file_size,
+            &metadata,
+        )?)
+    }
 
-        let add = create_add(&self.partition_values, path, file_size, &metadata)?;
-
-        actions.push(Action::add(add));
-
-        // TODO: Pass StreamingUpdate operation
+    pub async fn commit_version(
+        &mut self,
+        version: DeltaDataTypeVersion,
+        actions: Vec<Action>,
+    ) -> Result<DeltaDataTypeVersion, DeltaTransactionError> {
         let mut tx = self.table.create_transaction(None);
         tx.add_actions(actions);
-        let version = tx.commit(None).await?;
-
-        info!("Committed Delta version {}", version);
-
-        Ok(version)
+        tx.commit_version(version, None).await
     }
 
     pub fn buffered_record_batch_count(&self) -> usize {
