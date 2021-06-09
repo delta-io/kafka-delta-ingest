@@ -75,7 +75,7 @@ pub trait Instrumentation {
         m: &BorrowedMessage,
         message_buffer_len: usize,
     ) {
-        info_message("Message received on untracked partition, but no Delta Log or WAL entry exists yet. Buffering message", m);
+        info_message("Message received on untracked partition, but no Delta Log entry exists yet. Buffering message", m);
         self.record_stat((StatTypes::MessageBuffered, 1)).await;
         self.record_stat((StatTypes::BufferedMessages, message_buffer_len as i64))
             .await;
@@ -108,13 +108,13 @@ pub trait Instrumentation {
     // delta writes
 
     async fn log_delta_write_started(&self) {
-        info!("Delta write started");
+        debug!("Delta write started");
         self.record_stat((StatTypes::DeltaWriteStarted, 1)).await;
     }
 
     async fn log_delta_write_completed(&self, version: DeltaDataTypeVersion, timer: &Instant) {
         let duration = timer.elapsed().as_micros() as i64;
-        debug!(
+        info!(
             "Delta write for version {} has completed in {} microseconds",
             version, duration
         );

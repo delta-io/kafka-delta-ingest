@@ -162,13 +162,6 @@ impl Instrumentation for KafkaJsonToDelta {
     }
 }
 
-struct ProcessingState {
-    delta_writer: DeltaWriter,
-    value_buffers: ValueBuffers,
-    transformer: Transformer,
-    latency_timer: Instant,
-}
-
 impl KafkaJsonToDelta {
     /// Creates a new instance of KafkaJsonToDelta.
     pub fn new(
@@ -588,9 +581,11 @@ impl KafkaJsonToDelta {
     async fn consume_value_buffers(
         &self,
         state: &mut ProcessingState,
-    ) -> Result<(Vec<Value>, HashMap<DataTypePartition, DataTypeOffset>), KafkaJsonToDeltaError>
+    ) -> Result<(Vec<Value>, ConsumedOffsets), KafkaJsonToDeltaError>
     {
         let mut partition_assignment = self.partition_assignment.lock().await;
+
+        let previous_offsets = partition_assignment.partition_offsets();
 
         let ConsumedBuffers {
             values,
@@ -601,7 +596,10 @@ impl KafkaJsonToDelta {
 
         let partition_offsets = partition_assignment.partition_offsets();
 
-        Ok((values, partition_offsets))
+        Ok((values, ConsumedOffsets {
+            before: previous_offsets,
+            after: partition_offsets,
+        }))
     }
 
     async fn build_actions(
@@ -630,7 +628,7 @@ impl KafkaJsonToDelta {
     async fn complete_file(
         &self,
         state: &mut ProcessingState,
-        partition_offsets: HashMap<DataTypePartition, DataTypeOffset>,
+        partition_offsets: ConsumedOffsets,
     ) -> Result<(), KafkaJsonToDeltaError> {
         // Reset the latency timer to track allowed latency for the next file
         state.latency_timer = Instant::now();
@@ -651,7 +649,7 @@ impl KafkaJsonToDelta {
 
         loop {
             let version = state.delta_writer.table_version() + 1;
-            let actions = self.build_actions(&partition_offsets, add.clone()).await;
+            let actions = self.build_actions(&partition_offsets.after, add.clone()).await;
             let commit_result = state.delta_writer.commit_version(version, actions).await;
 
             match commit_result {
@@ -672,7 +670,7 @@ impl KafkaJsonToDelta {
                     DeltaTransactionError::VersionAlreadyExists { .. } => {
                         state.delta_writer.update_table().await?;
 
-                        if self.are_partition_offsets_match(state, &partition_offsets) {
+                        if self.are_partition_offsets_match(state, &partition_offsets.before) {
                             attempt_number += 1;
                             debug!("Transaction attempt failed. Incrementing attempt number to {} and retrying.", attempt_number);
                         } else {
@@ -731,6 +729,21 @@ impl KafkaJsonToDelta {
 
         Ok(())
     }
+}
+
+/// Processing state, contains mutable data within run_loop
+struct ProcessingState {
+    delta_writer: DeltaWriter,
+    value_buffers: ValueBuffers,
+    transformer: Transformer,
+    latency_timer: Instant,
+}
+
+/// Contains the partition offsets map before and after the consumption of values buffers.
+/// The `before` is required for rollback in case of conflict.
+struct ConsumedOffsets {
+    before: HashMap<DataTypePartition, DataTypeOffset>,
+    after: HashMap<DataTypePartition, DataTypeOffset>,
 }
 
 #[derive(thiserror::Error, Debug)]
