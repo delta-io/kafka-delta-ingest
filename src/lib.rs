@@ -150,7 +150,7 @@ impl Options {
 /// Encapsulates a single topic-to-table ingestion stream.
 pub struct KafkaJsonToDelta {
     opts: Options,
-    transforms: HashMap<String, String>,
+    transformer: Transformer,
     consumer: StreamConsumer<Context>,
     partition_assignment: Arc<Mutex<PartitionAssignment>>,
     stats_sender: Sender<Statistic>,
@@ -192,13 +192,14 @@ impl KafkaJsonToDelta {
 
         let partition_assignment = Arc::new(Mutex::new(PartitionAssignment::new()));
         let consumer_context = Context::new(partition_assignment.clone());
+        let transformer = Transformer::from_transforms(&transforms)?;
 
         let consumer: StreamConsumer<Context> =
             kafka_client_config.create_with_context(consumer_context)?;
 
         Ok(Self {
             opts,
-            transforms,
+            transformer,
             consumer,
             partition_assignment,
             stats_sender,
@@ -249,7 +250,7 @@ impl KafkaJsonToDelta {
         msg: &BorrowedMessage<'_>,
     ) -> Result<(), ProcessingError> {
         let mut value = self.deserialize_message(msg).await?;
-        self.transform_value(state, &mut value, msg).await?;
+        self.transform_value(&mut value, msg).await?;
 
         if state.value_buffers.is_tracking(msg.partition()) {
             state
@@ -304,13 +305,12 @@ impl KafkaJsonToDelta {
 
     async fn transform_value(
         &self,
-        state: &mut ProcessingState,
         value: &mut Value,
         msg: &BorrowedMessage<'_>,
     ) -> Result<(), ProcessingError> {
         // Transform
         // TODO: Add better transform failure handling, ideally send to a dlq
-        match state.transformer.transform(value, msg) {
+        match self.transformer.transform(value, msg) {
             Err(_) => {
                 self.log_message_transform_failed(msg).await;
                 Err(ProcessingError::Continue)
@@ -393,7 +393,6 @@ impl KafkaJsonToDelta {
         let mut state = ProcessingState {
             delta_writer: DeltaWriter::for_table_path(self.opts.table_location.clone()).await?,
             value_buffers: ValueBuffers::new(),
-            transformer: Transformer::from_transforms(&self.transforms)?,
             latency_timer: Instant::now(),
         };
 
@@ -676,7 +675,6 @@ impl KafkaJsonToDelta {
 struct ProcessingState {
     delta_writer: DeltaWriter,
     value_buffers: ValueBuffers,
-    transformer: Transformer,
     latency_timer: Instant,
 }
 
