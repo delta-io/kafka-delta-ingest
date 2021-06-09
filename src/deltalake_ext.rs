@@ -244,7 +244,7 @@ impl DeltaWriter {
         self.buffered_record_batch_count
     }
 
-    fn reset(&mut self) -> Result<(), DeltaWriterError> {
+    pub fn reset(&mut self) -> Result<(), DeltaWriterError> {
         // Reset the internal cursor for the next file.
         self.cursor = InMemoryWriteableCursor::default();
         // Reset buffered record batch count to 0.

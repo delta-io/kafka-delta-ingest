@@ -67,20 +67,8 @@ pub trait Instrumentation {
     // assignments
 
     async fn log_assignment_untracked_skipped(&self, m: &BorrowedMessage) {
-        info_message("Partition is not tracked but a delta tx exists. Updating partition assignment and skipping message. Will process the same message again after consumer seek", m);
+        info_message("Partition is not tracked. Resetting partition assignment and skipping message. Will process the same message again after consumer seek.", m);
     }
-
-    async fn log_assignment_untracked_buffered(
-        &self,
-        m: &BorrowedMessage,
-        message_buffer_len: usize,
-    ) {
-        info_message("Message received on untracked partition, but no Delta Log entry exists yet. Buffering message", m);
-        self.record_stat((StatTypes::MessageBuffered, 1)).await;
-        self.record_stat((StatTypes::BufferedMessages, message_buffer_len as i64))
-            .await;
-    }
-
     // record batches
 
     async fn log_record_batch_started(&self) {
