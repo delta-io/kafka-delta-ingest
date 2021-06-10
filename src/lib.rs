@@ -241,7 +241,9 @@ impl KafkaJsonToDelta {
         let mut value = self.deserialize_message(msg).await?;
         self.transform_value(&mut value, msg).await?;
 
-        state.value_buffers.add(msg.partition(), msg.offset(), value);
+        state
+            .value_buffers
+            .add(msg.partition(), msg.offset(), value);
 
         Ok(())
     }
@@ -432,12 +434,16 @@ impl KafkaJsonToDelta {
         Ok(())
     }
 
-    fn check_message_tracking(&self, state: &mut ProcessingState, msg: &BorrowedMessage<'_>) -> Result<(), ProcessingError> {
+    fn check_message_tracking(
+        &self,
+        state: &mut ProcessingState,
+        msg: &BorrowedMessage<'_>,
+    ) -> Result<(), ProcessingError> {
         if let Some(offset) = state.partition_offsets.get(&msg.partition()) {
             if *offset > msg.offset() {
                 // This message was consumed after rebalance but before the seek.
                 // Then next consumption will get us the messages with expected offsets
-                return Err(ProcessingError::Continue)
+                return Err(ProcessingError::Continue);
             }
         }
 
