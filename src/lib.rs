@@ -304,16 +304,13 @@ impl KafkaJsonToDelta {
         &self,
         partition_offsets: &HashMap<DataTypePartition, Option<DataTypeOffset>>,
     ) -> Result<(), KafkaJsonToDeltaError> {
-        for (k, v) in partition_offsets.iter() {
+        for (p, v) in partition_offsets.iter() {
             match v {
                 Some(offset) => {
-                    info!(
-                        "update_partition_assignment: Seeking consumer to offset {} for partition: {}",
-                        offset, k
-                    );
+                    info!("Seeking consumer to {}:{}", p, offset);
                     self.consumer.seek(
                         &self.opts.topic,
-                        *k,
+                        *p,
                         Offset::Offset(*offset),
                         Timeout::Never,
                     )?;
@@ -321,7 +318,7 @@ impl KafkaJsonToDelta {
                 _ => {
                     info!(
                         "Partition {} has no recorded offset. Not seeking consumer.",
-                        k
+                        p
                     );
                 }
             }
@@ -372,7 +369,7 @@ impl KafkaJsonToDelta {
             delta_writer: DeltaWriter::for_table_path(self.opts.table_location.clone()).await?,
             value_buffers: ValueBuffers::new(),
             latency_timer: Instant::now(),
-            partition_offsets: HashMap::new(),
+            delta_partition_offsets: HashMap::new(),
         };
 
         let mut stream = self.consumer.stream();
@@ -439,7 +436,7 @@ impl KafkaJsonToDelta {
         state: &mut ProcessingState,
         msg: &BorrowedMessage<'_>,
     ) -> Result<(), ProcessingError> {
-        if let Some(offset) = state.partition_offsets.get(&msg.partition()) {
+        if let Some(offset) = state.delta_partition_offsets.get(&msg.partition()) {
             if *offset > msg.offset() {
                 // This message was consumed after rebalance but before the seek.
                 // Then next consumption will get us the messages with expected offsets
@@ -548,7 +545,7 @@ impl KafkaJsonToDelta {
             state.delta_writer.update_table().await?;
 
             if !self.are_partition_offsets_match(state) {
-                info!("Transaction attempt failed. Got conflict partition offsets from delta store. Resetting consumer");
+                debug!("Transaction attempt failed. Got conflict partition offsets from delta store. Resetting consumer");
                 self.reset_state_guarded(state).await?;
                 // todo delete parquet file
                 return Ok(());
@@ -561,6 +558,9 @@ impl KafkaJsonToDelta {
             match commit_result {
                 Ok(v) => {
                     assert_eq!(v, version);
+
+                    state.delta_partition_offsets = partition_offsets;
+
                     self.log_delta_write_completed(version, &delta_write_timer)
                         .await;
                     return Ok(());
@@ -589,7 +589,8 @@ impl KafkaJsonToDelta {
     /// Checks whether partition offsets from last writes matches the ones from delta log
     /// If not then other consumers already processed them.
     fn are_partition_offsets_match(&self, state: &mut ProcessingState) -> bool {
-        for (partition, offset) in &state.partition_offsets {
+        let mut result = true;
+        for (partition, offset) in &state.delta_partition_offsets {
             let version = state
                 .delta_writer
                 .last_transaction_version(&self.app_id_for_partition(*partition));
@@ -597,16 +598,16 @@ impl KafkaJsonToDelta {
             if let Some(version) = version {
                 // if messages in kafka are consecutive then offset should always be `version+1` for
                 // safe commit, but since it's no guaranteed by kafka, we only check for `less than`.
-                if *offset <= version {
+                if *offset != version {
                     info!(
-                        "Conflict offsets for partition {}: state={:?}, delta={:?}",
+                        "Conflict offset for partition {}: state={:?}, delta={:?}",
                         partition, offset, version
                     );
-                    return false;
+                    result = false;
                 }
             }
         }
-        true
+        result
     }
 
     async fn reset_state_guarded(
@@ -625,7 +626,7 @@ impl KafkaJsonToDelta {
     ) -> Result<(), KafkaJsonToDeltaError> {
         state.delta_writer.reset()?;
         state.value_buffers.reset();
-        state.partition_offsets.clear();
+        state.delta_partition_offsets.clear();
 
         // assuming that partition_assignment has correct partitions as keys
         let partitions: Vec<DataTypePartition> =
@@ -646,7 +647,10 @@ impl KafkaJsonToDelta {
                 partition_assignment
                     .assignment
                     .insert(*partition, Some(offset));
-                state.partition_offsets.insert(*partition, offset);
+
+                // here we store `version` to remember the latest offset in delta
+                // for a conflict resolution
+                state.delta_partition_offsets.insert(*partition, version);
             }
         }
 
@@ -662,7 +666,7 @@ struct ProcessingState {
     delta_writer: DeltaWriter,
     value_buffers: ValueBuffers,
     latency_timer: Instant,
-    partition_offsets: HashMap<DataTypePartition, DataTypeOffset>,
+    delta_partition_offsets: HashMap<DataTypePartition, DataTypeOffset>,
 }
 
 #[derive(thiserror::Error, Debug)]

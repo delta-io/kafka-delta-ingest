@@ -28,7 +28,7 @@ const TEST_APP_ID: &str = "emails_test";
 const TEST_BROKER: &str = "0.0.0.0:9092";
 const TEST_CONSUMER_GROUP_ID: &str = "kafka_delta_ingest_emails";
 const TEST_PARTITIONS: i32 = 4;
-const TEST_TOTAL_MESSAGES: i32 = 100;
+const TEST_TOTAL_MESSAGES: i32 = 150;
 
 const WORKER_1: &str = "WORKER-1";
 const WORKER_2: &str = "WORKER-2";

@@ -90,7 +90,7 @@ pub enum DeltaWriterError {
 }
 
 pub struct DeltaWriter {
-    table: DeltaTable,
+    pub table: DeltaTable,
     storage: Box<dyn StorageBackend>,
     arrow_schema_ref: Arc<arrow::datatypes::Schema>,
     writer_properties: WriterProperties,
