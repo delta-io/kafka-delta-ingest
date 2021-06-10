@@ -597,7 +597,7 @@ impl KafkaJsonToDelta {
 
             if let Some(version) = version {
                 // if messages in kafka are consecutive then offset should always be `version+1` for
-                // safe commit, but since it's no guaranteed by kafka, we only check for `less than`.
+                // safe commit, but since kafka does not guarantee contiguous offsets, we only check for `less than`.
                 if *offset != version {
                     info!(
                         "Conflict offset for partition {}: state={:?}, delta={:?}",
