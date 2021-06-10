@@ -242,6 +242,7 @@ impl KafkaJsonToDelta {
         self.transform_value(&mut value, msg).await?;
 
         state.value_buffers.add(msg.partition(), msg.offset(), value);
+
         Ok(())
     }
 
@@ -380,13 +381,8 @@ impl KafkaJsonToDelta {
         while let Some(message) = stream.next().await {
             match message {
                 Ok(m) => {
-                    let result = self.process_message(&mut state, &m).await;
-                    match result {
+                    match self.process_message(&mut state, &m).await {
                         Ok(_) | Err(ProcessingError::Continue) => {
-                            if let Err(_) = result {
-                                info!("Skipped at {}:{}", &m.partition(), &m.offset());
-                            }
-
                             if self.should_complete_record_batch(&mut state) {
                                 self.finalize_record_batch(&mut state).await?;
                             }
@@ -481,7 +477,8 @@ impl KafkaJsonToDelta {
     async fn consume_value_buffers(
         &self,
         state: &mut ProcessingState,
-    ) -> Result<(Vec<Value>, HashMap<DataTypePartition, DataTypeOffset>), KafkaJsonToDeltaError> {
+    ) -> Result<(Vec<Value>, HashMap<DataTypePartition, DataTypeOffset>), KafkaJsonToDeltaError>
+    {
         let mut partition_assignment = self.partition_assignment.lock().await;
 
         let ConsumedBuffers {
@@ -542,10 +539,17 @@ impl KafkaJsonToDelta {
         let mut attempt_number: u32 = 0;
 
         loop {
+            state.delta_writer.update_table().await?;
+
+            if !self.are_partition_offsets_match(state) {
+                info!("Transaction attempt failed. Got conflict partition offsets from delta store. Resetting consumer");
+                self.reset_state_guarded(state).await?;
+                // todo delete parquet file
+                return Ok(());
+            }
+
             let version = state.delta_writer.table_version() + 1;
-            let actions = self
-                .build_actions(&partition_offsets, add.clone())
-                .await;
+            let actions = self.build_actions(&partition_offsets, add.clone()).await;
             let commit_result = state.delta_writer.commit_version(version, actions).await;
 
             match commit_result {
@@ -564,17 +568,8 @@ impl KafkaJsonToDelta {
                         return Err(e.into());
                     }
                     DeltaTransactionError::VersionAlreadyExists { .. } => {
-                        state.delta_writer.update_table().await?;
-
-                        if self.are_partition_offsets_match(state) {
-                            attempt_number += 1;
-                            debug!("Transaction attempt failed. Incrementing attempt number to {} and retrying.", attempt_number);
-                        } else {
-                            info!("Transaction attempt failed. Got conflict partition offsets from delta store. Resetting consumer");
-                            self.reset_state_guarded(state).await?;
-                            // todo delete parquet file
-                            return Ok(());
-                        }
+                        attempt_number += 1;
+                        debug!("Transaction attempt failed. Incrementing attempt number to {} and retrying.", attempt_number);
                     }
                     _ => {
                         self.log_delta_write_failed().await;
@@ -587,22 +582,20 @@ impl KafkaJsonToDelta {
 
     /// Checks whether partition offsets from last writes matches the ones from delta log
     /// If not then other consumers already processed them.
-    fn are_partition_offsets_match(
-        &self,
-        state: &mut ProcessingState,
-    ) -> bool {
-        let mut dbg = HashMap::new();
-
+    fn are_partition_offsets_match(&self, state: &mut ProcessingState) -> bool {
         for (partition, offset) in &state.partition_offsets {
             let version = state
                 .delta_writer
                 .last_transaction_version(&self.app_id_for_partition(*partition));
 
-            dbg.insert(partition, version.unwrap_or(-1));
-
-            if let Some(v) = version {
-                if v != *offset {
-                    error!("CONFLICT: state={:?}, delta={:?}", state.partition_offsets, dbg);
+            if let Some(version) = version {
+                // if messages in kafka are consecutive then offset should always be `version+1` for
+                // safe commit, but since it's no guaranteed by kafka, we only check for `less than`.
+                if *offset <= version {
+                    info!(
+                        "Conflict offsets for partition {}: state={:?}, delta={:?}",
+                        partition, offset, version
+                    );
                     return false;
                 }
             }
@@ -636,19 +629,23 @@ impl KafkaJsonToDelta {
 
         // update offsets to the latest from the delta log
         for partition in partitions.iter() {
-            let offset = state
+            let version = state
                 .delta_writer
                 .last_transaction_version(&self.app_id_for_partition(*partition));
 
-            if let Some(offset) = offset {
-                partition_assignment.assignment.insert(*partition, Some(offset));
+            if let Some(version) = version {
+                // transaction version in delta log is the latest offset stored for partition,
+                // so we need to seek to the incremented to get the next messages.
+                let offset = version + 1;
+                partition_assignment
+                    .assignment
+                    .insert(*partition, Some(offset));
                 state.partition_offsets.insert(*partition, offset);
             }
         }
 
         // re seek consumer to the latest offsets of the partition assignment
-        self.seek_consumer(&partition_assignment.assignment)
-            .await?;
+        self.seek_consumer(&partition_assignment.assignment).await?;
 
         Ok(())
     }
@@ -659,7 +656,7 @@ struct ProcessingState {
     delta_writer: DeltaWriter,
     value_buffers: ValueBuffers,
     latency_timer: Instant,
-    partition_offsets: HashMap<DataTypePartition, DataTypeOffset>
+    partition_offsets: HashMap<DataTypePartition, DataTypeOffset>,
 }
 
 #[derive(thiserror::Error, Debug)]
