@@ -40,11 +40,11 @@ RUST_LOG=debug cargo run ingest web_requests ./tests/data/web_requests \
       'meta.kafka.topic: kafka.topic'
 ```
 
-To clean data from previous local runs, execute `./bin/clean-example-data.sh`. You'll need to do this if you destroy your Kafka container between runs.
+To clean data from previous local runs, execute `./bin/clean-example-data.sh`. You'll need to do this if you destroy your Kafka container between runs since your delta log directory will be out of sync with Kafka offsets.
 
 ==== Example Data
 
-A tarball containing 100K line-delimited JSON messages is included in `tests/json/web_requests-100K.json.tar.gz`. `./bin/extract-example-json.sh` will unpack this to the expected location.
+A tarball containing 100K line-delimited JSON messages is included in `tests/json/web_requests-100K.json.tar.gz`. Running `./bin/extract-example-json.sh` will unpack this to the expected location.
 
 ===== Pretty-printed example from the file
 
@@ -74,7 +74,7 @@ NOTE: URLs sampled for the test data are sourced from Wikipedia's list of most p
 * Show some parquet data (using [parquet-tools](https://pypi.org/project/parquet-tools/))
 ** `parquet-tools show tests/data/web_requests/date=2021-03-24/<some file written by your example>`
 
-== Tests
+=== Developing
 
-Make sure the docker-compose test_stack is running then execute `cargo test`.
+Make sure the docker-compose test_stack is running, and execute `cargo test` to run unit and integration tests.
 
