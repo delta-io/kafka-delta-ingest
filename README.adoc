@@ -17,7 +17,7 @@ link:https://github.com/delta-io/delta-rs[delta-rs] bindings.
 
 The repository includes an example for trying out the application locally with some fake web request data.
 
-The included docker-compose.yml contains [kafka](https://github.com/wurstmeister/kafka-docker/issues) and [localstack](https://github.com/localstack/localstack) services you can run `kafka-delta-ingest` against locally.
+The included docker-compose.yml contains link:https://github.com/wurstmeister/kafka-docker/issues[kafka] and link:https://github.com/localstack/localstack[localstack] services you can run `kafka-delta-ingest` against locally.
 
 ==== Starting Worker Processes
 
@@ -71,7 +71,7 @@ NOTE: URLs sampled for the test data are sourced from Wikipedia's list of most p
 
 * List data files - `ls tests/data/web_requests/date=2021-03-24`
 * List delta log files - `ls tests/data/web_requests/_delta_log`
-* Show some parquet data (using [parquet-tools](https://pypi.org/project/parquet-tools/))
+* Show some parquet data (using link:https://pypi.org/project/parquet-tools/[parquet-tools])
 ** `parquet-tools show tests/data/web_requests/date=2021-03-24/<some file written by your example>`
 
 === Developing
