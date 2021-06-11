@@ -78,3 +78,8 @@ NOTE: URLs sampled for the test data are sourced from Wikipedia's list of most p
 
 Make sure the docker-compose test_stack is running, and execute `cargo test` to run unit and integration tests.
 
+=== Get Involved
+
+Join link:https://dbricks.co/delta-users-slack[#kafka-delta-ingest in the Delta Lake Slack workspace]
+
+
