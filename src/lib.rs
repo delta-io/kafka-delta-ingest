@@ -30,10 +30,13 @@ use crate::{
     deltalake_ext::{DeltaWriter, DeltaWriterError},
     instrumentation::{Instrumentation, Statistic},
 };
+use deltalake::action::{Action, Add};
 use rdkafka::message::BorrowedMessage;
 
 type DataTypePartition = i32;
 type DataTypeOffset = i64;
+
+const DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS: u32 = 10_000_000;
 
 #[derive(thiserror::Error, Debug)]
 pub enum KafkaJsonToDeltaError {
@@ -147,7 +150,7 @@ impl Options {
 /// Encapsulates a single topic-to-table ingestion stream.
 pub struct KafkaJsonToDelta {
     opts: Options,
-    transforms: HashMap<String, String>,
+    transformer: Transformer,
     consumer: StreamConsumer<Context>,
     partition_assignment: Arc<Mutex<PartitionAssignment>>,
     stats_sender: Sender<Statistic>,
@@ -157,13 +160,6 @@ impl Instrumentation for KafkaJsonToDelta {
     fn stats_sender(&self) -> Sender<Statistic> {
         self.stats_sender.clone()
     }
-}
-
-struct ProcessingState {
-    delta_writer: DeltaWriter,
-    value_buffers: ValueBuffers,
-    transformer: Transformer,
-    latency_timer: Instant,
 }
 
 impl KafkaJsonToDelta {
@@ -196,13 +192,14 @@ impl KafkaJsonToDelta {
 
         let partition_assignment = Arc::new(Mutex::new(PartitionAssignment::new()));
         let consumer_context = Context::new(partition_assignment.clone());
+        let transformer = Transformer::from_transforms(&transforms)?;
 
         let consumer: StreamConsumer<Context> =
             kafka_client_config.create_with_context(consumer_context)?;
 
         Ok(Self {
             opts,
-            transforms,
+            transformer,
             consumer,
             partition_assignment,
             stats_sender,
@@ -233,47 +230,20 @@ impl KafkaJsonToDelta {
         res
     }
 
-    async fn init(&mut self, state: &ProcessingState) -> Result<(), KafkaJsonToDeltaError> {
-        info!("Initializing last Delta transaction version before starting run loop.");
-
-        let mut offsets = HashMap::new();
-
-        for p in state.value_buffers.partitions.iter() {
-            let partition = *p;
-
-            let last_txn_version = state
-                .delta_writer
-                .last_transaction_version(&self.app_id_for_partition(partition))?;
-
-            if let Some(v) = last_txn_version {
-                offsets.insert(partition, DataTypeOffset::from(v));
-            }
-        }
-
-        self.init_offsets(&offsets).await?;
-
-        Ok(())
-    }
-
     async fn process_message(
         &self,
         state: &mut ProcessingState,
         msg: &BorrowedMessage<'_>,
     ) -> Result<(), ProcessingError> {
-        let mut value = self.deserialize_message(msg).await?;
-        self.transform_value(state, &mut value, msg).await?;
+        self.check_rebalance_event(state).await?;
+        self.check_message_tracking(state, msg)?;
 
-        if state.value_buffers.is_tracking(msg.partition()) {
-            // This is the 99% case. We are already tracking this partition. Just
-            // buffer it.
-            state
-                .value_buffers
-                .add(msg.partition(), msg.offset(), value);
-            self.log_message_buffered(msg, state.value_buffers.len())
-                .await;
-        } else {
-            self.handle_non_tracked_partition(state, msg, value).await?;
-        }
+        let mut value = self.deserialize_message(msg).await?;
+        self.transform_value(&mut value, msg).await?;
+
+        state
+            .value_buffers
+            .add(msg.partition(), msg.offset(), value);
 
         Ok(())
     }
@@ -313,13 +283,12 @@ impl KafkaJsonToDelta {
 
     async fn transform_value(
         &self,
-        state: &mut ProcessingState,
         value: &mut Value,
         msg: &BorrowedMessage<'_>,
     ) -> Result<(), ProcessingError> {
         // Transform
         // TODO: Add better transform failure handling, ideally send to a dlq
-        match state.transformer.transform(value, msg) {
+        match self.transformer.transform(value, msg) {
             Err(_) => {
                 self.log_message_transform_failed(msg).await;
                 Err(ProcessingError::Continue)
@@ -331,81 +300,17 @@ impl KafkaJsonToDelta {
         }
     }
 
-    async fn handle_non_tracked_partition(
+    async fn seek_consumer(
         &self,
-        state: &mut ProcessingState,
-        msg: &BorrowedMessage<'_>,
-        value: Value,
-    ) -> Result<(), ProcessingError> {
-        let partition = msg.partition();
-
-        if let Some(offset) = state
-            .delta_writer
-            .last_transaction_version(&self.app_id_for_partition(partition))?
-        {
-            self.log_assignment_untracked_skipped(msg).await;
-
-            // Since this is an untracked partition and a Delta transaction exists for
-            // the table already, we need to update partition assignments, seek the
-            // consumer and wait the next iteration of the run_loop.
-            self.update_partition_assignment(state, Some((partition, offset)))
-                .await?;
-            Err(ProcessingError::Continue)
-        } else {
-            // Since there is no delta transaction - this should be the first message
-            // available on the partition.
-            // Update partition assignment and buffer.
-            self.update_partition_assignment(state, None).await?;
-
-            state.value_buffers.add(partition, msg.offset(), value);
-
-            self.log_assignment_untracked_buffered(msg, state.value_buffers.len())
-                .await;
-            Ok(())
-        }
-    }
-
-    async fn update_partition_assignment(
-        &self,
-        state: &mut ProcessingState,
-        assign: Option<(DataTypePartition, DataTypeOffset)>,
+        partition_offsets: &HashMap<DataTypePartition, Option<DataTypeOffset>>,
     ) -> Result<(), KafkaJsonToDeltaError> {
-        let mut partition_assignment = self.partition_assignment.lock().await;
-
-        // TODO we don't need to update the whole map here, only single affected partition
-        // TODO but even if we update all, we need get offsets from delta txn
-
-        // Update offsets from the previous transaction id if one exists
-        if let Some((p, o)) = assign {
-            let mut offsets = HashMap::new();
-            offsets.insert(p, o);
-            partition_assignment.update_offsets(&offsets);
-        }
-
-        let assignment = partition_assignment.assignment();
-        // Extract the offsets for newly tracked partitions and seek the consumer.
-        // Essentially, we are catching up with the last assignment from the most recent
-        // rebalance event here and we will start buffering messages correctly on the next
-        // iteraton of run_loop.
-        // `run_loop` call context must `continue` the run loop without processing further.
-        // Basically *drop/do-not-append* the current message since it will not be at the correct offset since
-        // the partition was previously untracked and we are only now doing the `consumer.seek` while
-        // holding the partition_assignment lock.
-        // It would be nice to seek the consumer immediately on rebalance since we acquire a
-        // partition_assignment lock there anyway, instead of waiting to
-        // seek the consumer within `run_loop` but I haven't been able to figure out how to do that
-        // with the available rdkafka API for handling rebalance.
-        state.value_buffers.update_partitions(assignment)?;
-        for (k, v) in assignment.iter() {
+        for (p, v) in partition_offsets.iter() {
             match v {
                 Some(offset) => {
-                    info!(
-                        "update_partition_assignment: Seeking consumer to offset {} for partition: {}",
-                        offset, k
-                    );
+                    info!("Seeking consumer to {}:{}", p, offset);
                     self.consumer.seek(
                         &self.opts.topic,
-                        *k,
+                        *p,
                         Offset::Offset(*offset),
                         Timeout::Never,
                     )?;
@@ -413,7 +318,7 @@ impl KafkaJsonToDelta {
                 _ => {
                     info!(
                         "Partition {} has no recorded offset. Not seeking consumer.",
-                        k
+                        p
                     );
                 }
             }
@@ -439,10 +344,6 @@ impl KafkaJsonToDelta {
             values.as_slice(),
         )?;
 
-        // Since we are writing a record batch to the in-memory parquet file, value buffers must be marked
-        // dirty so we know we have to drop all buffers and re-seek if a rebalance occurs before the next file write.
-        state.value_buffers.mark_dirty();
-
         let record_batch_timer = Instant::now();
         state.delta_writer.write_record_batch(&record_batch).await?;
 
@@ -454,38 +355,7 @@ impl KafkaJsonToDelta {
 
         // Finalize file and write Delta transaction
         if self.should_complete_file(&state.delta_writer, &state.latency_timer) {
-            // Reset the latency timer to track allowed latency for the next file
-            state.latency_timer = Instant::now();
-
-            // Complete the delta write
-            let delta_write_timer = Instant::now();
-
-            let mut txns = Vec::new();
-            for (partition, offset) in partition_offsets {
-                let txn = action::Action::txn(action::Txn {
-                    appId: self.app_id_for_partition(partition),
-                    version: offset,
-                    lastUpdated: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as i64,
-                });
-
-                txns.push(txn);
-            }
-
-            self.log_delta_write_started().await;
-            let commit_result = state.delta_writer.write_file(&mut txns).await;
-            match commit_result {
-                Ok(version) => {
-                    self.log_delta_write_completed(version, &delta_write_timer)
-                        .await;
-                }
-                Err(e) => {
-                    self.log_delta_write_failed().await;
-                    return Err(e.into());
-                }
-            }
+            self.complete_file(state, partition_offsets).await?;
         }
 
         Ok(())
@@ -498,11 +368,9 @@ impl KafkaJsonToDelta {
         let mut state = ProcessingState {
             delta_writer: DeltaWriter::for_table_path(self.opts.table_location.clone()).await?,
             value_buffers: ValueBuffers::new(),
-            transformer: Transformer::from_transforms(&self.transforms)?,
             latency_timer: Instant::now(),
+            delta_partition_offsets: HashMap::new(),
         };
-
-        self.init(&state).await?;
 
         let mut stream = self.consumer.stream();
         state.latency_timer = Instant::now();
@@ -542,6 +410,43 @@ impl KafkaJsonToDelta {
         Ok(())
     }
 
+    /// Check and seek consumer if rebalance has happened
+    async fn check_rebalance_event(
+        &self,
+        state: &mut ProcessingState,
+    ) -> Result<(), ProcessingError> {
+        let mut partition_assignment = self.partition_assignment.lock().await;
+
+        // TODO if the new assignment is only an addition of partitions we don't need to reset state
+        if partition_assignment.rebalance.is_some() {
+            let partitions = partition_assignment.rebalance.as_ref().unwrap().clone();
+
+            partition_assignment.reset_with(&partitions);
+            self.reset_state(state, &mut partition_assignment).await?;
+
+            // clear `rebalance` list only if reset state is successful
+            partition_assignment.rebalance = None;
+        }
+
+        Ok(())
+    }
+
+    fn check_message_tracking(
+        &self,
+        state: &mut ProcessingState,
+        msg: &BorrowedMessage<'_>,
+    ) -> Result<(), ProcessingError> {
+        if let Some(offset) = state.delta_partition_offsets.get(&msg.partition()) {
+            if *offset > msg.offset() {
+                // This message was consumed after rebalance but before the seek.
+                // Then next consumption will get us the messages with expected offsets
+                return Err(ProcessingError::Continue);
+            }
+        }
+
+        Ok(())
+    }
+
     fn should_complete_record_batch(&self, state: &mut ProcessingState) -> bool {
         let should = state.value_buffers.len() == self.opts.max_messages_per_batch
             || state.latency_timer.elapsed().as_millis()
@@ -572,47 +477,6 @@ impl KafkaJsonToDelta {
         should
     }
 
-    async fn init_offsets(
-        &mut self,
-        offsets: &HashMap<DataTypePartition, DataTypeOffset>,
-    ) -> Result<(), KafkaJsonToDeltaError> {
-        let topic_partition_list = self.consumer.assignment()?;
-
-        let mut partition_assignment = self.partition_assignment.lock().await;
-        let partitions = partition_vec_from_topic_partition_list(&topic_partition_list);
-
-        partition_assignment.update_assignment(&partitions);
-        partition_assignment.update_offsets(offsets);
-
-        let assignment = partition_assignment.assignment();
-
-        // Seek the consumer to current offsets
-        for (k, v) in assignment.iter() {
-            match v {
-                Some(offset) => {
-                    info!(
-                        "init_offsets: Seeking consumer to offset {} for partition {}",
-                        offset, k
-                    );
-                    self.consumer.seek(
-                        self.opts.topic.as_str(),
-                        *k,
-                        Offset::Offset(*offset),
-                        Timeout::Never,
-                    )?;
-                }
-                _ => {
-                    info!(
-                        "Partition {} has no recorded offset. Not seeking consumer. Default starting offsets will be applied.",
-                        k
-                    );
-                }
-            }
-        }
-
-        Ok(())
-    }
-
     async fn consume_value_buffers(
         &self,
         state: &mut ProcessingState,
@@ -631,6 +495,170 @@ impl KafkaJsonToDelta {
 
         Ok((values, partition_offsets))
     }
+
+    fn build_actions(
+        &self,
+        partition_offsets: &HashMap<DataTypePartition, DataTypeOffset>,
+        add: Add,
+    ) -> Vec<Action> {
+        partition_offsets
+            .iter()
+            .map(|(partition, offset)| {
+                action::Action::txn(action::Txn {
+                    app_id: self.app_id_for_partition(*partition),
+                    version: *offset,
+                    last_updated: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as i64,
+                })
+            })
+            .chain(std::iter::once(Action::add(add)))
+            .collect()
+    }
+
+    async fn complete_file(
+        &self,
+        state: &mut ProcessingState,
+        partition_offsets: HashMap<DataTypePartition, DataTypeOffset>,
+    ) -> Result<(), KafkaJsonToDeltaError> {
+        // Reset the latency timer to track allowed latency for the next file
+        state.latency_timer = Instant::now();
+
+        let delta_write_timer = Instant::now();
+
+        self.log_delta_write_started().await;
+
+        // upload pending parquet file to delta store
+        // TODO remove it if we got conflict error? or it'll be considered as tombstone
+        let add = state.delta_writer.write_parquet_file().await?;
+
+        let mut attempt_number: u32 = 0;
+
+        loop {
+            state.delta_writer.update_table().await?;
+
+            if !self.are_partition_offsets_match(state) {
+                debug!("Transaction attempt failed. Got conflict partition offsets from delta store. Resetting consumer");
+                self.reset_state_guarded(state).await?;
+                // todo delete parquet file
+                return Ok(());
+            }
+
+            let version = state.delta_writer.table_version() + 1;
+            let actions = self.build_actions(&partition_offsets, add.clone());
+            let commit_result = state.delta_writer.commit_version(version, actions).await;
+
+            match commit_result {
+                Ok(v) => {
+                    assert_eq!(v, version);
+
+                    state.delta_partition_offsets = partition_offsets;
+
+                    self.log_delta_write_completed(version, &delta_write_timer)
+                        .await;
+                    return Ok(());
+                }
+                Err(e) => match e {
+                    DeltaTransactionError::VersionAlreadyExists { .. }
+                        if attempt_number > DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS + 1 =>
+                    {
+                        debug!("Transaction attempt failed. Attempts exhausted beyond max_retry_commit_attempts of {} so failing.", DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS);
+                        self.log_delta_write_failed().await;
+                        return Err(e.into());
+                    }
+                    DeltaTransactionError::VersionAlreadyExists { .. } => {
+                        attempt_number += 1;
+                        debug!("Transaction attempt failed. Incrementing attempt number to {} and retrying.", attempt_number);
+                    }
+                    _ => {
+                        self.log_delta_write_failed().await;
+                        return Err(e.into());
+                    }
+                },
+            }
+        }
+    }
+
+    /// Checks whether partition offsets from last writes matches the ones from delta log
+    /// If not then other consumers already processed them.
+    fn are_partition_offsets_match(&self, state: &mut ProcessingState) -> bool {
+        let mut result = true;
+        for (partition, offset) in &state.delta_partition_offsets {
+            let version = state
+                .delta_writer
+                .last_transaction_version(&self.app_id_for_partition(*partition));
+
+            if let Some(version) = version {
+                if *offset != version {
+                    info!(
+                        "Conflict offset for partition {}: state={:?}, delta={:?}",
+                        partition, offset, version
+                    );
+                    result = false;
+                }
+            }
+        }
+        result
+    }
+
+    async fn reset_state_guarded(
+        &self,
+        state: &mut ProcessingState,
+    ) -> Result<(), KafkaJsonToDeltaError> {
+        let mut partition_assignment = self.partition_assignment.lock().await;
+        self.reset_state(state, &mut partition_assignment).await?;
+        Ok(())
+    }
+
+    async fn reset_state(
+        &self,
+        state: &mut ProcessingState,
+        partition_assignment: &mut PartitionAssignment,
+    ) -> Result<(), KafkaJsonToDeltaError> {
+        state.delta_writer.reset()?;
+        state.value_buffers.reset();
+        state.delta_partition_offsets.clear();
+
+        // assuming that partition_assignment has correct partitions as keys
+        let partitions: Vec<DataTypePartition> =
+            partition_assignment.assignment.keys().map(|p| *p).collect();
+
+        info!("Resetting state with partitions: {:?}", &partitions);
+
+        // update offsets to the latest from the delta log
+        for partition in partitions.iter() {
+            let version = state
+                .delta_writer
+                .last_transaction_version(&self.app_id_for_partition(*partition));
+
+            if let Some(version) = version {
+                // transaction version in delta log is the latest offset stored for partition,
+                // so we need to seek to the incremented to get the next messages.
+                let offset = version + 1;
+                partition_assignment
+                    .assignment
+                    .insert(*partition, Some(offset));
+
+                // here we store `version` to remember the latest offset in delta
+                // for a conflict resolution
+                state.delta_partition_offsets.insert(*partition, version);
+            }
+        }
+
+        // re seek consumer to the latest offsets of the partition assignment
+        self.seek_consumer(&partition_assignment.assignment).await?;
+
+        Ok(())
+    }
+}
+
+/// Processing state, contains mutable data within run_loop
+struct ProcessingState {
+    delta_writer: DeltaWriter,
+    value_buffers: ValueBuffers,
+    latency_timer: Instant,
+    delta_partition_offsets: HashMap<DataTypePartition, DataTypeOffset>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -642,8 +670,6 @@ pub enum ValueBufferError {
 pub struct ValueBuffers {
     buffers: HashMap<DataTypePartition, ValueBuffer>,
     len: usize,
-    partitions: Vec<DataTypePartition>,
-    dirty: bool,
 }
 
 impl ValueBuffers {
@@ -651,17 +677,6 @@ impl ValueBuffers {
         Self {
             buffers: HashMap::new(),
             len: 0,
-            partitions: Vec::new(),
-            dirty: false,
-        }
-    }
-
-    pub fn for_partitions(partitions: Vec<DataTypePartition>) -> Self {
-        Self {
-            buffers: HashMap::new(),
-            len: 0,
-            partitions,
-            dirty: false,
         }
     }
 
@@ -702,61 +717,9 @@ impl ValueBuffers {
         }
     }
 
-    pub fn update_partitions(
-        &mut self,
-        assigned_partitions: &HashMap<DataTypePartition, Option<DataTypeOffset>>,
-    ) -> Result<(), ValueBufferError> {
-        // Drop all buffers that are no longer assigned
-        let partitions = self.partitions.iter();
-        for p in partitions {
-            if !assigned_partitions.contains_key(&p) {
-                let buffer = self.buffers.remove(&p);
-
-                if let Some(b) = buffer {
-                    self.len = self.len - b.values.len();
-                }
-            }
-        }
-
-        // If self has been marked dirty (due to a rebalance after a consume),
-        // reset all buffers and offsets and mark not dirty.
-        if self.dirty {
-            for (k, v) in self.buffers.iter_mut() {
-                match assigned_partitions.get(k) {
-                    Some(offset_option) => {
-                        v.reset(*offset_option);
-                    }
-                    _ => {
-                        // This should never happen since we removed all unassigned buffers above.
-                        return Err(ValueBufferError::IllegalTrackedBufferState { partition: *k });
-                    }
-                }
-            }
-        }
-
-        // Add all partitions that were not previously assigned.
-        for (k, _) in assigned_partitions.iter() {
-            if !self.is_tracking(*k) {
-                self.buffers.insert(*k, ValueBuffer::new());
-            }
-        }
-
-        // Set the list of currently assigned partitions.
-        self.partitions = assigned_partitions.keys().map(|k| *k).collect();
-
-        // Since we have synced up with the currently assigned partitiions and offsets, we can mark
-        // ourselves clean.
-        self.dirty = false;
-
-        Ok(())
-    }
-
-    pub fn is_tracking(&self, partition: DataTypePartition) -> bool {
-        self.partitions.contains(&partition)
-    }
-
-    pub fn mark_dirty(&mut self) {
-        self.dirty = true;
+    pub fn reset(&mut self) {
+        self.len = 0;
+        self.buffers.clear();
     }
 }
 
@@ -781,11 +744,6 @@ impl ValueBuffer {
     fn add(&mut self, value: Value, offset: DataTypeOffset) {
         self.last_offset = Some(offset);
         self.values.push(value);
-    }
-
-    fn reset(&mut self, offset: Option<DataTypeOffset>) {
-        self.last_offset = offset;
-        self.values.clear();
     }
 
     fn consume(&mut self) -> Option<(Vec<Value>, DataTypeOffset)> {
@@ -822,12 +780,15 @@ impl ConsumerContext for Context {
                     partitions
                 );
 
-                let partitions = Arc::new(partitions);
-                on_rebalance_assign(self.partition_assignment.clone(), partitions);
+                PartitionAssignment::on_rebalance_assign(
+                    self.partition_assignment.clone(),
+                    partitions,
+                );
             }
             Rebalance::Revoke => {
                 info!("REBALANCE - Partition assignments revoked");
-                on_rebalance_revoke(self.partition_assignment.clone());
+
+                PartitionAssignment::on_rebalance_revoke(self.partition_assignment.clone());
             }
             Rebalance::Error(e) => {
                 warn!(
@@ -835,6 +796,14 @@ impl ConsumerContext for Context {
                     e
                 );
             }
+        }
+    }
+}
+
+impl Context {
+    pub fn new(partition_assignment: Arc<Mutex<PartitionAssignment>>) -> Self {
+        Self {
+            partition_assignment,
         }
     }
 }
@@ -849,54 +818,56 @@ fn partition_vec_from_topic_partition_list(
         .collect()
 }
 
-fn on_rebalance_assign(
-    partition_assignment: Arc<Mutex<PartitionAssignment>>,
-    partitions: Arc<Vec<DataTypePartition>>,
-) {
-    let _fut = tokio::spawn(async move {
-        let mut partition_assignment = partition_assignment.lock().await;
-        partition_assignment.update_assignment(&partitions);
-    });
-}
-
-fn on_rebalance_revoke(partition_assignment: Arc<Mutex<PartitionAssignment>>) {
-    let _fut = tokio::spawn(async move {
-        let mut partition_assignment = partition_assignment.lock().await;
-        partition_assignment.clear();
-    });
-}
-
-impl Context {
-    pub fn new(partition_assignment: Arc<Mutex<PartitionAssignment>>) -> Self {
-        Self {
-            partition_assignment,
-        }
-    }
-}
-
+/// Contains the partition to offset assignment for a consumer.
 pub struct PartitionAssignment {
+    /// The `None` offset for a partition means that it has never been consumed by
+    /// application before.
     assignment: HashMap<DataTypePartition, Option<DataTypeOffset>>,
+
+    /// The `rebalance` is a new partition assigment that has been set after rebalance event.
+    /// Since rebalance event happens asynchronously to the run_loop we only mark the new partitions
+    /// so the consumer will change/seek whenever it's suitable for him to avoid conflicts.
+    rebalance: Option<Vec<DataTypePartition>>,
 }
 
 impl PartitionAssignment {
     pub fn new() -> Self {
         Self {
             assignment: HashMap::new(),
+            rebalance: None,
         }
     }
 
-    pub fn update_assignment(&mut self, partitions: &Vec<DataTypePartition>) {
-        self.assignment.retain(|p, _| partitions.contains(p));
+    pub fn on_rebalance_assign(
+        partition_assignment: Arc<Mutex<PartitionAssignment>>,
+        partitions: Vec<DataTypePartition>,
+    ) {
+        let _ = tokio::spawn(async move {
+            let mut pa = partition_assignment.lock().await;
+            pa.rebalance = Some(partitions);
+        });
+    }
+
+    pub fn on_rebalance_revoke(partition_assignment: Arc<Mutex<PartitionAssignment>>) {
+        let _ = tokio::spawn(async move {
+            let mut pa = partition_assignment.lock().await;
+            pa.rebalance = Some(Vec::new());
+        });
+    }
+
+    /// Resets this assignment with new list of partitions.
+    ///
+    /// Note that this should be called only within loop on the executing thread.
+    fn reset_with(&mut self, partitions: &Vec<DataTypePartition>) {
+        self.assignment.clear();
         for p in partitions {
-            if !self.assignment.contains_key(p) {
-                self.assignment.insert(*p, None);
-            }
+            self.assignment.insert(*p, None);
         }
     }
 
-    pub fn update_offsets(&mut self, updated_offsets: &HashMap<DataTypePartition, DataTypeOffset>) {
+    fn update_offsets(&mut self, updated_offsets: &HashMap<DataTypePartition, DataTypeOffset>) {
         for (k, v) in updated_offsets {
-            if let Some(entry) = self.assignment.get_mut(&k) {
+            if let Some(entry) = self.assignment.get_mut(k) {
                 *entry = Some(*v);
             } else {
                 warn!("Partition {} is not part of the assignment.", k);
@@ -904,15 +875,7 @@ impl PartitionAssignment {
         }
     }
 
-    pub fn partitions(&self) -> Vec<DataTypePartition> {
-        self.assignment.keys().map(|k| *k).collect()
-    }
-
-    pub fn assignment(&self) -> &HashMap<DataTypePartition, Option<DataTypeOffset>> {
-        &self.assignment
-    }
-
-    pub fn partition_offsets(&self) -> HashMap<DataTypePartition, DataTypeOffset> {
+    fn partition_offsets(&self) -> HashMap<DataTypePartition, DataTypeOffset> {
         let partition_offsets = self
             .assignment
             .iter()
@@ -923,9 +886,5 @@ impl PartitionAssignment {
             .collect();
 
         partition_offsets
-    }
-
-    pub fn clear(&mut self) {
-        self.assignment.clear();
     }
 }

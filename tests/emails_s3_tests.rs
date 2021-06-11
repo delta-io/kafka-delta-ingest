@@ -28,7 +28,7 @@ const TEST_APP_ID: &str = "emails_test";
 const TEST_BROKER: &str = "0.0.0.0:9092";
 const TEST_CONSUMER_GROUP_ID: &str = "kafka_delta_ingest_emails";
 const TEST_PARTITIONS: i32 = 4;
-const TEST_TOTAL_MESSAGES: i32 = 100;
+const TEST_TOTAL_MESSAGES: i32 = 150;
 
 const WORKER_1: &str = "WORKER-1";
 const WORKER_2: &str = "WORKER-2";
@@ -63,11 +63,11 @@ async fn run_emails_s3_tests(initiate_rebalance: bool) {
     // otherwise, to proceed without rebalance the two workers has to be created simultaneously
     let w2 = if initiate_rebalance {
         scope.send_messages(TEST_TOTAL_MESSAGES).await;
-        thread::sleep(Duration::from_secs(2));
+        thread::sleep(Duration::from_secs(1));
         scope.create_and_start(WORKER_2).await
     } else {
         let w = scope.create_and_start(WORKER_2).await;
-        thread::sleep(Duration::from_secs(5));
+        thread::sleep(Duration::from_secs(4));
         scope.send_messages(TEST_TOTAL_MESSAGES).await;
         w
     };
@@ -103,8 +103,7 @@ async fn run_emails_s3_tests(initiate_rebalance: bool) {
     dummy_messages_token.cancel();
     dummy_messages_handle.await.unwrap();
 
-    // the conflict resolution should be done before enabling these checks
-    // scope.validate_data().await;
+    scope.validate_data().await;
     scope.shutdown();
 }
 

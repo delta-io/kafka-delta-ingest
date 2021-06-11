@@ -357,7 +357,7 @@ dependencies = [
 [[package]]
 name = "deltalake"
 version = "0.4.0"
-source = "git+https://github.com/delta-io/delta-rs.git?rev=4d033d6be1e140d61cf7685d60c1c05bc3d72146#4d033d6be1e140d61cf7685d60c1c05bc3d72146"
+source = "git+https://github.com/delta-io/delta-rs.git?rev=e48336d4c602028b240ebd0cb69d9bb45af666ee#e48336d4c602028b240ebd0cb69d9bb45af666ee"
 dependencies = [
  "anyhow",
  "arrow",
@@ -375,6 +375,7 @@ dependencies = [
  "log",
  "maplit",
  "parquet",
+ "parquet-format",
  "regex",
  "rusoto_core",
  "rusoto_credential",

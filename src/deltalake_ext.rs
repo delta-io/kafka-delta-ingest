@@ -12,7 +12,7 @@ use deltalake::{
     DeltaDataTypeVersion, DeltaTable, DeltaTableError, DeltaTransactionError, Schema,
     StorageBackend, StorageError, UriError,
 };
-use log::{debug, info};
+use log::debug;
 use parquet::{
     arrow::ArrowWriter,
     basic::{Compression, LogicalType},
@@ -90,7 +90,7 @@ pub enum DeltaWriterError {
 }
 
 pub struct DeltaWriter {
-    table: DeltaTable,
+    pub table: DeltaTable,
     storage: Box<dyn StorageBackend>,
     arrow_schema_ref: Arc<arrow::datatypes::Schema>,
     writer_properties: WriterProperties,
@@ -140,17 +140,23 @@ impl DeltaWriter {
         })
     }
 
-    pub fn last_transaction_version(
-        &self,
-        app_id: &str,
-    ) -> Result<Option<DeltaDataTypeVersion>, DeltaWriterError> {
+    pub fn last_transaction_version(&self, app_id: &str) -> Option<DeltaDataTypeVersion> {
         let tx_versions = self.table.get_app_transaction_version();
 
         let v = tx_versions.get(app_id).map(|v| v.to_owned());
 
         debug!("Transaction version is {:?} for {}", v, app_id);
 
-        Ok(v)
+        v
+    }
+
+    pub async fn update_table(&mut self) -> Result<(), DeltaWriterError> {
+        self.table.update().await?;
+        Ok(())
+    }
+
+    pub fn table_version(&self) -> DeltaDataTypeVersion {
+        self.table.version
     }
 
     /// Writes the record batch in-memory and updates internal state accordingly.
@@ -189,10 +195,7 @@ impl DeltaWriter {
     }
 
     /// Writes the existing parquet bytes to storage and resets internal state to handle another file.
-    pub async fn write_file(
-        &mut self,
-        actions: &mut Vec<Action>,
-    ) -> Result<DeltaDataTypeVersion, DeltaWriterError> {
+    pub async fn write_parquet_file(&mut self) -> Result<Add, DeltaWriterError> {
         debug!("Writing parquet file.");
 
         let metadata = self.arrow_writer.close()?;
@@ -219,26 +222,29 @@ impl DeltaWriter {
         // After data is written, re-initialize internal state to handle another file
         self.reset()?;
 
-        debug!("Writing Delta transaction.");
+        Ok(create_add(
+            &self.partition_values,
+            path,
+            file_size,
+            &metadata,
+        )?)
+    }
 
-        let add = create_add(&self.partition_values, path, file_size, &metadata)?;
-
-        actions.push(Action::add(add));
-
-        // TODO: Pass StreamingUpdate operation
+    pub async fn commit_version(
+        &mut self,
+        version: DeltaDataTypeVersion,
+        actions: Vec<Action>,
+    ) -> Result<DeltaDataTypeVersion, DeltaTransactionError> {
         let mut tx = self.table.create_transaction(None);
-        let version = tx.commit_with(actions.as_slice(), None).await?;
-
-        info!("Committed Delta version {}", version);
-
-        Ok(version)
+        tx.add_actions(actions);
+        tx.commit_version(version, None).await
     }
 
     pub fn buffered_record_batch_count(&self) -> usize {
         self.buffered_record_batch_count
     }
 
-    fn reset(&mut self) -> Result<(), DeltaWriterError> {
+    pub fn reset(&mut self) -> Result<(), DeltaWriterError> {
         // Reset the internal cursor for the next file.
         self.cursor = InMemoryWriteableCursor::default();
         // Reset buffered record batch count to 0.
@@ -347,10 +353,10 @@ fn delta_stats_from_file_metadata(file_metadata: &FileMetaData) -> Result<Stats,
     }
 
     Ok(Stats {
-        numRecords: file_metadata.num_rows,
-        maxValues: max_values,
-        minValues: min_values,
-        nullCount: null_counts,
+        num_records: file_metadata.num_rows,
+        max_values,
+        min_values,
+        null_count: null_counts,
     })
 }
 
@@ -603,16 +609,12 @@ fn create_add(
     Ok(Add {
         path,
         size,
-
-        partitionValues: partition_values.to_owned(),
-        partitionValues_parsed: None,
-
-        modificationTime: modification_time,
-        dataChange: true,
-
+        partition_values: partition_values.to_owned(),
+        partition_values_parsed: None,
+        modification_time: modification_time,
+        data_change: true,
         stats: Some(stats_string),
         stats_parsed: None,
-        // ?
         tags: None,
     })
 }
