@@ -496,23 +496,25 @@ impl KafkaJsonToDelta {
         Ok((values, partition_offsets))
     }
 
-    async fn build_actions(
+    fn build_actions(
         &self,
         partition_offsets: &HashMap<DataTypePartition, DataTypeOffset>,
         add: Add,
     ) -> Vec<Action> {
-        partition_offsets.iter().map(|(partition, offset)| {
-            action::Action::txn(action::Txn {
-                app_id: self.app_id_for_partition(*partition),
-                version: *offset,
-                last_updated: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as i64,
+        partition_offsets
+            .iter()
+            .map(|(partition, offset)| {
+                action::Action::txn(action::Txn {
+                    app_id: self.app_id_for_partition(*partition),
+                    version: *offset,
+                    last_updated: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as i64,
+                })
             })
-        })
-        .chain(std::iter::once(Action::add(add)))
-        .collect::Vec<_>()
+            .chain(std::iter::once(Action::add(add)))
+            .collect()
     }
 
     async fn complete_file(
@@ -531,10 +533,6 @@ impl KafkaJsonToDelta {
         // TODO remove it if we got conflict error? or it'll be considered as tombstone
         let add = state.delta_writer.write_parquet_file().await?;
 
-        // update the table to get the latest version
-        // the consecutive updates will be made within error handles
-        state.delta_writer.update_table().await?;
-
         let mut attempt_number: u32 = 0;
 
         loop {
@@ -548,7 +546,7 @@ impl KafkaJsonToDelta {
             }
 
             let version = state.delta_writer.table_version() + 1;
-            let actions = self.build_actions(&partition_offsets, add.clone()).await;
+            let actions = self.build_actions(&partition_offsets, add.clone());
             let commit_result = state.delta_writer.commit_version(version, actions).await;
 
             match commit_result {
@@ -592,8 +590,6 @@ impl KafkaJsonToDelta {
                 .last_transaction_version(&self.app_id_for_partition(*partition));
 
             if let Some(version) = version {
-                // if messages in kafka are consecutive then offset should always be `version+1` for
-                // safe commit, but since kafka does not guarantee contiguous offsets, we only check for `less than`.
                 if *offset != version {
                     info!(
                         "Conflict offset for partition {}: state={:?}, delta={:?}",

@@ -74,6 +74,8 @@ pub async fn read_files_from_s3(paths: Vec<String>) -> Vec<i32> {
         }
     }
 
+    std::fs::remove_file(tmp).unwrap();
+
     list.sort();
     list
 }
