@@ -424,7 +424,7 @@ impl KafkaJsonToDelta {
             partition_assignment.reset_with(&partitions);
             self.reset_state(state, &mut partition_assignment).await?;
 
-            // clear `rebalance` list only if reset state i successful
+            // clear `rebalance` list only if reset state is successful
             partition_assignment.rebalance = None;
         }
 
