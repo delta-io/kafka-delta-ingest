@@ -501,22 +501,18 @@ impl KafkaJsonToDelta {
         partition_offsets: &HashMap<DataTypePartition, DataTypeOffset>,
         add: Add,
     ) -> Vec<Action> {
-        let mut actions = Vec::new();
-        for (partition, offset) in partition_offsets.iter() {
-            let txn = action::Action::txn(action::Txn {
+        partition_offsets.iter().map(|(partition, offset)| {
+            action::Action::txn(action::Txn {
                 app_id: self.app_id_for_partition(*partition),
                 version: *offset,
                 last_updated: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
                     .as_millis() as i64,
-            });
-
-            actions.push(txn);
-        }
-
-        actions.push(Action::add(add));
-        actions
+            })
+        })
+        .chain(std::iter::once(Action::add(add)))
+        .collect::Vec<_>()
     }
 
     async fn complete_file(
