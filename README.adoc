@@ -13,6 +13,8 @@ link:https://github.com/delta-io/delta-rs[delta-rs] bindings.
 * Basic transformations within message
 * Statsd metric output
 
+See the link:https://github.com/delta-io/kafka-delta-ingest/blob/main/doc/DESIGN.md[design doc] for more details.
+
 === Example
 
 The repository includes an example for trying out the application locally with some fake web request data.
