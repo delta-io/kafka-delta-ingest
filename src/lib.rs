@@ -597,19 +597,11 @@ impl KafkaJsonToDelta {
 
             if let Some(version) = version {
                 match offset {
-                    Some(offset) => {
-                        if *offset != version {
-                            info!(
-                                "Conflict offset for partition {}: state={:?}, delta={:?}",
-                                partition, offset, version
-                            );
-                            result = false;
-                        }
-                    }
-                    None => {
+                    Some(offset) if *offset == version => (),
+                    _ => {
                         info!(
-                            "Conflict offset for partition {}: state=<none>, delta={:?}",
-                            partition, version
+                            "Conflict offset for partition {}: state={:?}, delta={:?}",
+                            partition, offset, version
                         );
                         result = false;
                     }
