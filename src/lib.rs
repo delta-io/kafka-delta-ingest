@@ -436,10 +436,14 @@ impl KafkaJsonToDelta {
         state: &mut ProcessingState,
         msg: &BorrowedMessage<'_>,
     ) -> Result<(), ProcessingError> {
-        if let Some(offset) = state.delta_partition_offsets.get(&msg.partition()) {
-            if *offset > msg.offset() {
-                // This message was consumed after rebalance but before the seek.
-                // Then next consumption will get us the messages with expected offsets
+        if let Some(Some(offset)) = state.delta_partition_offsets.get(&msg.partition()) {
+            if msg.offset() <= *offset {
+                // If message offset is lower than the one stored in state then we consumed message
+                // after rebalance but before seek.
+                // If message offset is equals to the one stored in state then this is the message
+                // consumed right after seek. It's not safe to seek to the (last_offset+1) because
+                // such offset might not exists yet and offset tracking will be reset by kafka which
+                // might lead to data duplication.
                 return Err(ProcessingError::Continue);
             }
         }
@@ -553,7 +557,9 @@ impl KafkaJsonToDelta {
                 Ok(v) => {
                     assert_eq!(v, version);
 
-                    state.delta_partition_offsets = partition_offsets;
+                    for (p, o) in partition_offsets {
+                        state.delta_partition_offsets.insert(p, Some(o));
+                    }
 
                     self.log_delta_write_completed(version, &delta_write_timer)
                         .await;
@@ -590,12 +596,23 @@ impl KafkaJsonToDelta {
                 .last_transaction_version(&self.app_id_for_partition(*partition));
 
             if let Some(version) = version {
-                if *offset != version {
-                    info!(
-                        "Conflict offset for partition {}: state={:?}, delta={:?}",
-                        partition, offset, version
-                    );
-                    result = false;
+                match offset {
+                    Some(offset) => {
+                        if *offset != version {
+                            info!(
+                                "Conflict offset for partition {}: state={:?}, delta={:?}",
+                                partition, offset, version
+                            );
+                            result = false;
+                        }
+                    }
+                    None => {
+                        info!(
+                            "Conflict offset for partition {}: state=<none>, delta={:?}",
+                            partition, version
+                        );
+                        result = false;
+                    }
                 }
             }
         }
@@ -632,18 +649,8 @@ impl KafkaJsonToDelta {
                 .delta_writer
                 .last_transaction_version(&self.app_id_for_partition(*partition));
 
-            if let Some(version) = version {
-                // transaction version in delta log is the latest offset stored for partition,
-                // so we need to seek to the incremented to get the next messages.
-                let offset = version + 1;
-                partition_assignment
-                    .assignment
-                    .insert(*partition, Some(offset));
-
-                // here we store `version` to remember the latest offset in delta
-                // for a conflict resolution
-                state.delta_partition_offsets.insert(*partition, version);
-            }
+            partition_assignment.assignment.insert(*partition, version);
+            state.delta_partition_offsets.insert(*partition, version);
         }
 
         // re seek consumer to the latest offsets of the partition assignment
@@ -658,7 +665,7 @@ struct ProcessingState {
     delta_writer: DeltaWriter,
     value_buffers: ValueBuffers,
     latency_timer: Instant,
-    delta_partition_offsets: HashMap<DataTypePartition, DataTypeOffset>,
+    delta_partition_offsets: HashMap<DataTypePartition, Option<DataTypeOffset>>,
 }
 
 #[derive(thiserror::Error, Debug)]
