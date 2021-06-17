@@ -109,6 +109,7 @@ impl From<DeltaWriterError> for ProcessingError {
     }
 }
 
+#[derive(Debug)]
 /// Application options
 pub struct Options {
     /// Source kafka topic to consume messages from
@@ -177,6 +178,7 @@ impl KafkaJsonToDelta {
         info!("App id is {}", opts.app_id);
         info!("Kafka broker string is {}", kafka_brokers);
         info!("Kafka consumer group id is {}", consumer_group_id);
+        info!("Opts are {:?}", opts);
 
         kafka_client_config
             .set("bootstrap.servers", kafka_brokers.clone())
