@@ -32,7 +32,7 @@ tokio-util = "0.6.3"
 uuid = { version = "0.8", features = ["serde", "v4"] }
 
 arrow  = { version = "4" }
-deltalake = { git = "https://github.com/delta-io/delta-rs.git", rev = "e48336d4c602028b240ebd0cb69d9bb45af666ee", features = ["s3"] }
+deltalake = { git = "https://github.com/xianwill/delta-rs.git", rev = "d26fc9b835d5acd2187718dff4cd89e2a6f9f5ff", features = ["s3"] }
 parquet = { version = "4" }
 
 [dev-dependencies]
