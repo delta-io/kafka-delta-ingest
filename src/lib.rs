@@ -178,6 +178,14 @@ impl KafkaJsonToDelta {
         info!("Kafka broker string is {}", kafka_brokers);
         info!("Kafka consumer group id is {}", consumer_group_id);
 
+        if let Ok(cert_pem) = std::env::var("KAFKA_DELTA_INGEST_CERT") {
+            kafka_client_config.set("ssl.certificate.pem", cert_pem);
+        }
+
+        if let Ok(key_pem) = std::env::var("KAFKA_DELTA_INGEST_KEY") {
+            kafka_client_config.set("ssl.key.pem", key_pem);
+        }
+
         kafka_client_config
             .set("bootstrap.servers", kafka_brokers.clone())
             .set("group.id", consumer_group_id)
