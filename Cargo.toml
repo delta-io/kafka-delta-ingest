@@ -17,7 +17,7 @@ lazy_static = "1"
 log = "0"
 maplit = "1"
 parquet-format = "~2.6.1"
-rdkafka = "0.26"
+rdkafka = { version = "0.26", features = ["ssl"] }
 rusoto_core = { version = "0.46" }
 rusoto_credential = { version = "0.46" }
 rusoto_s3 = { version = "0.46" }

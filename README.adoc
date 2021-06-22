@@ -76,11 +76,28 @@ NOTE: URLs sampled for the test data are sourced from Wikipedia's list of most p
 * Show some parquet data (using link:https://pypi.org/project/parquet-tools/[parquet-tools])
 ** `parquet-tools show tests/data/web_requests/date=2021-03-24/<some file written by your example>`
 
-=== Developing
+== Kafka SSL
+
+In case you have Kafka topics secured by SSL client certificates, you can specify these secrets as environment variables.
+
+For the cert chain include the PEM content as an environment variable named `KAFKA_DELTA_INGEST_CERT`.
+For the cert private key include the PEM content as an environment variable named `KAFKA_DELTA_INGEST_KEY`.
+
+These will be set as the `ssl.certificate.pem` and `ssl.key.pem` Kafka settings respectively.
+
+Make sure to provide the additional option:
+
+```
+-K security.protocol=SSL
+```
+
+when invoking the cli command as well.
+
+== Developing
 
 Make sure the docker-compose test_stack is running, and execute `cargo test` to run unit and integration tests.
 
-=== Get Involved
+== Get Involved
 
 Join link:https://dbricks.co/delta-users-slack[#kafka-delta-ingest in the Delta Lake Slack workspace]
 
