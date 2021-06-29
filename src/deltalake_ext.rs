@@ -401,43 +401,44 @@ fn apply_null_counts(array: &StructArray, null_counts: &mut HashMap<String, Colu
         _ => unreachable!(),
     };
 
-    for i in 0..array.num_columns() {
-        let column = array.column(i);
-        let field = match fields.get(i) {
-            Some(field) => field,
-            _ => unreachable!(),
-        };
-        let key = field.name().to_owned();
+    array
+        .columns()
+        .iter()
+        .zip(fields)
+        .for_each(|(column, field)| {
+            let key = field.name().to_owned();
 
-        match column.data_type() {
-            DataType::Struct(_) => {
-                let col_struct = null_counts
-                    .entry(key)
-                    .or_insert_with(|| ColumnCountStat::Column(HashMap::new()));
+            match column.data_type() {
+                // Recursive case
+                DataType::Struct(_) => {
+                    let col_struct = null_counts
+                        .entry(key)
+                        .or_insert_with(|| ColumnCountStat::Column(HashMap::new()));
 
-                match col_struct {
-                    ColumnCountStat::Column(map) => {
-                        apply_null_counts(as_struct_array(column), map);
+                    match col_struct {
+                        ColumnCountStat::Column(map) => {
+                            apply_null_counts(as_struct_array(column), map);
+                        }
+                        _ => unreachable!(),
                     }
-                    _ => unreachable!(),
+                }
+                // Base case
+                _ => {
+                    let col_struct = null_counts
+                        .entry(key.clone())
+                        .or_insert_with(|| ColumnCountStat::Value(0));
+
+                    match col_struct {
+                        ColumnCountStat::Value(n) => {
+                            let null_count = column.null_count() as DeltaDataTypeLong;
+                            let n = null_count + *n;
+                            null_counts.insert(key, ColumnCountStat::Value(n));
+                        }
+                        _ => unreachable!(),
+                    }
                 }
             }
-            _ => {
-                let col_struct = null_counts
-                    .entry(key.clone())
-                    .or_insert_with(|| ColumnCountStat::Value(0));
-
-                match col_struct {
-                    ColumnCountStat::Value(n) => {
-                        let null_count = column.null_count() as DeltaDataTypeLong;
-                        let n = null_count + *n;
-                        null_counts.insert(key, ColumnCountStat::Value(n));
-                    }
-                    _ => unreachable!(),
-                }
-            }
-        }
-    }
+        });
 }
 
 fn apply_min_max_for_column(
