@@ -201,7 +201,7 @@ impl DeltaWriter {
 
         self.buffered_record_batch_count += 1;
 
-        let struct_array: StructArray = record_batch.clone().into();
+        let struct_array: StructArray = record_batch.into();
         apply_null_counts(&struct_array, &mut self.null_counts);
 
         Ok(())
