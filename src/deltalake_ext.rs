@@ -970,9 +970,6 @@ mod tests {
             let schema_string = serde_json::to_string(&SCHEMA.clone()).unwrap();
             let jsons = [
                 json!({
-                    "commitInfo":{"timestamp":1564524295023i64,"operation":"CREATE TABLE","operationParameters":{"isManaged":"false","description":null,"partitionBy":"[]","properties":"{}"},"isBlindAppend":true}
-                }),
-                json!({
                     "protocol":{"minReaderVersion":1,"minWriterVersion":2}
                 }),
                 json!({
