@@ -770,7 +770,7 @@ mod tests {
     use std::path::Path;
 
     #[tokio::test]
-    async fn delta_writer_test() {
+    async fn delta_stats_test() {
         let temp_dir = tempfile::tempdir().unwrap();
         let table_path = temp_dir.path();
         create_temp_table(table_path);
