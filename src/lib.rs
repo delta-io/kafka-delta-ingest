@@ -519,10 +519,12 @@ impl KafkaJsonToDelta {
                 action::Action::txn(action::Txn {
                     app_id: self.app_id_for_partition(*partition),
                     version: *offset,
-                    last_updated: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis() as i64,
+                    last_updated: Some(
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis() as i64,
+                    ),
                 })
             })
             .chain(std::iter::once(Action::add(add)))

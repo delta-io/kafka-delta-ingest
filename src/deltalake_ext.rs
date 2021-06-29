@@ -207,7 +207,7 @@ impl DeltaWriter {
 
         let storage_path = self
             .storage
-            .join_path(self.table.table_path.as_str(), path.as_str());
+            .join_path(self.table.table_uri.as_str(), path.as_str());
 
         //
         // TODO: Wrap in retry loop to handle temporary network errors

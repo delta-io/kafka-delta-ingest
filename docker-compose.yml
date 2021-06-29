@@ -21,7 +21,7 @@ services:
       - "2181:2181"
 
   localstack:
-    image: localstack/localstack
+    image: localstack/localstack:0.12.11
     ports: 
       - "4566:4566"
     environment:
@@ -34,7 +34,7 @@ services:
       test: [ "CMD", "curl", "-f", "http://localhost:4566/health" ]
 
   test_stack:
-    image: localstack/localstack  
+    image: localstack/localstack:0.12.11
     depends_on: 
       - kafka
       - localstack
