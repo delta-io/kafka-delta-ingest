@@ -4,6 +4,10 @@ extern crate lazy_static;
 #[macro_use]
 extern crate strum_macros;
 
+#[cfg(test)]
+#[macro_use]
+extern crate serde_json;
+
 use deltalake::{action, DeltaTableError, DeltaTransactionError};
 use futures::stream::StreamExt;
 use log::{debug, error, info, warn};
@@ -347,13 +351,11 @@ impl KafkaJsonToDelta {
             return Ok(());
         }
 
-        let record_batch = deltalake_ext::record_batch_from_json(
-            state.delta_writer.arrow_schema(),
-            values.as_slice(),
-        )?;
+        let record_batch =
+            deltalake_ext::record_batch_from_json(state.delta_writer.arrow_schema(), values)?;
 
         let record_batch_timer = Instant::now();
-        state.delta_writer.write_record_batch(&record_batch).await?;
+        state.delta_writer.write_record_batch(record_batch).await?;
 
         self.log_record_batch_completed(
             state.delta_writer.buffered_record_batch_count(),

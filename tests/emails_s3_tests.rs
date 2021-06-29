@@ -235,7 +235,7 @@ impl TestScope {
 
     async fn validate_data(&self) {
         let table = deltalake::open_table(&self.table).await.unwrap();
-        let result = helpers::read_files_from_s3(table.get_file_paths()).await;
+        let result = helpers::read_files_from_s3(table.get_file_uris()).await;
         let r: Vec<i32> = (0..TEST_TOTAL_MESSAGES).collect();
         println!("Got messages {}/{}", result.len(), TEST_TOTAL_MESSAGES);
         assert_eq!(result, r);

@@ -110,7 +110,7 @@ async fn e2e_smoke_test() {
         "Version should be 2 (i.e. Exactly two transactions should be written)"
     );
 
-    let file_paths = delta_table.get_file_paths();
+    let file_paths = delta_table.get_file_uris();
 
     debug!("Delta log file paths {:?}", file_paths);
 
@@ -124,7 +124,7 @@ async fn e2e_smoke_test() {
         .await
         .unwrap();
 
-    let files = delta_table.get_file_paths();
+    let files = delta_table.get_file_uris();
 
     let mut row_num = 0;
 
