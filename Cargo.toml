@@ -17,7 +17,7 @@ lazy_static = "1"
 log = "0"
 maplit = "1"
 parquet-format = "~2.6.1"
-rdkafka = { version = "0.26", features = ["ssl"] }
+rdkafka = { version = "0.26", features = ["ssl-vendored"] }
 rusoto_core = { version = "0.46" }
 rusoto_credential = { version = "0.46" }
 rusoto_s3 = { version = "0.46" }
@@ -38,4 +38,5 @@ parquet = { version = "4" }
 [dev-dependencies]
 utime = "0.3"
 serial_test = "*"
+tempfile = "3"
 

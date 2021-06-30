@@ -46,9 +46,9 @@ checksum = "23b62fc65de8e4e7f52534fb52b0f3ed04746ae267519eef2a83941e8085068b"
 
 [[package]]
 name = "arrow"
-version = "4.0.0"
+version = "4.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "014c7490f839d9dd4ce28f8232d4731f8b1fb93fa477d69e6fe881814ac2b6bb"
+checksum = "93811be1c0f60f4b29d80b34dad4e59fdc397a9e580f849df9e2635701498663"
 dependencies = [
  "cfg_aliases",
  "chrono",
@@ -58,7 +58,8 @@ dependencies = [
  "indexmap",
  "lazy_static",
  "lexical-core",
- "num 0.3.1",
+ "multiversion",
+ "num 0.4.0",
  "rand 0.7.3",
  "regex",
  "serde",
@@ -503,9 +504,9 @@ dependencies = [
 
 [[package]]
 name = "flatbuffers"
-version = "0.8.3"
+version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63b5b0f949bdb25c077c83184ac689ae38ae392683d4c71e98be9736db66e94c"
+checksum = "c3c502342b7d6d73beb1b8bab39dc01deba0c8ef66f4e6f1eba7c69ee6b38069"
 dependencies = [
  "bitflags",
  "smallvec",
@@ -901,6 +902,7 @@ dependencies = [
  "serial_test",
  "strum",
  "strum_macros",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -1062,6 +1064,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "multiversion"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "025c962a3dd3cc5e0e520aa9c612201d127dcdf28616974961a649dca64f5373"
+dependencies = [
+ "multiversion-macros",
+]
+
+[[package]]
+name = "multiversion-macros"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8a3e2bde382ebf960c1f3e79689fa5941625fe9bf694a1cb64af3e85faff3af"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "native-tls"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1103,15 +1125,15 @@ dependencies = [
 
 [[package]]
 name = "num"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b7a8e9be5e039e2ff869df49155f1c06bd01ade2117ec783e56ab0932b67a8f"
+checksum = "43db66d1170d347f9a065114077f7dccb00c1b9478c89384490a3425279a4606"
 dependencies = [
- "num-bigint",
- "num-complex 0.3.1",
+ "num-bigint 0.4.0",
+ "num-complex 0.4.0",
  "num-integer",
  "num-iter",
- "num-rational 0.3.2",
+ "num-rational 0.4.0",
  "num-traits",
 ]
 
@@ -1120,6 +1142,17 @@ name = "num-bigint"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d0a3d5e207573f948a9e5376662aa743a2ea13f7c50a554d7af443a73fbfeba"
+dependencies = [
+ "autocfg",
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
+name = "num-bigint"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e0d047c1062aa51e256408c560894e5251f08925980e53cf1aa5bd00eec6512"
 dependencies = [
  "autocfg",
  "num-integer",
@@ -1138,9 +1171,9 @@ dependencies = [
 
 [[package]]
 name = "num-complex"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "747d632c0c558b87dbabbe6a82f3b4ae03720d0646ac5b7b4dae89394be5f2c5"
+checksum = "26873667bbbb7c5182d4a37c1add32cdf09f841af72da53318fdb81543c15085"
 dependencies = [
  "num-traits",
 ]
@@ -1179,12 +1212,12 @@ dependencies = [
 
 [[package]]
 name = "num-rational"
-version = "0.3.2"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12ac428b1cb17fce6f731001d307d351ec70a6d202fc2e60f7d4c5e42d8f4f07"
+checksum = "d41702bd167c2df5520b384281bc111a4b5efcf7fbc4c9c222c815b07e0a6a6a"
 dependencies = [
  "autocfg",
- "num-bigint",
+ "num-bigint 0.4.0",
  "num-integer",
  "num-traits",
 ]
@@ -1263,6 +1296,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77af24da69f9d9341038eba93a073b1fdaaa1b788221b00a69bce9e762cb32de"
 
 [[package]]
+name = "openssl-src"
+version = "111.15.0+1.1.1k"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1a5f6ae2ac04393b217ea9f700cd04fa9bf3d93fae2872069f3d15d908af70a"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "openssl-sys"
 version = "0.9.61"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1271,6 +1313,7 @@ dependencies = [
  "autocfg",
  "cc",
  "libc",
+ "openssl-src",
  "pkg-config",
  "vcpkg",
 ]
@@ -1352,7 +1395,7 @@ dependencies = [
  "chrono",
  "flate2",
  "lz4",
- "num-bigint",
+ "num-bigint 0.3.2",
  "parquet-format",
  "snap",
  "thrift",
