@@ -552,7 +552,7 @@ impl KafkaJsonToDelta {
 
         let prepared_commit = {
             let mut tx = state.delta_writer.table.create_transaction(None);
-            tx.add_actions(self.build_actions(&partition_offsets, add.clone()));
+            tx.add_actions(self.build_actions(&partition_offsets, add));
             tx.prepare_commit(None).await?
         };
 
