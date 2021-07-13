@@ -11,7 +11,7 @@ use arrow::{
     record_batch::*,
 };
 use deltalake::{
-    action::{Action, Add, ColumnCountStat, ColumnValueStat, Stats},
+    action::{Add, ColumnCountStat, ColumnValueStat, Stats},
     DeltaDataTypeLong, DeltaDataTypeVersion, DeltaTable, DeltaTableError, DeltaTransactionError,
     Schema, StorageBackend, StorageError, UriError,
 };
@@ -251,18 +251,6 @@ impl DeltaWriter {
             file_size,
             &metadata,
         )?)
-    }
-
-    /// Performs a delta transaction attempt to commit at the specified version.
-    /// If the transaction attempt fails, returns a Delta transaction error and does not retry.
-    pub async fn commit_version(
-        &mut self,
-        version: DeltaDataTypeVersion,
-        actions: Vec<Action>,
-    ) -> Result<DeltaDataTypeVersion, DeltaTransactionError> {
-        let mut tx = self.table.create_transaction(None);
-        tx.add_actions(actions);
-        tx.commit_version(version, None).await
     }
 
     /// Returns the number of records held in the current buffer.

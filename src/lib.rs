@@ -5,7 +5,6 @@ extern crate lazy_static;
 extern crate strum_macros;
 
 #[cfg(test)]
-#[macro_use]
 extern crate serde_json;
 
 use deltalake::{action, DeltaTableError, DeltaTransactionError};
@@ -551,6 +550,12 @@ impl KafkaJsonToDelta {
 
         let mut attempt_number: u32 = 0;
 
+        let prepared_commit = {
+            let mut tx = state.delta_writer.table.create_transaction(None);
+            tx.add_actions(self.build_actions(&partition_offsets, add));
+            tx.prepare_commit(None).await?
+        };
+
         loop {
             state.delta_writer.update_table().await?;
 
@@ -562,8 +567,11 @@ impl KafkaJsonToDelta {
             }
 
             let version = state.delta_writer.table_version() + 1;
-            let actions = self.build_actions(&partition_offsets, add.clone());
-            let commit_result = state.delta_writer.commit_version(version, actions).await;
+            let commit_result = state
+                .delta_writer
+                .table
+                .try_commit_transaction(&prepared_commit, version)
+                .await;
 
             match commit_result {
                 Ok(v) => {
