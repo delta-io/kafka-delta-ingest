@@ -7,8 +7,10 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::util::Timeout;
 use rdkafka::ClientConfig;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::prelude::*;
+use std::path::Path;
 use uuid::Uuid;
 
 pub const TEST_BROKER: &str = "0.0.0.0:9092";
@@ -78,4 +80,41 @@ pub async fn read_files_from_s3(paths: Vec<String>) -> Vec<i32> {
 
     list.sort();
     list
+}
+
+pub fn create_local_table(schema: HashMap<&str, &str>, partitions: Vec<&str>) -> String {
+    let path = format!("./tests/data/gen/table-{}", Uuid::new_v4());
+    let v0 = format!("{}/_delta_log/00000000000000000000.json", &path);
+
+    std::fs::create_dir_all(Path::new(&v0).parent().unwrap()).unwrap();
+
+    let mut file = File::create(v0).unwrap();
+    let mut fields = Vec::new();
+
+    for (name, tpe) in schema {
+        fields.push(format!(
+            r#"{{\"metadata\":{{}},\"name\":\"{}\",\"nullable\":true,\"type\":\"{}\"}}"#,
+            name, tpe
+        ));
+    }
+
+    let schema = format!(
+        r#"{{\"type\":\"struct\",\"fields\":[{}]}}"#,
+        fields.join(",")
+    );
+    let partitions = partitions
+        .iter()
+        .map(|s| format!("\"{}\"", s))
+        .collect::<Vec<String>>()
+        .join(",");
+
+    writeln!(file, r#"{{"commitInfo":{{"timestamp":1621845641000,"operation":"CREATE TABLE","operationParameters":{{"isManaged":"false","description":null,"partitionBy":"[]","properties":"{{}}"}},"isBlindAppend":true}}}}"#).unwrap();
+    writeln!(
+        file,
+        r#"{{"protocol":{{"minReaderVersion":1,"minWriterVersion":2}}}}"#
+    )
+    .unwrap();
+    writeln!(file, r#"{{"metaData":{{"id":"ec285dbc-6479-4cc1-b038-1de97afabf9b","format":{{"provider":"parquet","options":{{}}}},"schemaString":"{}","partitionColumns":[{}],"configuration":{{}},"createdTime":1621845641001}}}}"#, schema, partitions).unwrap();
+
+    path
 }

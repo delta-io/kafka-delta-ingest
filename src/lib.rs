@@ -350,11 +350,9 @@ impl KafkaJsonToDelta {
             return Ok(());
         }
 
-        let record_batch =
-            deltalake_ext::record_batch_from_json(state.delta_writer.arrow_schema(), values)?;
-
         let record_batch_timer = Instant::now();
-        state.delta_writer.write_record_batch(record_batch).await?;
+
+        state.delta_writer.write(values).await?;
 
         self.log_record_batch_completed(
             state.delta_writer.buffered_record_batch_count(),
@@ -375,7 +373,7 @@ impl KafkaJsonToDelta {
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<(), KafkaJsonToDeltaError> {
         let mut state = ProcessingState {
-            delta_writer: DeltaWriter::for_table_path(self.opts.table_location.clone()).await?,
+            delta_writer: DeltaWriter::for_table_path(&self.opts.table_location).await?,
             value_buffers: ValueBuffers::new(),
             latency_timer: Instant::now(),
             delta_partition_offsets: HashMap::new(),
@@ -512,7 +510,7 @@ impl KafkaJsonToDelta {
     fn build_actions(
         &self,
         partition_offsets: &HashMap<DataTypePartition, DataTypeOffset>,
-        add: Add,
+        mut add: Vec<Add>,
     ) -> Vec<Action> {
         partition_offsets
             .iter()
@@ -528,7 +526,7 @@ impl KafkaJsonToDelta {
                     ),
                 })
             })
-            .chain(std::iter::once(Action::add(add)))
+            .chain(add.drain(..).map(Action::add))
             .collect()
     }
 
@@ -546,7 +544,7 @@ impl KafkaJsonToDelta {
 
         // upload pending parquet file to delta store
         // TODO remove it if we got conflict error? or it'll be considered as tombstone
-        let add = state.delta_writer.write_parquet_file().await?;
+        let add = state.delta_writer.write_parquet_files().await?;
 
         let mut attempt_number: u32 = 0;
 
@@ -645,7 +643,7 @@ impl KafkaJsonToDelta {
         state: &mut ProcessingState,
         partition_assignment: &mut PartitionAssignment,
     ) -> Result<(), KafkaJsonToDeltaError> {
-        state.delta_writer.reset()?;
+        state.delta_writer.reset();
         state.value_buffers.reset();
         state.delta_partition_offsets.clear();
 

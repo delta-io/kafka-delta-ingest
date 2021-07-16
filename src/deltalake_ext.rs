@@ -43,8 +43,8 @@ type NullCounts = HashMap<String, ColumnCountStat>;
 
 #[derive(thiserror::Error, Debug)]
 pub enum DeltaWriterError {
-    #[error("Missing partition column: {col_name}")]
-    MissingPartitionColumn { col_name: String },
+    #[error("Missing partition column: {0}")]
+    MissingPartitionColumn(String),
 
     #[error("Arrow RecordBatch schema does not match: RecordBatch schema: {record_batch_schema}, {expected_schema}")]
     SchemaMismatch {
@@ -57,6 +57,9 @@ pub enum DeltaWriterError {
 
     #[error("Arrow RecordBatch created from JSON buffer is a None value")]
     EmptyRecordBatch,
+
+    #[error("Record {0} is not a JSON object")]
+    InvalidRecord(String),
 
     // TODO: derive Debug for Stats in delta-rs
     #[error("Serialization of delta log statistics failed")]
@@ -104,19 +107,44 @@ pub struct DeltaWriter {
     storage: Box<dyn StorageBackend>,
     arrow_schema_ref: Arc<arrow::datatypes::Schema>,
     writer_properties: WriterProperties,
+    partition_columns: Vec<String>,
+    arrow_writers: HashMap<String, DeltaArrowWriter>,
+}
+
+pub struct DeltaArrowWriter {
     cursor: InMemoryWriteableCursor,
     arrow_writer: ArrowWriter<InMemoryWriteableCursor>,
-    partition_columns: Vec<String>,
     partition_values: HashMap<String, String>,
     null_counts: NullCounts,
     buffered_record_batch_count: usize,
 }
 
+impl DeltaArrowWriter {
+    /// Writes the record batch in-memory and updates internal state accordingly.
+    /// This method buffers the write stream internally so it can be invoked for many record batches and flushed after the appropriate number of bytes has been written.
+    async fn write_record_batch(
+        &mut self,
+        partition_columns: &Vec<String>,
+        record_batch: RecordBatch,
+    ) -> Result<(), DeltaWriterError> {
+        if self.partition_values.is_empty() {
+            let partition_values = extract_partition_values(partition_columns, &record_batch)?;
+            self.partition_values = partition_values;
+        }
+
+        self.arrow_writer.write(&record_batch)?;
+        self.buffered_record_batch_count += 1;
+
+        apply_null_counts(&record_batch.into(), &mut self.null_counts);
+        Ok(())
+    }
+}
+
 impl DeltaWriter {
     /// Initialize the writer from the given table path and delta schema
-    pub async fn for_table_path(table_path: String) -> Result<DeltaWriter, DeltaWriterError> {
-        let table = deltalake::open_table(&table_path.as_str()).await?;
-        let storage = deltalake::get_backend_for_uri(table_path.as_str())?;
+    pub async fn for_table_path(table_path: &str) -> Result<DeltaWriter, DeltaWriterError> {
+        let table = deltalake::open_table(table_path).await?;
+        let storage = deltalake::get_backend_for_uri(table_path)?;
 
         // Initialize an arrow schema ref from the delta table schema
         let metadata = table.get_metadata()?.clone();
@@ -131,24 +159,13 @@ impl DeltaWriter {
             .set_compression(Compression::SNAPPY)
             .build();
 
-        let cursor = InMemoryWriteableCursor::default();
-        let arrow_writer = ArrowWriter::try_new(
-            cursor.clone(),
-            arrow_schema_ref.clone(),
-            Some(writer_properties.clone()),
-        )?;
-
         Ok(Self {
             table,
             storage,
             arrow_schema_ref,
             writer_properties,
-            cursor,
-            arrow_writer,
             partition_columns,
-            partition_values: HashMap::new(),
-            null_counts: NullCounts::new(),
-            buffered_record_batch_count: 0,
+            arrow_writers: HashMap::new(),
         })
     }
 
@@ -174,104 +191,114 @@ impl DeltaWriter {
         self.table.version
     }
 
-    /// Writes the record batch in-memory and updates internal state accordingly.
-    /// This method buffers the write stream internally so it can be invoked for many record batches and flushed after the appropriate number of bytes has been written.
-    pub async fn write_record_batch(
-        &mut self,
-        record_batch: RecordBatch,
-    ) -> Result<(), DeltaWriterError> {
-        let partition_values = extract_partition_values(&self.partition_columns, &record_batch)?;
+    pub async fn write(&mut self, values: Vec<Value>) -> Result<(), DeltaWriterError> {
+        for (key, values) in self.divide_by_partition_values(values)? {
+            let record_batch = record_batch_from_json(self.arrow_schema(), values)?;
 
-        // Verify record batch schema matches the expected schema
-        let schemas_match = record_batch.schema() == self.arrow_schema_ref;
+            if record_batch.schema() != self.arrow_schema_ref {
+                return Err(DeltaWriterError::SchemaMismatch {
+                    record_batch_schema: record_batch.schema(),
+                    expected_schema: self.arrow_schema_ref.clone(),
+                });
+            }
 
-        if !schemas_match {
-            return Err(DeltaWriterError::SchemaMismatch {
-                record_batch_schema: record_batch.schema(),
-                expected_schema: self.arrow_schema_ref.clone(),
-            });
+            match self.arrow_writers.get_mut(&key) {
+                Some(writer) => {
+                    writer
+                        .write_record_batch(&self.partition_columns, record_batch)
+                        .await?
+                }
+                None => {
+                    let cursor = InMemoryWriteableCursor::default();
+                    let arrow_writer = ArrowWriter::try_new(
+                        cursor.clone(),
+                        self.arrow_schema_ref.clone(),
+                        Some(self.writer_properties.clone()),
+                    )?;
+
+                    let mut writer = DeltaArrowWriter {
+                        cursor,
+                        arrow_writer,
+                        partition_values: HashMap::new(),
+                        null_counts: NullCounts::new(),
+                        buffered_record_batch_count: 0,
+                    };
+
+                    writer
+                        .write_record_batch(&self.partition_columns, record_batch)
+                        .await?;
+                    self.arrow_writers.insert(key, writer);
+                }
+            }
         }
-
-        // TODO: Verify that this RecordBatch contains partition values that agree with previous partition values (if any) for the current writer context
-
-        self.partition_values = partition_values;
-
-        // write the record batch to the held arrow writer
-        self.arrow_writer.write(&record_batch)?;
-
-        self.buffered_record_batch_count += 1;
-
-        let struct_array: StructArray = record_batch.into();
-        apply_null_counts(&struct_array, &mut self.null_counts);
 
         Ok(())
     }
 
     /// Returns the current byte length of the in memory buffer.
     /// This may be used by the caller to decide when to finalize the file write.
+    /// TODO https://github.com/delta-io/kafka-delta-ingest/issues/38
     pub fn buffer_len(&self) -> usize {
-        self.cursor.data().len()
+        self.arrow_writers
+            .values()
+            .map(|w| w.cursor.data().len())
+            .sum()
     }
 
     /// Writes the existing parquet bytes to storage and resets internal state to handle another file.
-    pub async fn write_parquet_file(&mut self) -> Result<Add, DeltaWriterError> {
-        debug!("Writing parquet file.");
+    pub async fn write_parquet_files(&mut self) -> Result<Vec<Add>, DeltaWriterError> {
+        debug!("Writing parquet files.");
 
-        let metadata = self.arrow_writer.close()?;
+        let writers = std::mem::replace(&mut self.arrow_writers, HashMap::new());
+        let mut actions = Vec::new();
 
-        let path = self.next_data_path(&self.partition_columns, &self.partition_values)?;
+        for (_, mut writer) in writers {
+            let metadata = writer.arrow_writer.close()?;
 
-        let obj_bytes = self.cursor.data();
-        let file_size = obj_bytes.len() as i64;
+            let path = self.next_data_path(&self.partition_columns, &writer.partition_values)?;
 
-        let storage_path = self
-            .storage
-            .join_path(self.table.table_uri.as_str(), path.as_str());
+            let obj_bytes = writer.cursor.data();
+            let file_size = obj_bytes.len() as i64;
 
-        //
-        // TODO: Wrap in retry loop to handle temporary network errors
-        //
+            let storage_path = self
+                .storage
+                .join_path(self.table.table_uri.as_str(), path.as_str());
 
-        self.storage
-            .put_obj(storage_path.as_str(), obj_bytes.as_slice())
-            .await?;
+            //
+            // TODO: Wrap in retry loop to handle temporary network errors
+            //
 
-        debug!("Parquet file written.");
+            self.storage
+                .put_obj(&storage_path, obj_bytes.as_slice())
+                .await?;
 
-        // Replace self null_counts with an empty map. Use the other for stats.
-        let null_counts = std::mem::replace(&mut self.null_counts, HashMap::new());
+            debug!("Parquet file {} written.", &storage_path);
 
-        // After data is written, re-initialize internal state to handle another file
-        self.reset()?;
+            // Replace self null_counts with an empty map. Use the other for stats.
+            let null_counts = std::mem::replace(&mut writer.null_counts, HashMap::new());
 
-        Ok(create_add(
-            &self.partition_values,
-            null_counts,
-            path,
-            file_size,
-            &metadata,
-        )?)
+            actions.push(create_add(
+                &writer.partition_values,
+                null_counts,
+                path,
+                file_size,
+                &metadata,
+            )?);
+        }
+        Ok(actions)
     }
 
     /// Returns the number of records held in the current buffer.
     pub fn buffered_record_batch_count(&self) -> usize {
-        self.buffered_record_batch_count
+        self.arrow_writers
+            .values()
+            .map(|w| w.buffered_record_batch_count)
+            .sum()
     }
 
-    /// Resets internal state to start from a fresh buffer for writes.
-    pub fn reset(&mut self) -> Result<(), DeltaWriterError> {
-        // Reset the internal cursor for the next file.
-        self.cursor = InMemoryWriteableCursor::default();
-        // Reset buffered record batch count to 0.
-        self.buffered_record_batch_count = 0;
-        // Reset the internal arrow writer for the next file.
-        self.arrow_writer = ArrowWriter::try_new(
-            self.cursor.clone(),
-            self.arrow_schema_ref.clone(),
-            Some(self.writer_properties.clone()),
-        )?;
-
-        Ok(())
+    /// Resets internal state.
+    pub fn reset(&mut self) {
+        self.arrow_writers.clear();
     }
 
     /// Returns the arrow schema representation of the delta table schema defined for the wrapped
@@ -302,12 +329,9 @@ impl DeltaWriter {
             let mut path_parts = vec![];
 
             for k in partition_cols.iter() {
-                let partition_value =
-                    partition_values
-                        .get(k)
-                        .ok_or(DeltaWriterError::MissingPartitionColumn {
-                            col_name: k.to_string(),
-                        })?;
+                let partition_value = partition_values
+                    .get(k)
+                    .ok_or(DeltaWriterError::MissingPartitionColumn(k.to_string()))?;
 
                 let part = format!("{}={}", k, partition_value);
 
@@ -320,6 +344,38 @@ impl DeltaWriter {
         };
 
         Ok(data_path)
+    }
+
+    fn divide_by_partition_values(
+        &self,
+        values: Vec<Value>,
+    ) -> Result<HashMap<String, Vec<Value>>, DeltaWriterError> {
+        let mut partition_values: HashMap<String, Vec<Value>> = HashMap::new();
+
+        for value in values {
+            let key = self.json_to_partition_keys(&value)?;
+            match partition_values.get_mut(&key) {
+                Some(vec) => vec.push(value),
+                None => {
+                    partition_values.insert(key, vec![value]);
+                }
+            };
+        }
+
+        Ok(partition_values)
+    }
+
+    fn json_to_partition_keys(&self, value: &Value) -> Result<String, DeltaWriterError> {
+        if let Some(obj) = value.as_object() {
+            let key: Vec<String> = self
+                .partition_columns
+                .iter()
+                .map(|c| obj.get(c).unwrap_or(&Value::Null).to_string())
+                .collect();
+            return Ok(key.join("/"));
+        }
+
+        Err(DeltaWriterError::InvalidRecord(value.to_string()))
     }
 }
 
@@ -764,15 +820,14 @@ mod tests {
         let table_path = temp_dir.path();
         create_temp_table(table_path);
 
-        let mut writer = DeltaWriter::for_table_path(table_path.to_str().unwrap().to_string())
+        let mut writer = DeltaWriter::for_table_path(table_path.to_str().unwrap())
             .await
             .unwrap();
 
-        let record_batch =
-            record_batch_from_json(writer.arrow_schema(), JSON_ROWS.clone()).unwrap();
-        let _ = writer.write_record_batch(record_batch).await.unwrap();
-        let add = writer.write_parquet_file().await.unwrap();
-        let stats = add.get_stats().unwrap().unwrap();
+        writer.write(JSON_ROWS.clone()).await.unwrap();
+        let add = writer.write_parquet_files().await.unwrap();
+        assert_eq!(add.len(), 1);
+        let stats = add[0].get_stats().unwrap().unwrap();
 
         let min_max_keys = vec!["meta", "some_int", "some_string", "some_bool", "date"];
         let mut null_count_keys = vec!["some_list", "some_nested_list"];
