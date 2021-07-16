@@ -58,6 +58,9 @@ pub enum DeltaWriterError {
     #[error("Arrow RecordBatch created from JSON buffer is a None value")]
     EmptyRecordBatch,
 
+    #[error("Record {0} is not a JSON object")]
+    InvalidRecord(String),
+
     // TODO: derive Debug for Stats in delta-rs
     #[error("Serialization of delta log statistics failed")]
     StatsSerializationFailed { stats: Stats },
@@ -372,8 +375,7 @@ impl DeltaWriter {
             return Ok(key.join("/"));
         }
 
-        // todo change!
-        Err(DeltaWriterError::EmptyRecordBatch)
+        Err(DeltaWriterError::InvalidRecord(value.to_string()))
     }
 }
 
