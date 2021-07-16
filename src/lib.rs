@@ -373,7 +373,7 @@ impl KafkaJsonToDelta {
         cancellation_token: Option<&CancellationToken>,
     ) -> Result<(), KafkaJsonToDeltaError> {
         let mut state = ProcessingState {
-            delta_writer: DeltaWriter::for_table_path(self.opts.table_location.clone()).await?,
+            delta_writer: DeltaWriter::for_table_path(&self.opts.table_location).await?,
             value_buffers: ValueBuffers::new(),
             latency_timer: Instant::now(),
             delta_partition_offsets: HashMap::new(),

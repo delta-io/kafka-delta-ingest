@@ -139,9 +139,9 @@ impl DeltaArrowWriter {
 
 impl DeltaWriter {
     /// Initialize the writer from the given table path and delta schema
-    pub async fn for_table_path(table_path: String) -> Result<DeltaWriter, DeltaWriterError> {
-        let table = deltalake::open_table(&table_path.as_str()).await?;
-        let storage = deltalake::get_backend_for_uri(table_path.as_str())?;
+    pub async fn for_table_path(table_path: &str) -> Result<DeltaWriter, DeltaWriterError> {
+        let table = deltalake::open_table(table_path).await?;
+        let storage = deltalake::get_backend_for_uri(table_path)?;
 
         // Initialize an arrow schema ref from the delta table schema
         let metadata = table.get_metadata()?.clone();
@@ -818,7 +818,7 @@ mod tests {
         let table_path = temp_dir.path();
         create_temp_table(table_path);
 
-        let mut writer = DeltaWriter::for_table_path(table_path.to_str().unwrap().to_string())
+        let mut writer = DeltaWriter::for_table_path(table_path.to_str().unwrap())
             .await
             .unwrap();
 
