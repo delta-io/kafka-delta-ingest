@@ -1,3 +1,4 @@
+use chrono::prelude::*;
 use jmespatch::{
     functions::{ArgumentType, CustomFunction, Signature},
     Context, ErrorReason, Expression, JmespathError, Rcvar, Runtime, RuntimeError, Variable,
@@ -26,6 +27,12 @@ pub enum TransformError {
     },
 }
 
+#[derive(thiserror::Error, Debug)]
+#[error("Invalid timestamp value {value}")]
+struct EpochToIso8601Error {
+    value: i64,
+}
+
 // Error thrown from custom functions registered in the jmespath Runtime
 struct InvalidTypeError {
     expression: String,
@@ -33,6 +40,18 @@ struct InvalidTypeError {
     expected: String,
     actual: String,
     position: usize,
+}
+
+impl InvalidTypeError {
+    fn new(context: &Context, expected: &str, actual: String, position: usize) -> Self {
+        Self {
+            expression: context.expression.to_owned(),
+            offset: context.offset,
+            expected: expected.to_owned(),
+            actual: actual.to_string(),
+            position,
+        }
+    }
 }
 
 // From impl for InvalidTypeError so we can return these from within custom functions
@@ -50,23 +69,15 @@ impl From<InvalidTypeError> for JmespathError {
     }
 }
 
-impl InvalidTypeError {
-    fn new(context: &Context, expected: &str, actual: String, position: usize) -> Self {
-        Self {
-            expression: context.expression.to_owned(),
-            offset: context.offset,
-            expected: expected.to_owned(),
-            actual: actual.to_string(),
-            position,
-        }
-    }
-}
-
 lazy_static! {
     static ref TRANSFORM_RUNTIME: Runtime = {
         let mut runtime = Runtime::new();
         runtime.register_builtin_functions();
         runtime.register_function("substr", Box::new(create_substr_fn()));
+        runtime.register_function(
+            "epoch_seconds_to_iso8601",
+            Box::new(create_epoch_seconds_to_iso8601_fn()),
+        );
         runtime
     };
 }
@@ -136,6 +147,37 @@ fn create_substr_fn() -> CustomFunction {
     )
 }
 
+// Returns a Jmespath CustomFunction for converting an epoch timestamp number to an ISO 8601
+// formatted string.
+//
+// For example given the object:
+//
+// ```
+// {
+//   "ts": 1626823098
+// }
+// ```
+//
+// and the expression:
+//
+// ```
+// epoch_seconds_to_iso8601(ts)
+// ```
+//
+// the value returned will be "2021-07-20T23:18:18Z"
+//
+// Since functions can be nested and built-in functions are also available, an expression like below (where `ts` is a string on the original message like `"ts": "1626823098"`) works as well:
+//
+// ```
+// epoch_seconds_to_iso8601(to_number(ts))
+// ```
+fn create_epoch_seconds_to_iso8601_fn() -> CustomFunction {
+    CustomFunction::new(
+        Signature::new(vec![ArgumentType::Number], None),
+        Box::new(jmespath_epoch_seconds_to_iso8601),
+    )
+}
+
 fn substr(args: &[Rcvar], context: &mut Context) -> Result<Rcvar, JmespathError> {
     let s = args[0].as_string().ok_or_else(|| {
         InvalidTypeError::new(context, "string", args[0].get_type().to_string(), 0)
@@ -151,6 +193,40 @@ fn substr(args: &[Rcvar], context: &mut Context) -> Result<Rcvar, JmespathError>
     let s: String = s.chars().skip(start).take(end).collect();
 
     let val = serde_json::Value::String(s);
+
+    let var = Variable::try_from(val)?;
+
+    Ok(Arc::new(var))
+}
+
+fn epoch_seconds_to_iso8601(seconds: i64) -> Result<String, EpochToIso8601Error> {
+    let utc = match Utc.timestamp_opt(seconds, 0) {
+        chrono::offset::LocalResult::Single(dt) => dt,
+        _ => {
+            return Err(EpochToIso8601Error { value: seconds });
+        }
+    };
+    Ok(format!("{:?}", utc))
+}
+
+fn jmespath_epoch_seconds_to_iso8601(
+    args: &[Rcvar],
+    context: &mut Context,
+) -> Result<Rcvar, JmespathError> {
+    let seconds = args[0].as_number().ok_or_else(|| {
+        InvalidTypeError::new(context, "number", args[0].get_type().to_string(), 0)
+    })?;
+
+    let seconds = seconds as i64;
+    let n = epoch_seconds_to_iso8601(seconds).map_err(|err| {
+        JmespathError::new(
+            context.expression,
+            context.offset,
+            ErrorReason::Parse(err.to_string()),
+        )
+    })?;
+
+    let val = serde_json::Value::String(n);
 
     let var = Variable::try_from(val)?;
 
@@ -393,6 +469,89 @@ mod tests {
         assert_eq!("A", name);
         assert_eq!("2021-03-16T14:38:58Z", modified);
         assert_eq!("2021-03-16", modified_date);
+    }
+
+    #[test]
+    fn epoch_seconds_to_iso8601_test() {
+        let expected_iso = "2021-07-20T23:18:18Z";
+        let dt = epoch_seconds_to_iso8601(1626823098).unwrap();
+
+        assert_eq!(expected_iso, dt);
+    }
+
+    #[test]
+    fn transforms_with_epoch_seconds_to_iso8601() {
+        let expected_iso = "2021-07-20T23:18:18Z";
+
+        let mut test_value = json!({
+            "name": "A",
+            "epoch_seconds_float": 1626823098.51995,
+            "epoch_seconds_int": 1626823098,
+            "epoch_seconds_float_string": "1626823098.51995",
+            "epoch_seconds_int_string": "1626823098",
+        });
+
+        let test_message = OwnedMessage::new(
+            Some(test_value.to_string().into_bytes()),
+            None,
+            "test".to_string(),
+            rdkafka::Timestamp::NotAvailable,
+            0,
+            0,
+            None,
+        );
+
+        let mut transforms = HashMap::new();
+        transforms.insert(
+            "iso8601_from_float".to_string(),
+            "epoch_seconds_to_iso8601(epoch_seconds_float)".to_string(),
+        );
+        transforms.insert(
+            "iso8601_from_int".to_string(),
+            "epoch_seconds_to_iso8601(epoch_seconds_int)".to_string(),
+        );
+        transforms.insert(
+            "iso8601_from_float_string".to_string(),
+            "epoch_seconds_to_iso8601(to_number(epoch_seconds_float_string))".to_string(),
+        );
+        transforms.insert(
+            "iso8601_from_int_string".to_string(),
+            "epoch_seconds_to_iso8601(to_number(epoch_seconds_int_string))".to_string(),
+        );
+
+        let transformer = Transformer::from_transforms(&transforms).unwrap();
+
+        let _ = transformer
+            .transform(&mut test_value, &test_message)
+            .unwrap();
+
+        let name = test_value.get("name").unwrap().as_str().unwrap();
+        let iso8601_from_float = test_value
+            .get("iso8601_from_float")
+            .unwrap()
+            .as_str()
+            .unwrap();
+        let iso8601_from_int = test_value
+            .get("iso8601_from_int")
+            .unwrap()
+            .as_str()
+            .unwrap();
+        let iso8601_from_float_string = test_value
+            .get("iso8601_from_float_string")
+            .unwrap()
+            .as_str()
+            .unwrap();
+        let iso8601_from_int_string = test_value
+            .get("iso8601_from_int_string")
+            .unwrap()
+            .as_str()
+            .unwrap();
+
+        assert_eq!("A", name);
+        assert_eq!(expected_iso, iso8601_from_float);
+        assert_eq!(expected_iso, iso8601_from_int);
+        assert_eq!(expected_iso, iso8601_from_float_string);
+        assert_eq!(expected_iso, iso8601_from_int_string);
     }
 
     #[test]
