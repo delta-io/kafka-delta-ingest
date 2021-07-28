@@ -794,11 +794,6 @@ fn stringified_partition_value(arr: &Arc<dyn Array>) -> Result<String, DeltaWrit
         DataType::UInt16 => as_primitive_array::<UInt16Type>(arr).value(0).to_string(),
         DataType::UInt32 => as_primitive_array::<UInt32Type>(arr).value(0).to_string(),
         DataType::UInt64 => as_primitive_array::<UInt64Type>(arr).value(0).to_string(),
-        DataType::Timestamp(TimeUnit::Nanosecond, None) => {
-            arrow::array::as_primitive_array::<TimestampNanosecondType>(arr)
-                .value(0)
-                .to_string()
-        }
         DataType::Utf8 => {
             let data = arrow::array::as_string_array(arr);
 
