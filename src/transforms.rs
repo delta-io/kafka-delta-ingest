@@ -635,7 +635,7 @@ mod tests {
         let kafka_timestamp = test_value
             .get("_kafka_timestamp")
             .unwrap()
-            .as_str()
+            .as_i64()
             .unwrap();
         let kafka_timestamp_type = test_value
             .get("_kafka_timestamp_type")
@@ -648,15 +648,7 @@ mod tests {
         assert_eq!(0i64, kafka_offset);
         assert_eq!(0i64, kafka_partition);
         assert_eq!("test", kafka_topic);
-        assert_eq!("2021-07-20T23:18:18.519Z", kafka_timestamp);
+        assert_eq!(1626823098519000000, kafka_timestamp);
         assert_eq!(0, kafka_timestamp_type);
-    }
-
-    #[test]
-    fn timestamp_value_from_kafka_test() {
-        let ts = rdkafka::Timestamp::CreateTime(1626823098519);
-        let v = timestamp_value_from_kafka(ts).unwrap();
-
-        assert_eq!(json!("2021-07-20T23:18:18.519Z"), v);
     }
 }
