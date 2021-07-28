@@ -370,7 +370,6 @@ impl Transformer {
 fn timestamp_value_from_kafka(
     kafka_timestamp: rdkafka::Timestamp,
 ) -> Result<Value, serde_json::Error> {
-    println!("timestamp_value_from_kafka {:?}", kafka_timestamp);
     match kafka_timestamp {
         rdkafka::Timestamp::NotAvailable => serde_json::to_value(None as Option<String>),
         // Convert millis to nanos
