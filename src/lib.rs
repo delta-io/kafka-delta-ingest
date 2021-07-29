@@ -41,6 +41,8 @@ type DataTypeOffset = i64;
 
 const DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS: u32 = 10_000_000;
 
+const NANOSECONDS: i64 = 1_000_000_000;
+
 #[derive(thiserror::Error, Debug)]
 pub enum KafkaJsonToDeltaError {
     #[error("Kafka error: {source}")]

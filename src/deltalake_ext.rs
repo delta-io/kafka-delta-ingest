@@ -624,11 +624,11 @@ fn min_and_max_from_parquet_statistics(
         DataType::Int64 if is_timestamp(column_descr.logical_type()) => {
             let min_array = as_primitive_array::<arrow::datatypes::Int64Type>(&min_array);
             let min = arrow::compute::min(min_array);
-            let min = min.map(|i| timestamp_us_to_json_value(i)).flatten();
+            let min = min.map(|i| timestamp_ns_to_json_value(i)).flatten();
 
             let max_array = as_primitive_array::<arrow::datatypes::Int64Type>(&max_array);
             let max = arrow::compute::max(max_array);
-            let max = max.map(|i| timestamp_us_to_json_value(i)).flatten();
+            let max = max.map(|i| timestamp_ns_to_json_value(i)).flatten();
             Ok((min, max))
         }
         DataType::Int64 => {
@@ -714,8 +714,9 @@ fn min_max_strings_from_stats(
     return (min_value, max_value);
 }
 
-fn timestamp_us_to_json_value(us: i64) -> Option<Value> {
-    match Utc.timestamp_opt(us / 1_000_000, (us % 1_000_000 * 1000) as u32) {
+#[inline]
+pub fn timestamp_ns_to_json_value(ns: i64) -> Option<Value> {
+    match Utc.timestamp_opt(ns / NANOSECONDS, (ns % NANOSECONDS) as u32) {
         chrono::offset::LocalResult::Single(dt) => Some(Value::String(format!("{:?}", dt))),
         _ => None,
     }
