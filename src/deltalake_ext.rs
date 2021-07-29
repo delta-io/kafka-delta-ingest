@@ -35,6 +35,8 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
+const NANOSECONDS: i64 = 1_000_000_000;
+
 type MinAndMaxValues = (
     HashMap<String, ColumnValueStat>,
     HashMap<String, ColumnValueStat>,
