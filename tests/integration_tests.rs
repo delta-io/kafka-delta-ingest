@@ -157,8 +157,9 @@ async fn e2e_smoke_test() {
         assert_eq!(row_num, r.get_int(1).unwrap());
         assert_eq!("2021-03-01T14:38:58Z", r.get_string(2).unwrap());
         assert_eq!("2021-03-01", r.get_string(3).unwrap());
-        assert!(start_time.timestamp_nanos() < r.get_long(4).unwrap());
-        assert!(chrono::Utc::now().timestamp_nanos() > r.get_long(4).unwrap());
+        let kafka_timestamp = r.get_timestamp_micros(4).unwrap() as i64;
+        assert!(start_time.timestamp_millis() * 1000 < kafka_timestamp);
+        assert!(chrono::Utc::now().timestamp_millis() * 1000 > kafka_timestamp);
         assert_eq!(0, r.get_int(5).unwrap());
     }
 

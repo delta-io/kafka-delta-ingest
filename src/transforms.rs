@@ -372,10 +372,9 @@ fn timestamp_value_from_kafka(
 ) -> Result<Value, serde_json::Error> {
     match kafka_timestamp {
         rdkafka::Timestamp::NotAvailable => serde_json::to_value(None as Option<String>),
-        // Convert millis to nanos
-        // See https://github.com/delta-io/delta-rs/blob/a7328d6644688c79d618285aa4bd4ab728159340/rust/src/delta_arrow.rs#L96-L99
-        rdkafka::Timestamp::CreateTime(ms) => serde_json::to_value(ms * 1000_000),
-        rdkafka::Timestamp::LogAppendTime(ms) => serde_json::to_value(ms * 1000_000),
+        // Convert to milliseconds to microseconds for delta format
+        rdkafka::Timestamp::CreateTime(ms) => serde_json::to_value(ms * 1000),
+        rdkafka::Timestamp::LogAppendTime(ms) => serde_json::to_value(ms * 1000),
     }
 }
 
@@ -647,7 +646,7 @@ mod tests {
         assert_eq!(0i64, kafka_offset);
         assert_eq!(0i64, kafka_partition);
         assert_eq!("test", kafka_topic);
-        assert_eq!(1626823098519000000, kafka_timestamp);
+        assert_eq!(1626823098519000, kafka_timestamp);
         assert_eq!(0, kafka_timestamp_type);
     }
 }
