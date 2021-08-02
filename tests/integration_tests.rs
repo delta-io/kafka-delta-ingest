@@ -45,6 +45,8 @@ async fn e2e_smoke_test() {
     let topic = format!("e2e_smoke_test-{}", Uuid::new_v4());
     helpers::create_topic(topic.as_str(), 1).await;
 
+    let start_time = chrono::Utc::now();
+
     //
     // Start a stream and a producer
     //
@@ -62,6 +64,14 @@ async fn e2e_smoke_test() {
         "substr(modified, `0`, `10`)".to_string(),
     );
     transforms.insert("_kafka_offset".to_string(), "kafka.offset".to_string());
+    transforms.insert(
+        "_kafka_timestamp".to_string(),
+        "kafka.timestamp".to_string(),
+    );
+    transforms.insert(
+        "_kafka_timestamp_type".to_string(),
+        "kafka.timestamp_type".to_string(),
+    );
 
     let stast_scope = Statsd::send_to("localhost:8125")
         .expect("Failed to create Statsd recorder")
@@ -147,6 +157,10 @@ async fn e2e_smoke_test() {
         assert_eq!(row_num, r.get_int(1).unwrap());
         assert_eq!("2021-03-01T14:38:58Z", r.get_string(2).unwrap());
         assert_eq!("2021-03-01", r.get_string(3).unwrap());
+        let kafka_timestamp = r.get_long(4).unwrap();
+        assert!(start_time.timestamp_nanos() < kafka_timestamp);
+        assert!(chrono::Utc::now().timestamp_nanos() > kafka_timestamp);
+        assert_eq!(0, r.get_int(5).unwrap());
     }
 
     // read and assert on delta log stats in first log entry

@@ -31,9 +31,10 @@ tokio-stream = { version = "0", features = ["fs"] }
 tokio-util = "0.6.3"
 uuid = { version = "0.8", features = ["serde", "v4"] }
 
-arrow  = { version = "4" }
-deltalake = { git = "https://github.com/delta-io/delta-rs.git", rev = "ddc123c0be9def306edafbb972f773baaefc40ad", features = ["s3"] }
-parquet = { version = "4" }
+arrow  = { version = "5" }
+deltalake = { git = "https://github.com/delta-io/delta-rs.git", rev = "165ca5701014a0196ef7bbb360fd3e6b1c8dda46", features = ["s3"] }
+# deltalake = { path = "../delta-rs/rust", features = ["s3"] }
+parquet = { version = "5" }
 
 [dev-dependencies]
 utime = "0.3"
