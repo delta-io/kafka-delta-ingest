@@ -881,7 +881,7 @@ mod tests {
                 ("some_int", ColumnValueStat::Value(v)) => assert_eq!(302, v.as_i64().unwrap()),
                 ("some_bool", ColumnValueStat::Value(v)) => assert_eq!(false, v.as_bool().unwrap()),
                 ("some_string", ColumnValueStat::Value(v)) => {
-                    assert_eq!("GET", v.as_str().unwrap())
+                    assert_eq!("aa", v.as_str().unwrap())
                 }
                 ("date", ColumnValueStat::Value(v)) => {
                     assert_eq!("2021-06-22", v.as_str().unwrap())
@@ -909,7 +909,7 @@ mod tests {
                 ("some_int", ColumnValueStat::Value(v)) => assert_eq!(400, v.as_i64().unwrap()),
                 ("some_bool", ColumnValueStat::Value(v)) => assert_eq!(true, v.as_bool().unwrap()),
                 ("some_string", ColumnValueStat::Value(v)) => {
-                    assert_eq!("PUT", v.as_str().unwrap())
+                    assert_eq!("z", v.as_str().unwrap())
                 }
                 ("date", ColumnValueStat::Value(v)) => {
                     assert_eq!("2021-06-22", v.as_str().unwrap())
@@ -1072,7 +1072,7 @@ mod tests {
                         "timestamp": "2021-06-22"
                     },
                 },
-                "some_string": "GET",
+                "some_string": "aa",
                 "some_int": 302,
                 "some_bool": true,
                 "some_list": ["a", "b", "c"],
@@ -1092,7 +1092,7 @@ mod tests {
                             "timestamp": "2021-06-22"
                         },
                     },
-                    "some_string": "PUT",
+                    "some_string": "z",
                     "some_int": 400,
                     "some_bool": false,
                     "some_list": ["x", "y", "z"],
