@@ -319,12 +319,13 @@ impl KafkaJsonToDelta {
             match v {
                 Some(offset) => {
                     info!("Seeking consumer to {}:{}", p, offset);
-                    self.consumer.seek(
-                        &self.opts.topic,
-                        *p,
-                        Offset::Offset(*offset),
-                        Timeout::Never,
-                    )?;
+                    let offset = if *offset == 0 {
+                        Offset::Beginning
+                    } else {
+                        Offset::Offset(*offset)
+                    };
+                    self.consumer
+                        .seek(&self.opts.topic, *p, offset, Timeout::Never)?;
                 }
                 _ => {
                     info!(

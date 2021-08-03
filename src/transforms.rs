@@ -95,6 +95,9 @@ pub fn compile_transforms(
             "kafka.offset" => MessageTransform::KafkaMetaTransform(KafkaMetaProperty::Offset),
             "kafka.topic" => MessageTransform::KafkaMetaTransform(KafkaMetaProperty::Topic),
             "kafka.timestamp" => MessageTransform::KafkaMetaTransform(KafkaMetaProperty::Timestamp),
+            "kafka.timestamp_type" => {
+                MessageTransform::KafkaMetaTransform(KafkaMetaProperty::TimestampType)
+            }
             _ => {
                 let expression = TRANSFORM_RUNTIME.compile(v.as_str())?;
 
@@ -238,6 +241,7 @@ pub enum KafkaMetaProperty {
     Offset,
     Topic,
     Timestamp,
+    TimestampType,
 }
 
 pub enum MessageTransform {
@@ -336,8 +340,18 @@ impl Transformer {
                                     serde_json::to_value(kafka_message.topic())?
                                 }
                                 KafkaMetaProperty::Timestamp => {
-                                    serde_json::to_value(kafka_message.timestamp().to_millis())?
+                                    timestamp_value_from_kafka(kafka_message.timestamp())?
                                 }
+                                // For enum int value definitions, see:
+                                // https://github.com/apache/kafka/blob/fd36e5a8b657b0858dbfef4ae9706bf714db4ca7/clients/src/main/java/org/apache/kafka/common/record/TimestampType.java#L24-L46
+                                KafkaMetaProperty::TimestampType => match kafka_message.timestamp()
+                                {
+                                    rdkafka::Timestamp::NotAvailable => serde_json::to_value(-1)?,
+                                    rdkafka::Timestamp::CreateTime(_) => serde_json::to_value(0)?,
+                                    rdkafka::Timestamp::LogAppendTime(_) => {
+                                        serde_json::to_value(1)?
+                                    }
+                                },
                             }
                         }
                     };
@@ -352,6 +366,22 @@ impl Transformer {
         }
     }
 }
+
+fn timestamp_value_from_kafka(
+    kafka_timestamp: rdkafka::Timestamp,
+) -> Result<Value, serde_json::Error> {
+    match kafka_timestamp {
+        rdkafka::Timestamp::NotAvailable => serde_json::to_value(None as Option<String>),
+        // Convert to milliseconds to microseconds for delta format
+        rdkafka::Timestamp::CreateTime(ms) => serde_json::to_value(millis_to_nanos(ms)),
+        rdkafka::Timestamp::LogAppendTime(ms) => serde_json::to_value(millis_to_nanos(ms)),
+    }
+}
+
+fn millis_to_nanos(ms: i64) -> i64 {
+    ms * 1_000_000
+}
+
 #[cfg(test)]
 mod tests {
     use rdkafka::message::OwnedMessage;
@@ -565,7 +595,7 @@ mod tests {
             Some(test_value.to_string().into_bytes()),
             None,
             "test".to_string(),
-            rdkafka::Timestamp::NotAvailable,
+            rdkafka::Timestamp::CreateTime(1626823098519),
             0,
             0,
             None,
@@ -579,6 +609,14 @@ mod tests {
             "kafka.partition".to_string(),
         );
         transforms.insert("_kafka_topic".to_string(), "kafka.topic".to_string());
+        transforms.insert(
+            "_kafka_timestamp".to_string(),
+            "kafka.timestamp".to_string(),
+        );
+        transforms.insert(
+            "_kafka_timestamp_type".to_string(),
+            "kafka.timestamp_type".to_string(),
+        );
 
         let transformer = Transformer::from_transforms(&&transforms).unwrap();
 
@@ -588,11 +626,21 @@ mod tests {
 
         let name = test_value.get("name").unwrap().as_str().unwrap();
         let modified = test_value.get("modified").unwrap().as_str().unwrap();
-        let kafka_topic = test_value.get("_kafka_topic").unwrap().as_str().unwrap();
 
         let kafka_offset = test_value.get("_kafka_offset").unwrap().as_i64().unwrap();
         let kafka_partition = test_value
             .get("_kafka_partition")
+            .unwrap()
+            .as_i64()
+            .unwrap();
+        let kafka_topic = test_value.get("_kafka_topic").unwrap().as_str().unwrap();
+        let kafka_timestamp = test_value
+            .get("_kafka_timestamp")
+            .unwrap()
+            .as_i64()
+            .unwrap();
+        let kafka_timestamp_type = test_value
+            .get("_kafka_timestamp_type")
             .unwrap()
             .as_i64()
             .unwrap();
@@ -602,5 +650,7 @@ mod tests {
         assert_eq!(0i64, kafka_offset);
         assert_eq!(0i64, kafka_partition);
         assert_eq!("test", kafka_topic);
+        assert_eq!(1626823098519000000, kafka_timestamp);
+        assert_eq!(0, kafka_timestamp_type);
     }
 }

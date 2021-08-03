@@ -1,3 +1,5 @@
+use chrono::Local;
+use kafka_delta_ingest::{KafkaJsonToDelta, Options};
 use parquet::{
     file::reader::{FileReader, SerializedFileReader},
     record::RowAccessor,
@@ -8,9 +10,11 @@ use rdkafka::util::Timeout;
 use rdkafka::ClientConfig;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::env;
 use std::fs::{File, OpenOptions};
 use std::io::prelude::*;
 use std::path::Path;
+use tokio::sync::mpsc::channel;
 use uuid::Uuid;
 
 pub const TEST_BROKER: &str = "0.0.0.0:9092";
@@ -117,4 +121,76 @@ pub fn create_local_table(schema: HashMap<&str, &str>, partitions: Vec<&str>) ->
     writeln!(file, r#"{{"metaData":{{"id":"ec285dbc-6479-4cc1-b038-1de97afabf9b","format":{{"provider":"parquet","options":{{}}}},"schemaString":"{}","partitionColumns":[{}],"configuration":{{}},"createdTime":1621845641001}}}}"#, schema, partitions).unwrap();
 
     path
+}
+
+pub fn create_kdi(
+    app_id: &str,
+    topic: &str,
+    table: &str,
+    allowed_latency: u64,
+    max_messages_per_batch: usize,
+    min_bytes_per_file: usize,
+) -> KafkaJsonToDelta {
+    env::set_var("AWS_S3_LOCKING_PROVIDER", "dynamodb");
+    env::set_var("DYNAMO_LOCK_TABLE_NAME", "locks");
+    env::set_var("DYNAMO_LOCK_OWNER_NAME", Uuid::new_v4().to_string());
+    env::set_var("DYNAMO_LOCK_PARTITION_KEY_VALUE", app_id);
+    env::set_var("DYNAMO_LOCK_REFRESH_PERIOD_MILLIS", "100");
+    env::set_var("DYNAMO_LOCK_ADDITIONAL_TIME_TO_WAIT_MILLIS", "100");
+    env::set_var("DYNAMO_LOCK_LEASE_DURATION", "2");
+
+    let mut additional_kafka_settings = HashMap::new();
+    additional_kafka_settings.insert("auto.offset.reset".to_string(), "earliest".to_string());
+
+    let opts = Options::new(
+        topic.to_string(),
+        table.to_string(),
+        app_id.to_string(),
+        allowed_latency,
+        max_messages_per_batch,
+        min_bytes_per_file,
+    );
+
+    let dummy = channel(1_000_000);
+
+    KafkaJsonToDelta::new(
+        opts,
+        TEST_BROKER.to_string(),
+        format!("{}_{}", app_id, Uuid::new_v4()),
+        Some(additional_kafka_settings),
+        HashMap::new(),
+        dummy.0,
+    )
+    .unwrap()
+}
+
+pub fn create_runtime(name: &str) -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .thread_name(name)
+        .thread_stack_size(3 * 1024 * 1024)
+        .enable_io()
+        .enable_time()
+        .build()
+        .unwrap()
+}
+
+pub fn init_logger() {
+    let _ = env_logger::Builder::new()
+        .format(|buf, record| {
+            let thread_name = std::thread::current()
+                .name()
+                .unwrap_or("UNKNOWN")
+                .to_string();
+            writeln!(
+                buf,
+                "{} [{}] - {}: {}",
+                Local::now().format("%Y-%m-%dT%H:%M:%S"),
+                record.level(),
+                thread_name,
+                record.args()
+            )
+        })
+        .filter(None, log::LevelFilter::Info)
+        .try_init();
 }

@@ -10,6 +10,7 @@ use arrow::{
     json::reader::Decoder,
     record_batch::*,
 };
+use chrono::prelude::*;
 use deltalake::{
     action::{Add, ColumnCountStat, ColumnValueStat, Stats},
     DeltaDataTypeLong, DeltaDataTypeVersion, DeltaTable, DeltaTableError, DeltaTransactionError,
@@ -33,6 +34,8 @@ use std::convert::TryFrom;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
+
+const NANOSECONDS: i64 = 1_000_000_000;
 
 type MinAndMaxValues = (
     HashMap<String, ColumnValueStat>,
@@ -620,6 +623,16 @@ fn min_and_max_from_parquet_statistics(
 
             Ok((min, max))
         }
+        DataType::Int64 if is_timestamp(column_descr.logical_type()) => {
+            let min_array = as_primitive_array::<arrow::datatypes::Int64Type>(&min_array);
+            let min = arrow::compute::min(min_array);
+            let min = min.map(|i| timestamp_ns_to_json_value(i)).flatten();
+
+            let max_array = as_primitive_array::<arrow::datatypes::Int64Type>(&max_array);
+            let max = arrow::compute::max(max_array);
+            let max = max.map(|i| timestamp_ns_to_json_value(i)).flatten();
+            Ok((min, max))
+        }
         DataType::Int64 => {
             let min_array = as_primitive_array::<arrow::datatypes::Int64Type>(&min_array);
             let min = arrow::compute::min(min_array);
@@ -665,12 +678,28 @@ fn min_and_max_from_parquet_statistics(
     }
 }
 
+#[inline]
+fn is_utf8(opt: Option<LogicalType>) -> bool {
+    match opt.as_ref() {
+        Some(LogicalType::STRING(_)) => true,
+        _ => false,
+    }
+}
+
+#[inline]
+fn is_timestamp(opt: Option<LogicalType>) -> bool {
+    match opt.as_ref() {
+        Some(LogicalType::TIMESTAMP(_)) => true,
+        _ => false,
+    }
+}
+
 fn min_max_strings_from_stats(
     stats_with_min_max: &Vec<&Statistics>,
 ) -> (Option<Value>, Option<Value>) {
     let min_string_candidates = stats_with_min_max
         .iter()
-        .filter_map(|s| str_opt_from_bytes(s.min_bytes()));
+        .filter_map(|s| std::str::from_utf8(s.min_bytes()).ok());
 
     let min_value = min_string_candidates
         .min()
@@ -678,7 +707,7 @@ fn min_max_strings_from_stats(
 
     let max_string_candidates = stats_with_min_max
         .iter()
-        .filter_map(|s| str_opt_from_bytes(s.max_bytes()));
+        .filter_map(|s| std::str::from_utf8(s.max_bytes()).ok());
 
     let max_value = max_string_candidates
         .max()
@@ -688,15 +717,11 @@ fn min_max_strings_from_stats(
 }
 
 #[inline]
-fn is_utf8(opt: Option<LogicalType>) -> bool {
-    match opt.as_ref() {
-        Some(LogicalType::STRING(_)) => true,
-        _ => false,
+pub fn timestamp_ns_to_json_value(ns: i64) -> Option<Value> {
+    match Utc.timestamp_opt(ns / NANOSECONDS, (ns % NANOSECONDS) as u32) {
+        chrono::offset::LocalResult::Single(dt) => Some(Value::String(format!("{:?}", dt))),
+        _ => None,
     }
-}
-
-fn str_opt_from_bytes(bytes: &[u8]) -> Option<&str> {
-    std::str::from_utf8(bytes).ok()
 }
 
 fn arrow_array_from_bytes(
