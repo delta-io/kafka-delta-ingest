@@ -134,7 +134,7 @@ pub fn create_kdi(
     env::set_var("AWS_S3_LOCKING_PROVIDER", "dynamodb");
     env::set_var("DYNAMO_LOCK_TABLE_NAME", "locks");
     env::set_var("DYNAMO_LOCK_OWNER_NAME", Uuid::new_v4().to_string());
-    env::set_var("DYNAMO_LOCK_PARTITION_KEY_VALUE", "emails_s3_tests");
+    env::set_var("DYNAMO_LOCK_PARTITION_KEY_VALUE", app_id);
     env::set_var("DYNAMO_LOCK_REFRESH_PERIOD_MILLIS", "100");
     env::set_var("DYNAMO_LOCK_ADDITIONAL_TIME_TO_WAIT_MILLIS", "100");
     env::set_var("DYNAMO_LOCK_LEASE_DURATION", "2");
