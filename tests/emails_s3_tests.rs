@@ -3,12 +3,11 @@ mod helpers;
 
 use std::collections::HashMap;
 use std::env;
-use std::io::Write;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use tokio::runtime::{Builder, Runtime};
+use tokio::runtime::Runtime;
 
 use chrono::prelude::*;
 use dipstick::{Input, Prefixed, Statsd};
@@ -53,7 +52,7 @@ struct TestScope {
 }
 
 async fn run_emails_s3_tests(initiate_rebalance: bool) {
-    init_logger();
+    helpers::init_logger();
     let scope = TestScope::new().await;
 
     let w1 = scope.create_and_start(WORKER_1).await;
@@ -113,8 +112,8 @@ impl TestScope {
         let table = prepare_table(&topic).await;
         let workers_token = Arc::new(CancellationToken::new());
         let mut runtime = HashMap::new();
-        runtime.insert(WORKER_1, create_runtime(WORKER_1));
-        runtime.insert(WORKER_2, create_runtime(WORKER_2));
+        runtime.insert(WORKER_1, helpers::create_runtime(WORKER_1));
+        runtime.insert(WORKER_2, helpers::create_runtime(WORKER_2));
 
         println!("Topic: {}", &topic);
         println!("Table: {}", &table);
@@ -265,34 +264,6 @@ async fn prepare_table(topic: &str) -> String {
     .unwrap();
 
     format!("s3://{}/{}", TEST_S3_BUCKET, topic)
-}
-
-fn create_runtime(name: &str) -> Runtime {
-    Builder::new_multi_thread()
-        .worker_threads(1)
-        .thread_name(name)
-        .thread_stack_size(3 * 1024 * 1024)
-        .enable_io()
-        .enable_time()
-        .build()
-        .unwrap()
-}
-
-fn init_logger() {
-    let _ = env_logger::Builder::new()
-        .format(|buf, record| {
-            let thread_name = thread::current().name().unwrap_or("UNKNOWN").to_string();
-            writeln!(
-                buf,
-                "{} [{}] - {}: {}",
-                Local::now().format("%Y-%m-%dT%H:%M:%S"),
-                record.level(),
-                thread_name,
-                record.args()
-            )
-        })
-        .filter(None, log::LevelFilter::Info)
-        .try_init();
 }
 
 async fn send_messages_until_stopped(topic: String, token: Arc<CancellationToken>) {
