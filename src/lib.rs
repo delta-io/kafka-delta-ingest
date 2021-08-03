@@ -581,6 +581,9 @@ impl KafkaJsonToDelta {
 
                     self.log_delta_write_completed(version, &delta_write_timer)
                         .await;
+
+                    state.delta_writer.update_schema()?;
+
                     return Ok(());
                 }
                 Err(e) => match e {
