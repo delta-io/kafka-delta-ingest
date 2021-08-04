@@ -1,8 +1,6 @@
 use deltalake::DeltaTable;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 #[allow(dead_code)]
@@ -31,14 +29,7 @@ async fn zero_offset_issue() {
 
     helpers::create_topic(&topic, 1).await;
 
-    let mut kdi = helpers::create_kdi("zero_offset", &topic, table, 5, 1, 20);
-    let rt = helpers::create_runtime("zero_offset_L");
-
-    let token = Arc::new(CancellationToken::new());
-    let run_loop = {
-        let token = token.clone();
-        rt.spawn(async move { kdi.start(Some(&token)).await.unwrap() })
-    };
+    let (kdi, token, rt) = helpers::create_kdi("zero_offset", &topic, table, 5, 1, 20);
 
     {
         // check that there's only 1 record in table
@@ -62,11 +53,11 @@ async fn zero_offset_issue() {
     let v2 = Path::new("./tests/data/zero_offset/_delta_log/00000000000000000002.json");
     let v3 = Path::new("./tests/data/zero_offset/_delta_log/00000000000000000003.json");
 
-    wait_until_created(v2);
-    wait_until_created(v3);
+    helpers::wait_until_file_created(v2);
+    helpers::wait_until_file_created(v3);
     token.cancel();
     // if it succeeds then it means that we successfully seeked into offset 0, e.g. Offset::Beginning
-    run_loop.await.unwrap();
+    kdi.await.unwrap();
     rt.shutdown_background();
 
     // check that there's only 3 records
@@ -77,14 +68,6 @@ async fn zero_offset_issue() {
     //cleanup
     std::fs::remove_file(v2).unwrap();
     std::fs::remove_file(v3).unwrap();
-}
-
-fn wait_until_created(path: &Path) {
-    loop {
-        if path.exists() {
-            return;
-        }
-    }
 }
 
 fn count_records(table: DeltaTable) -> i64 {

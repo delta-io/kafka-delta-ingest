@@ -127,7 +127,7 @@ impl DeltaArrowWriter {
     /// This method buffers the write stream internally so it can be invoked for many record batches and flushed after the appropriate number of bytes has been written.
     async fn write_record_batch(
         &mut self,
-        partition_columns: &Vec<String>,
+        partition_columns: &[String],
         record_batch: RecordBatch,
     ) -> Result<(), DeltaWriterError> {
         if self.partition_values.is_empty() {
@@ -150,11 +150,10 @@ impl DeltaWriter {
         let storage = deltalake::get_backend_for_uri(table_path)?;
 
         // Initialize an arrow schema ref from the delta table schema
-        let metadata = table.get_metadata()?.clone();
-        let schema = metadata.schema.clone();
-        let arrow_schema = <ArrowSchema as TryFrom<&Schema>>::try_from(&schema).unwrap();
+        let metadata = table.get_metadata()?;
+        let arrow_schema = <ArrowSchema as TryFrom<&Schema>>::try_from(&metadata.schema)?;
         let arrow_schema_ref = Arc::new(arrow_schema);
-        let partition_columns = metadata.partition_columns;
+        let partition_columns = metadata.partition_columns.clone();
 
         // Initialize writer properties for the underlying arrow writer
         let writer_properties = WriterProperties::builder()
@@ -187,6 +186,27 @@ impl DeltaWriter {
     pub async fn update_table(&mut self) -> Result<(), DeltaWriterError> {
         self.table.update().await?;
         Ok(())
+    }
+
+    /// Retrieves the latest schema from table, compares to the current and updates if changed.
+    /// When schema is updated then `true` is returned which signals the caller that parquet
+    /// created file or arrow batch should be revisited.
+    pub fn update_schema(&mut self) -> Result<bool, DeltaWriterError> {
+        let metadata = self.table.get_metadata()?;
+        let schema: ArrowSchema = <ArrowSchema as TryFrom<&Schema>>::try_from(&metadata.schema)?;
+
+        let schema_updated = self.arrow_schema_ref.as_ref() != &schema
+            || &self.partition_columns != &metadata.partition_columns;
+
+        if schema_updated {
+            let _ = std::mem::replace(&mut self.arrow_schema_ref, Arc::new(schema));
+            let _ = std::mem::replace(
+                &mut self.partition_columns,
+                metadata.partition_columns.clone(),
+            );
+        }
+
+        Ok(schema_updated)
     }
 
     /// Returns the table version of the wrapped delta table.
@@ -252,7 +272,7 @@ impl DeltaWriter {
     pub async fn write_parquet_files(&mut self) -> Result<Vec<Add>, DeltaWriterError> {
         debug!("Writing parquet files.");
 
-        let writers = std::mem::replace(&mut self.arrow_writers, HashMap::new());
+        let writers = std::mem::take(&mut self.arrow_writers);
         let mut actions = Vec::new();
 
         for (_, mut writer) in writers {
@@ -278,7 +298,7 @@ impl DeltaWriter {
             debug!("Parquet file {} written.", &storage_path);
 
             // Replace self null_counts with an empty map. Use the other for stats.
-            let null_counts = std::mem::replace(&mut writer.null_counts, HashMap::new());
+            let null_counts = std::mem::take(&mut writer.null_counts);
 
             actions.push(create_add(
                 &writer.partition_values,
@@ -313,7 +333,7 @@ impl DeltaWriter {
     // TODO: parquet files have a 5 digit zero-padded prefix and a "c\d{3}" suffix that I have not been able to find documentation for yet.
     fn next_data_path(
         &self,
-        partition_cols: &Vec<String>,
+        partition_cols: &[String],
         partition_values: &HashMap<String, String>,
     ) -> Result<String, DeltaWriterError> {
         // TODO: what does 00000 mean?
@@ -782,7 +802,7 @@ fn create_add(
 }
 
 fn extract_partition_values(
-    partition_cols: &Vec<String>,
+    partition_cols: &[String],
     record_batch: &RecordBatch,
 ) -> Result<HashMap<String, String>, DeltaWriterError> {
     let mut partition_values = HashMap::new();
