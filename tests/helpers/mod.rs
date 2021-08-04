@@ -14,7 +14,11 @@ use std::env;
 use std::fs::{File, OpenOptions};
 use std::io::prelude::*;
 use std::path::Path;
+use std::sync::Arc;
+use tokio::runtime::Runtime;
 use tokio::sync::mpsc::channel;
+use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 pub const TEST_BROKER: &str = "0.0.0.0:9092";
@@ -86,22 +90,14 @@ pub async fn read_files_from_s3(paths: Vec<String>) -> Vec<i32> {
     list
 }
 
-pub fn create_local_table(schema: HashMap<&str, &str>, partitions: Vec<&str>) -> String {
-    let path = format!("./tests/data/gen/table-{}", Uuid::new_v4());
-    let v0 = format!("{}/_delta_log/00000000000000000000.json", &path);
-
-    std::fs::create_dir_all(Path::new(&v0).parent().unwrap()).unwrap();
-
-    let mut file = File::create(v0).unwrap();
+pub fn create_metadata_action_json(schema: &HashMap<&str, &str>, partitions: &[&str]) -> String {
     let mut fields = Vec::new();
-
     for (name, tpe) in schema {
         fields.push(format!(
             r#"{{\"metadata\":{{}},\"name\":\"{}\",\"nullable\":true,\"type\":\"{}\"}}"#,
             name, tpe
         ));
     }
-
     let schema = format!(
         r#"{{\"type\":\"struct\",\"fields\":[{}]}}"#,
         fields.join(",")
@@ -112,13 +108,32 @@ pub fn create_local_table(schema: HashMap<&str, &str>, partitions: Vec<&str>) ->
         .collect::<Vec<String>>()
         .join(",");
 
+    format!(
+        r#"{{"metaData":{{"id":"ec285dbc-6479-4cc1-b038-1de97afabf9b","format":{{"provider":"parquet","options":{{}}}},"schemaString":"{}","partitionColumns":[{}],"configuration":{{}},"createdTime":1621845641001}}}}"#,
+        schema, partitions
+    )
+}
+
+pub fn create_local_table(schema: HashMap<&str, &str>, partitions: Vec<&str>) -> String {
+    let path = format!("./tests/data/gen/table-{}", Uuid::new_v4());
+    let v0 = format!("{}/_delta_log/00000000000000000000.json", &path);
+
+    std::fs::create_dir_all(Path::new(&v0).parent().unwrap()).unwrap();
+
+    let mut file = File::create(v0).unwrap();
+
     writeln!(file, r#"{{"commitInfo":{{"timestamp":1621845641000,"operation":"CREATE TABLE","operationParameters":{{"isManaged":"false","description":null,"partitionBy":"[]","properties":"{{}}"}},"isBlindAppend":true}}}}"#).unwrap();
     writeln!(
         file,
         r#"{{"protocol":{{"minReaderVersion":1,"minWriterVersion":2}}}}"#
     )
     .unwrap();
-    writeln!(file, r#"{{"metaData":{{"id":"ec285dbc-6479-4cc1-b038-1de97afabf9b","format":{{"provider":"parquet","options":{{}}}},"schemaString":"{}","partitionColumns":[{}],"configuration":{{}},"createdTime":1621845641001}}}}"#, schema, partitions).unwrap();
+    writeln!(
+        file,
+        "{}",
+        create_metadata_action_json(&schema, &partitions)
+    )
+    .unwrap();
 
     path
 }
@@ -130,7 +145,7 @@ pub fn create_kdi(
     allowed_latency: u64,
     max_messages_per_batch: usize,
     min_bytes_per_file: usize,
-) -> KafkaJsonToDelta {
+) -> (JoinHandle<()>, Arc<CancellationToken>, Runtime) {
     env::set_var("AWS_S3_LOCKING_PROVIDER", "dynamodb");
     env::set_var("DYNAMO_LOCK_TABLE_NAME", "locks");
     env::set_var("DYNAMO_LOCK_OWNER_NAME", Uuid::new_v4().to_string());
@@ -153,7 +168,7 @@ pub fn create_kdi(
 
     let dummy = channel(1_000_000);
 
-    KafkaJsonToDelta::new(
+    let mut kdi = KafkaJsonToDelta::new(
         opts,
         TEST_BROKER.to_string(),
         format!("{}_{}", app_id, Uuid::new_v4()),
@@ -161,10 +176,19 @@ pub fn create_kdi(
         HashMap::new(),
         dummy.0,
     )
-    .unwrap()
+    .unwrap();
+    let rt = create_runtime(app_id);
+    let token = Arc::new(CancellationToken::new());
+
+    let run_loop = {
+        let token = token.clone();
+        rt.spawn(async move { kdi.start(Some(&token)).await.unwrap() })
+    };
+
+    (run_loop, token, rt)
 }
 
-pub fn create_runtime(name: &str) -> tokio::runtime::Runtime {
+pub fn create_runtime(name: &str) -> Runtime {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .thread_name(name)
@@ -193,4 +217,43 @@ pub fn init_logger() {
         })
         .filter(None, log::LevelFilter::Info)
         .try_init();
+}
+
+pub fn wait_until_file_created(path: &Path) {
+    loop {
+        if path.exists() {
+            return;
+        }
+    }
+}
+
+pub fn wait_until_version_created(table: &str, version: i64) {
+    let path = format!("{}/_delta_log/{:020}.json", table, version);
+    wait_until_file_created(Path::new(&path));
+}
+
+pub async fn read_table_content(table_uri: &str) -> Vec<Value> {
+    let table = deltalake::open_table(table_uri).await.unwrap();
+    let backend = deltalake::get_backend_for_uri(&table_uri).unwrap();
+    let tmp = format!(".test-{}.tmp", Uuid::new_v4());
+    let mut list = Vec::new();
+    for file in table.get_file_uris() {
+        let mut bytes = backend.get_obj(&file).await.unwrap();
+        let mut file = File::create(&tmp).unwrap();
+        file.write_all(&mut bytes).unwrap();
+        drop(file);
+        let reader = SerializedFileReader::new(File::open(&tmp).unwrap()).unwrap();
+        let mut row_iter = reader.get_row_iter(None).unwrap();
+
+        while let Some(record) = row_iter.next() {
+            list.push(record.to_json_value());
+        }
+    }
+    std::fs::remove_file(tmp).unwrap();
+
+    list
+}
+
+pub fn commit_file_path(table: &str, version: i64) -> String {
+    format!("{}/_delta_log/{:020}.json", table, version)
 }
