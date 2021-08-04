@@ -40,4 +40,4 @@ parquet = { version = "5" }
 utime = "0.3"
 serial_test = "*"
 tempfile = "3"
-
+parquet  = { version = "5", features = ["cli"] }

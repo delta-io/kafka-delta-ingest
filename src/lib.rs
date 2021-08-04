@@ -565,6 +565,13 @@ impl KafkaJsonToDelta {
                 return Ok(());
             }
 
+            if state.delta_writer.update_schema()? {
+                info!("Transaction attempt failed. Got conflict schema from delta store. Resetting consumer");
+                self.reset_state_guarded(state).await?;
+                // todo delete parquet file
+                return Ok(());
+            }
+
             let version = state.delta_writer.table_version() + 1;
             let commit_result = state
                 .delta_writer
