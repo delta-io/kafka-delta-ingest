@@ -261,10 +261,7 @@ impl DeltaWriter {
     /// Returns the current byte length of the in memory buffer.
     /// This may be used by the caller to decide when to finalize the file write.
     pub fn buffer_len(&self) -> usize {
-        self.arrow_writers
-            .values()
-            .map(|w| w.cursor.len())
-            .sum()
+        self.arrow_writers.values().map(|w| w.cursor.len()).sum()
     }
 
     /// Writes the existing parquet bytes to storage and resets internal state to handle another file.
