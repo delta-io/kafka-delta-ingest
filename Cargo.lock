@@ -55,9 +55,8 @@ checksum = "23b62fc65de8e4e7f52534fb52b0f3ed04746ae267519eef2a83941e8085068b"
 
 [[package]]
 name = "arrow"
-version = "5.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06d2bd50fddbdcecd832742b388228eec02eb3aabd33144ef46f6bc5420bf662"
+version = "6.0.0-SNAPSHOT"
+source = "git+https://github.com/apache/arrow-rs?rev=6bf1988852f87da21a163203eec4c83a7b692901#6bf1988852f87da21a163203eec4c83a7b692901"
 dependencies = [
  "bitflags",
  "chrono",
@@ -372,7 +371,7 @@ dependencies = [
 [[package]]
 name = "deltalake"
 version = "0.4.1"
-source = "git+https://github.com/delta-io/delta-rs.git?rev=165ca5701014a0196ef7bbb360fd3e6b1c8dda46#165ca5701014a0196ef7bbb360fd3e6b1c8dda46"
+source = "git+https://github.com/delta-io/delta-rs.git?branch=writer-map-support#56ff5bf36a17769b37f6b8164f6beebe109b8467"
 dependencies = [
  "anyhow",
  "arrow",
@@ -1374,9 +1373,8 @@ dependencies = [
 
 [[package]]
 name = "parquet"
-version = "5.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9297cb17ef7287f6105685d230abbb2b37247657edf2b4a99271088e7d5b0ddd"
+version = "6.0.0-SNAPSHOT"
+source = "git+https://github.com/apache/arrow-rs?rev=6bf1988852f87da21a163203eec4c83a7b692901#6bf1988852f87da21a163203eec4c83a7b692901"
 dependencies = [
  "arrow",
  "base64",
