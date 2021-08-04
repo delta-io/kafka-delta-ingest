@@ -260,12 +260,8 @@ impl DeltaWriter {
 
     /// Returns the current byte length of the in memory buffer.
     /// This may be used by the caller to decide when to finalize the file write.
-    /// TODO https://github.com/delta-io/kafka-delta-ingest/issues/38
     pub fn buffer_len(&self) -> usize {
-        self.arrow_writers
-            .values()
-            .map(|w| w.cursor.data().len())
-            .sum()
+        self.arrow_writers.values().map(|w| w.cursor.len()).sum()
     }
 
     /// Writes the existing parquet bytes to storage and resets internal state to handle another file.
