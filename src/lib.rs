@@ -26,7 +26,7 @@ use tokio_util::sync::CancellationToken;
 
 pub mod deltalake_ext;
 pub mod instrumentation;
-mod transforms;
+pub mod transforms;
 
 use crate::transforms::*;
 use crate::{

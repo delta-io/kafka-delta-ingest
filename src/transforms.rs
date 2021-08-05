@@ -373,13 +373,9 @@ fn timestamp_value_from_kafka(
     match kafka_timestamp {
         rdkafka::Timestamp::NotAvailable => serde_json::to_value(None as Option<String>),
         // Convert to milliseconds to microseconds for delta format
-        rdkafka::Timestamp::CreateTime(ms) => serde_json::to_value(millis_to_nanos(ms)),
-        rdkafka::Timestamp::LogAppendTime(ms) => serde_json::to_value(millis_to_nanos(ms)),
+        rdkafka::Timestamp::CreateTime(ms) => serde_json::to_value(ms * 1000),
+        rdkafka::Timestamp::LogAppendTime(ms) => serde_json::to_value(ms * 1000),
     }
-}
-
-fn millis_to_nanos(ms: i64) -> i64 {
-    ms * 1_000_000
 }
 
 #[cfg(test)]

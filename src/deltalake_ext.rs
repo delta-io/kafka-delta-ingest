@@ -10,11 +10,11 @@ use arrow::{
     json::reader::Decoder,
     record_batch::*,
 };
-use chrono::prelude::*;
 use deltalake::{
     action::{Add, ColumnCountStat, ColumnValueStat, Stats},
     DeltaDataTypeLong, DeltaDataTypeVersion, DeltaTable, DeltaTableError, DeltaTransactionError,
     Schema, StorageBackend, StorageError, UriError,
+    writer::time_utils::timestamp_to_delta_stats_string
 };
 use log::debug;
 use parquet::{
@@ -34,8 +34,8 @@ use std::convert::TryFrom;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
+use parquet::basic::TimestampType;
 
-const NANOSECONDS: i64 = 1_000_000_000;
 const NULL_PARTITION_VALUE_DATA_PATH: &str = "__HIVE_DEFAULT_PARTITION__";
 
 type MinAndMaxValues = (
@@ -139,7 +139,7 @@ impl DeltaArrowWriter {
         self.arrow_writer.write(&record_batch)?;
         self.buffered_record_batch_count += 1;
 
-        apply_null_counts(&record_batch.into(), &mut self.null_counts);
+        apply_null_counts(partition_columns, &record_batch.into(), &mut self.null_counts, 0);
         Ok(())
     }
 }
@@ -416,6 +416,7 @@ pub fn record_batch_from_json(
 }
 
 fn min_max_values_from_file_metadata(
+    partition_values: &HashMap<String, Option<String>>,
     file_metadata: &FileMetaData,
 ) -> Result<MinAndMaxValues, ParquetError> {
     let type_ptr = parquet::schema::types::from_thrift(file_metadata.schema.as_slice());
@@ -442,13 +443,20 @@ fn min_max_values_from_file_metadata(
             continue;
         }
 
-        let statistics: Vec<&Statistics> = row_group_metadata
-            .iter()
-            .filter_map(|g| g.column(i).statistics())
-            .collect();
-
         let column_path = column_descr.path();
         let column_path_parts = column_path.parts();
+
+        // Do not include partition columns in statistics
+        if partition_values.contains_key(&column_path_parts[0]) {
+            continue;
+        }
+
+        let statistics: Vec<&Statistics> = row_group_metadata
+            .iter()
+            .filter_map(|g|
+                g.column(i).statistics()
+            )
+            .collect();
 
         let _ = apply_min_max_for_column(
             statistics.as_slice(),
@@ -462,7 +470,7 @@ fn min_max_values_from_file_metadata(
     Ok((min_values, max_values))
 }
 
-fn apply_null_counts(array: &StructArray, null_counts: &mut HashMap<String, ColumnCountStat>) {
+fn apply_null_counts(partition_columns: &[String], array: &StructArray, null_counts: &mut HashMap<String, ColumnCountStat>, nest_level: i32) {
     let fields = match array.data_type() {
         DataType::Struct(fields) => fields,
         _ => unreachable!(),
@@ -475,6 +483,11 @@ fn apply_null_counts(array: &StructArray, null_counts: &mut HashMap<String, Colu
         .for_each(|(column, field)| {
             let key = field.name().to_owned();
 
+            // Do not include partition columns in statistics
+            if nest_level == 0 && partition_columns.contains(&key) {
+                return;
+            }
+
             match column.data_type() {
                 // Recursive case
                 DataType::Struct(_) => {
@@ -484,7 +497,7 @@ fn apply_null_counts(array: &StructArray, null_counts: &mut HashMap<String, Colu
 
                     match col_struct {
                         ColumnCountStat::Column(map) => {
-                            apply_null_counts(as_struct_array(column), map);
+                            apply_null_counts(partition_columns, as_struct_array(column), map, nest_level + 1);
                         }
                         _ => unreachable!(),
                     }
@@ -643,26 +656,26 @@ fn min_and_max_from_parquet_statistics(
 
             Ok((min, max))
         }
-        DataType::Int64 if is_timestamp(column_descr.logical_type()) => {
-            let min_array = as_primitive_array::<arrow::datatypes::Int64Type>(&min_array);
-            let min = arrow::compute::min(min_array);
-            let min = min.map(|i| timestamp_ns_to_json_value(i)).flatten();
-
-            let max_array = as_primitive_array::<arrow::datatypes::Int64Type>(&max_array);
-            let max = arrow::compute::max(max_array);
-            let max = max.map(|i| timestamp_ns_to_json_value(i)).flatten();
-            Ok((min, max))
-        }
         DataType::Int64 => {
             let min_array = as_primitive_array::<arrow::datatypes::Int64Type>(&min_array);
             let min = arrow::compute::min(min_array);
-            let min = min.map(|i| Value::Number(Number::from(i)));
-
             let max_array = as_primitive_array::<arrow::datatypes::Int64Type>(&max_array);
             let max = arrow::compute::max(max_array);
-            let max = max.map(|i| Value::Number(Number::from(i)));
 
-            Ok((min, max))
+            match column_descr.logical_type().as_ref() {
+                Some(LogicalType::TIMESTAMP(TimestampType { unit, .. })) => {
+                    let min = min.map(|n| Value::String(timestamp_to_delta_stats_string(n, &unit)));
+                    let max = max.map(|n| Value::String(timestamp_to_delta_stats_string(n, &unit)));
+
+                    Ok((min, max))
+                }
+                _ => {
+                    let min = min.map(|i| Value::Number(Number::from(i)));
+                    let max = max.map(|i| Value::Number(Number::from(i)));
+
+                    Ok((min, max))
+                }
+            }
         }
         DataType::Float32 => {
             let min_array = as_primitive_array::<arrow::datatypes::Float32Type>(&min_array);
@@ -706,14 +719,6 @@ fn is_utf8(opt: Option<LogicalType>) -> bool {
     }
 }
 
-#[inline]
-fn is_timestamp(opt: Option<LogicalType>) -> bool {
-    match opt.as_ref() {
-        Some(LogicalType::TIMESTAMP(_)) => true,
-        _ => false,
-    }
-}
-
 fn min_max_strings_from_stats(
     stats_with_min_max: &Vec<&Statistics>,
 ) -> (Option<Value>, Option<Value>) {
@@ -734,14 +739,6 @@ fn min_max_strings_from_stats(
         .map(|s| Value::String(s.to_string()));
 
     return (min_value, max_value);
-}
-
-#[inline]
-pub fn timestamp_ns_to_json_value(ns: i64) -> Option<Value> {
-    match Utc.timestamp_opt(ns / NANOSECONDS, (ns % NANOSECONDS) as u32) {
-        chrono::offset::LocalResult::Single(dt) => Some(Value::String(format!("{:?}", dt))),
-        _ => None,
-    }
 }
 
 fn arrow_array_from_bytes(
@@ -771,7 +768,7 @@ fn create_add(
     size: i64,
     file_metadata: &FileMetaData,
 ) -> Result<Add, DeltaWriterError> {
-    let (min_values, max_values) = min_max_values_from_file_metadata(file_metadata)?;
+    let (min_values, max_values) = min_max_values_from_file_metadata(partition_values, file_metadata)?;
 
     let stats = Stats {
         num_records: file_metadata.num_rows,
