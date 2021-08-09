@@ -36,6 +36,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 const NANOSECONDS: i64 = 1_000_000_000;
+const NULL_PARTITION_VALUE_DATA_PATH: &str = "__HIVE_DEFAULT_PARTITION__";
 
 type MinAndMaxValues = (
     HashMap<String, ColumnValueStat>,
@@ -117,7 +118,7 @@ pub struct DeltaWriter {
 pub struct DeltaArrowWriter {
     cursor: InMemoryWriteableCursor,
     arrow_writer: ArrowWriter<InMemoryWriteableCursor>,
-    partition_values: HashMap<String, String>,
+    partition_values: HashMap<String, Option<String>>,
     null_counts: NullCounts,
     buffered_record_batch_count: usize,
 }
@@ -330,7 +331,7 @@ impl DeltaWriter {
     fn next_data_path(
         &self,
         partition_cols: &[String],
-        partition_values: &HashMap<String, String>,
+        partition_values: &HashMap<String, Option<String>>,
     ) -> Result<String, DeltaWriterError> {
         // TODO: what does 00000 mean?
         let first_part = "00000";
@@ -352,6 +353,9 @@ impl DeltaWriter {
                     .get(k)
                     .ok_or(DeltaWriterError::MissingPartitionColumn(k.to_string()))?;
 
+                let partition_value = partition_value
+                    .as_deref()
+                    .unwrap_or(NULL_PARTITION_VALUE_DATA_PATH);
                 let part = format!("{}={}", k, partition_value);
 
                 path_parts.push(part);
@@ -367,24 +371,24 @@ impl DeltaWriter {
 
     fn divide_by_partition_values(
         &self,
-        values: Vec<Value>,
+        records: Vec<Value>,
     ) -> Result<HashMap<String, Vec<Value>>, DeltaWriterError> {
-        let mut partition_values: HashMap<String, Vec<Value>> = HashMap::new();
+        let mut partitioned_records: HashMap<String, Vec<Value>> = HashMap::new();
 
-        for value in values {
-            let key = self.json_to_partition_keys(&value)?;
-            match partition_values.get_mut(&key) {
-                Some(vec) => vec.push(value),
+        for record in records {
+            let partition_value = self.json_to_partition_values(&record)?;
+            match partitioned_records.get_mut(&partition_value) {
+                Some(vec) => vec.push(record),
                 None => {
-                    partition_values.insert(key, vec![value]);
+                    partitioned_records.insert(partition_value, vec![record]);
                 }
             };
         }
 
-        Ok(partition_values)
+        Ok(partitioned_records)
     }
 
-    fn json_to_partition_keys(&self, value: &Value) -> Result<String, DeltaWriterError> {
+    fn json_to_partition_values(&self, value: &Value) -> Result<String, DeltaWriterError> {
         if let Some(obj) = value.as_object() {
             let key: Vec<String> = self
                 .partition_columns
@@ -761,7 +765,7 @@ fn arrow_array_from_bytes(
 }
 
 fn create_add(
-    partition_values: &HashMap<String, String>,
+    partition_values: &HashMap<String, Option<String>>,
     null_counts: NullCounts,
     path: String,
     size: i64,
@@ -800,7 +804,7 @@ fn create_add(
 fn extract_partition_values(
     partition_cols: &[String],
     record_batch: &RecordBatch,
-) -> Result<HashMap<String, String>, DeltaWriterError> {
+) -> Result<HashMap<String, Option<String>>, DeltaWriterError> {
     let mut partition_values = HashMap::new();
 
     for col_name in partition_cols.iter() {
@@ -823,8 +827,12 @@ fn extract_partition_values(
 // however, stats are optional and can be added later with `dataChange` false log entries, and it may be more appropriate to add stats _later_ to speed up the initial write.
 // a happy middle-road might be to compute stats for partition columns only on the initial write since we should validate partition values anyway, and compute additional stats later (at checkpoint time perhaps?).
 // also this does not currently support nested partition columns and many other data types.
-fn stringified_partition_value(arr: &Arc<dyn Array>) -> Result<String, DeltaWriterError> {
+fn stringified_partition_value(arr: &Arc<dyn Array>) -> Result<Option<String>, DeltaWriterError> {
     let data_type = arr.data_type();
+
+    if arr.is_null(0) {
+        return Ok(None);
+    }
 
     let s = match data_type {
         DataType::Int8 => as_primitive_array::<Int8Type>(arr).value(0).to_string(),
@@ -846,7 +854,7 @@ fn stringified_partition_value(arr: &Arc<dyn Array>) -> Result<String, DeltaWrit
         }
     };
 
-    Ok(s)
+    Ok(Some(s))
 }
 
 #[cfg(test)]

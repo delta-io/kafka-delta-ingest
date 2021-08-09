@@ -12,15 +12,19 @@ use serde_json::Value;
 #[derive(Debug, Serialize, Deserialize)]
 struct TestMsg {
     id: u32,
-    color: String,
+    color: Option<String>,
 }
 
 impl TestMsg {
     fn new(id: u32, color: &str) -> Self {
         Self {
             id,
-            color: color.to_string(),
+            color: Some(color.to_string()),
         }
+    }
+
+    fn new_color_null(id: u32) -> Self {
+        Self { id, color: None }
     }
 }
 
@@ -48,6 +52,7 @@ async fn test_delta_partitions() {
         TestMsg::new(6, "red"),
         TestMsg::new(7, "blue"),
         TestMsg::new(8, "blue"),
+        TestMsg::new_color_null(9),
     ];
 
     delta_writer.write(msgs_to_values(batch1)).await.unwrap();
@@ -56,20 +61,34 @@ async fn test_delta_partitions() {
     let result = delta_writer.write_parquet_files().await.unwrap();
 
     for add in result {
-        let p = add.partition_values.get("color").unwrap().clone();
-
-        if p == "red" {
-            assert!(add.path.starts_with("color=red"));
-            assert_eq!(&get_stats_value(&add, "numRecords"), "4");
-            assert_eq!(msg(get_stats_value(&add, "minValues")).id, 1);
-            assert_eq!(msg(get_stats_value(&add, "maxValues")).id, 6);
-        } else if p == "blue" {
-            assert!(add.path.starts_with("color=blue"));
-            assert_eq!(&get_stats_value(&add, "numRecords"), "4");
-            assert_eq!(msg(get_stats_value(&add, "minValues")).id, 3);
-            assert_eq!(msg(get_stats_value(&add, "maxValues")).id, 8);
-        } else {
-            panic!("{}", p);
+        match add
+            .partition_values
+            .get("color")
+            .unwrap()
+            .clone()
+            .as_deref()
+        {
+            Some("red") => {
+                assert!(add.path.starts_with("color=red"));
+                assert_eq!(&get_stats_value(&add, "numRecords"), "4");
+                assert_eq!(msg(get_stats_value(&add, "minValues")).id, 1);
+                assert_eq!(msg(get_stats_value(&add, "maxValues")).id, 6);
+            }
+            Some("blue") => {
+                assert!(add.path.starts_with("color=blue"));
+                assert_eq!(&get_stats_value(&add, "numRecords"), "4");
+                assert_eq!(msg(get_stats_value(&add, "minValues")).id, 3);
+                assert_eq!(msg(get_stats_value(&add, "maxValues")).id, 8);
+            }
+            None => {
+                assert!(add.path.starts_with("color=__HIVE_DEFAULT_PARTITION__"));
+                assert_eq!(&get_stats_value(&add, "numRecords"), "1");
+                assert_eq!(msg(get_stats_value(&add, "minValues")).id, 9);
+                assert_eq!(msg(get_stats_value(&add, "maxValues")).id, 9);
+            }
+            other => {
+                panic!("{:?}", other);
+            }
         }
     }
 
