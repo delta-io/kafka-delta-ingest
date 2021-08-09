@@ -33,7 +33,7 @@ services:
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:4566/health" ]
 
-  test_stack:
+  setup:
     image: localstack/localstack:0.12.11
     depends_on: 
       - kafka

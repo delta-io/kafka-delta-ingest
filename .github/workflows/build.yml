@@ -44,7 +44,7 @@ jobs:
         toolchain: stable
         override: true
     - name: Teststack setup
-      run: docker-compose up test_stack
+      run: docker-compose up setup
     - name: Run tests
       run: cargo test
 
