@@ -25,17 +25,27 @@ pub const TEST_BROKER: &str = "0.0.0.0:9092";
 pub const LOCALSTACK_ENDPOINT: &str = "http://0.0.0.0:4566";
 
 pub async fn create_topic(topic: &str, num_partitions: i32) {
-    let mut admin_client_config = ClientConfig::new();
-    admin_client_config.set("bootstrap.servers", TEST_BROKER);
-
-    let admin_client: AdminClient<_> = admin_client_config
+    let admin_client: AdminClient<_> = ClientConfig::new()
+        .set("bootstrap.servers", TEST_BROKER)
         .create()
-        .expect("AdminClient creation failed");
-    let admin_options = AdminOptions::default();
+        .unwrap();
+
     let new_topic = NewTopic::new(topic, num_partitions, TopicReplication::Fixed(1));
 
     admin_client
-        .create_topics(&[new_topic], &admin_options)
+        .create_topics(&[new_topic], &AdminOptions::default())
+        .await
+        .unwrap();
+}
+
+pub async fn delete_topic(topic: &str) {
+    let admin_client: AdminClient<_> = ClientConfig::new()
+        .set("bootstrap.servers", TEST_BROKER)
+        .create()
+        .unwrap();
+
+    admin_client
+        .delete_topics(&[topic], &AdminOptions::default())
         .await
         .unwrap();
 }
@@ -116,6 +126,11 @@ pub fn create_metadata_action_json(schema: &HashMap<&str, &str>, partitions: &[&
 
 pub fn create_local_table(schema: HashMap<&str, &str>, partitions: Vec<&str>) -> String {
     let path = format!("./tests/data/gen/table-{}", Uuid::new_v4());
+    create_local_table_in(schema, partitions, &path);
+    path
+}
+
+pub fn create_local_table_in(schema: HashMap<&str, &str>, partitions: Vec<&str>, path: &str) {
     let v0 = format!("{}/_delta_log/00000000000000000000.json", &path);
 
     std::fs::create_dir_all(Path::new(&v0).parent().unwrap()).unwrap();
@@ -127,15 +142,12 @@ pub fn create_local_table(schema: HashMap<&str, &str>, partitions: Vec<&str>) ->
         file,
         r#"{{"protocol":{{"minReaderVersion":1,"minWriterVersion":2}}}}"#
     )
-    .unwrap();
+        .unwrap();
     writeln!(
         file,
         "{}",
         create_metadata_action_json(&schema, &partitions)
-    )
-    .unwrap();
-
-    path
+    ).unwrap();
 }
 
 pub fn create_kdi(

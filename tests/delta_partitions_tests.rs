@@ -56,7 +56,7 @@ async fn test_delta_partitions() {
     let result = delta_writer.write_parquet_files().await.unwrap();
 
     for add in result {
-        let p = add.partition_values.get("color").unwrap().clone();
+        let p = add.partition_values.get("color").unwrap().clone().unwrap();
 
         if p == "red" {
             assert!(add.path.starts_with("color=red"));
