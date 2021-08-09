@@ -142,12 +142,13 @@ pub fn create_local_table_in(schema: HashMap<&str, &str>, partitions: Vec<&str>,
         file,
         r#"{{"protocol":{{"minReaderVersion":1,"minWriterVersion":2}}}}"#
     )
-        .unwrap();
+    .unwrap();
     writeln!(
         file,
         "{}",
         create_metadata_action_json(&schema, &partitions)
-    ).unwrap();
+    )
+    .unwrap();
 }
 
 pub fn create_kdi(
