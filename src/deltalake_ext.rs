@@ -36,6 +36,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 const NANOSECONDS: i64 = 1_000_000_000;
+const NULL_PARTITION_VALUE_DATA_PATH: &str = "__HIVE_DEFAULT_PARTITION__";
 
 type MinAndMaxValues = (
     HashMap<String, ColumnValueStat>,
@@ -352,7 +353,9 @@ impl DeltaWriter {
                     .get(k)
                     .ok_or(DeltaWriterError::MissingPartitionColumn(k.to_string()))?;
 
-                let partition_value = partition_value.clone().unwrap_or("".to_string());
+                let partition_value = partition_value
+                    .as_deref()
+                    .unwrap_or(NULL_PARTITION_VALUE_DATA_PATH);
                 let part = format!("{}={}", k, partition_value);
 
                 path_parts.push(part);
