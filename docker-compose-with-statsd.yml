@@ -44,7 +44,7 @@ services:
       - 8125:8125/udp
       - 8126:8126
 
-  test_stack:
+  setup:
     image: localstack/localstack  
     depends_on: 
       - kafka
