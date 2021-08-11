@@ -374,7 +374,7 @@ dependencies = [
 [[package]]
 name = "deltalake"
 version = "0.4.1"
-source = "git+https://github.com/xianwill/delta-rs.git?branch=checkpoint_and_map_fixes#f8f077a21fe23dc2261d5f47fbb7a1087d60f0ac"
+source = "git+https://github.com/delta-io/delta-rs.git?branch=writer-map-support#7f31207e624e60ee779dbbb8890ee1abceaefe25"
 dependencies = [
  "anyhow",
  "arrow",
