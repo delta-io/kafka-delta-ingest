@@ -646,7 +646,7 @@ mod tests {
         assert_eq!(0i64, kafka_offset);
         assert_eq!(0i64, kafka_partition);
         assert_eq!("test", kafka_topic);
-        assert_eq!(1626823098519000000, kafka_timestamp);
+        assert_eq!(1626823098519000, kafka_timestamp);
         assert_eq!(0, kafka_timestamp_type);
     }
 }

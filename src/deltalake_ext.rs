@@ -889,7 +889,7 @@ mod tests {
         assert_eq!(add.len(), 1);
         let stats = add[0].get_stats().unwrap().unwrap();
 
-        let min_max_keys = vec!["meta", "some_int", "some_string", "some_bool", "date"];
+        let min_max_keys = vec!["meta", "some_int", "some_string", "some_bool"];
         let mut null_count_keys = vec!["some_list", "some_nested_list"];
         null_count_keys.extend_from_slice(min_max_keys.as_slice());
 

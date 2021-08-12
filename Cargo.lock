@@ -374,7 +374,7 @@ dependencies = [
 [[package]]
 name = "deltalake"
 version = "0.4.1"
-source = "git+https://github.com/delta-io/delta-rs.git?branch=writer-map-support#d66239fd7189919ee9ce52cf7734a6ad6fb5eab5"
+source = "git+https://github.com/delta-io/delta-rs.git?branch=writer-map-support#97597d881ba5666d353fd4c82c052ef1860f945f"
 dependencies = [
  "anyhow",
  "arrow",
