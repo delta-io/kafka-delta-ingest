@@ -12,11 +12,12 @@ use arrow::{
 };
 use deltalake::{
     action::{Add, ColumnCountStat, ColumnValueStat, Stats},
+    writer::time_utils::timestamp_to_delta_stats_string,
     DeltaDataTypeLong, DeltaDataTypeVersion, DeltaTable, DeltaTableError, DeltaTransactionError,
     Schema, StorageBackend, StorageError, UriError,
-    writer::time_utils::timestamp_to_delta_stats_string
 };
 use log::debug;
+use parquet::basic::TimestampType;
 use parquet::{
     arrow::ArrowWriter,
     basic::{Compression, LogicalType},
@@ -34,7 +35,6 @@ use std::convert::TryFrom;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
-use parquet::basic::TimestampType;
 
 const NULL_PARTITION_VALUE_DATA_PATH: &str = "__HIVE_DEFAULT_PARTITION__";
 
@@ -139,7 +139,12 @@ impl DeltaArrowWriter {
         self.arrow_writer.write(&record_batch)?;
         self.buffered_record_batch_count += 1;
 
-        apply_null_counts(partition_columns, &record_batch.into(), &mut self.null_counts, 0);
+        apply_null_counts(
+            partition_columns,
+            &record_batch.into(),
+            &mut self.null_counts,
+            0,
+        );
         Ok(())
     }
 }
@@ -453,9 +458,7 @@ fn min_max_values_from_file_metadata(
 
         let statistics: Vec<&Statistics> = row_group_metadata
             .iter()
-            .filter_map(|g|
-                g.column(i).statistics()
-            )
+            .filter_map(|g| g.column(i).statistics())
             .collect();
 
         let _ = apply_min_max_for_column(
@@ -470,7 +473,12 @@ fn min_max_values_from_file_metadata(
     Ok((min_values, max_values))
 }
 
-fn apply_null_counts(partition_columns: &[String], array: &StructArray, null_counts: &mut HashMap<String, ColumnCountStat>, nest_level: i32) {
+fn apply_null_counts(
+    partition_columns: &[String],
+    array: &StructArray,
+    null_counts: &mut HashMap<String, ColumnCountStat>,
+    nest_level: i32,
+) {
     let fields = match array.data_type() {
         DataType::Struct(fields) => fields,
         _ => unreachable!(),
@@ -497,7 +505,12 @@ fn apply_null_counts(partition_columns: &[String], array: &StructArray, null_cou
 
                     match col_struct {
                         ColumnCountStat::Column(map) => {
-                            apply_null_counts(partition_columns, as_struct_array(column), map, nest_level + 1);
+                            apply_null_counts(
+                                partition_columns,
+                                as_struct_array(column),
+                                map,
+                                nest_level + 1,
+                            );
                         }
                         _ => unreachable!(),
                     }
@@ -768,7 +781,8 @@ fn create_add(
     size: i64,
     file_metadata: &FileMetaData,
 ) -> Result<Add, DeltaWriterError> {
-    let (min_values, max_values) = min_max_values_from_file_metadata(partition_values, file_metadata)?;
+    let (min_values, max_values) =
+        min_max_values_from_file_metadata(partition_values, file_metadata)?;
 
     let stats = Stats {
         num_records: file_metadata.num_rows,

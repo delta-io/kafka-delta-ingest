@@ -592,14 +592,16 @@ impl KafkaJsonToDelta {
                     return Ok(());
                 }
                 Err(e) => match e {
-                    DeltaTransactionError::VersionAlreadyExists { .. }
-                        if attempt_number > DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS + 1 =>
-                    {
+                    DeltaTableError::TransactionError {
+                        source: DeltaTransactionError::VersionAlreadyExists { .. },
+                    } if attempt_number > DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS + 1 => {
                         debug!("Transaction attempt failed. Attempts exhausted beyond max_retry_commit_attempts of {} so failing.", DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS);
                         self.log_delta_write_failed().await;
                         return Err(e.into());
                     }
-                    DeltaTransactionError::VersionAlreadyExists { .. } => {
+                    DeltaTableError::TransactionError {
+                        source: DeltaTransactionError::VersionAlreadyExists { .. },
+                    } => {
                         attempt_number += 1;
                         debug!("Transaction attempt failed. Incrementing attempt number to {} and retrying.", attempt_number);
                     }
