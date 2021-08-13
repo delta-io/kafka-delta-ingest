@@ -7,7 +7,7 @@ extern crate strum_macros;
 #[cfg(test)]
 extern crate serde_json;
 
-use deltalake::{action, DeltaTableError, DeltaTransactionError};
+use deltalake::{action, DeltaDataTypeVersion, DeltaTableError, DeltaTransactionError};
 use futures::stream::StreamExt;
 use log::{debug, error, info, warn};
 use rdkafka::{
@@ -34,6 +34,8 @@ use crate::{
     instrumentation::{Instrumentation, Statistic},
 };
 use deltalake::action::{Action, Add};
+use deltalake::checkpoints;
+use deltalake::checkpoints::CheckpointError;
 use rdkafka::message::BorrowedMessage;
 
 type DataTypePartition = i32;
@@ -65,6 +67,12 @@ pub enum KafkaJsonToDeltaError {
     DeltaWriter {
         #[from]
         source: DeltaWriterError,
+    },
+
+    #[error("CheckpointErrorError error: {source}")]
+    CheckpointErrorError {
+        #[from]
+        source: CheckpointError,
     },
 
     #[error("TransformError: {source}")]
@@ -128,6 +136,9 @@ pub struct Options {
     /// Desired minimum number of compressed parquet bytes to buffer in memory
     /// before writing to storage and committing a transaction.
     pub min_bytes_per_file: usize,
+
+    /// If `true` then application will write checkpoints on each 10th commit.
+    pub write_checkpoints: bool,
 }
 
 impl Options {
@@ -138,6 +149,7 @@ impl Options {
         allowed_latency: u64,
         max_messages_per_batch: usize,
         min_bytes_per_file: usize,
+        write_checkpoints: bool,
     ) -> Self {
         Self {
             topic,
@@ -146,6 +158,7 @@ impl Options {
             allowed_latency,
             max_messages_per_batch,
             min_bytes_per_file,
+            write_checkpoints,
         }
     }
 }
@@ -587,6 +600,10 @@ impl KafkaJsonToDelta {
                         state.delta_partition_offsets.insert(p, Some(o));
                     }
 
+                    if self.opts.write_checkpoints {
+                        self.try_create_checkpoint(state, version).await?;
+                    }
+
                     self.log_delta_write_completed(version, &delta_write_timer)
                         .await;
                     return Ok(());
@@ -612,6 +629,19 @@ impl KafkaJsonToDelta {
                 },
             }
         }
+    }
+
+    async fn try_create_checkpoint(
+        &self,
+        state: &mut ProcessingState,
+        version: DeltaDataTypeVersion,
+    ) -> Result<(), KafkaJsonToDeltaError> {
+        // Make delta-rs to leverage of existing table and backend instances
+        if version % 10 == 0 {
+            checkpoints::create_checkpoint_from_table(&mut state.delta_writer.table, version)
+                .await?;
+        }
+        Ok(())
     }
 
     /// Checks whether partition offsets from last writes matches the ones from delta log

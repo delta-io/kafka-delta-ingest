@@ -67,6 +67,9 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
 
             (@arg STATSD_ENDPOINT: -s --statsd_endpoint +takes_value
              "The statsd endpoint to send statistics to.")
+
+            (@arg CHECKPOINTS: -c --checkpoints
+            "If set then Kafka Delta ingest will write checkpoints on each 10th commit.")
         )
     )
     .setting(AppSettings::SubcommandRequiredElseHelp)
@@ -113,6 +116,8 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
                 .unwrap_or("localhost:8125");
             let stats_sender = instrumentation::init_stats(stats_endpoint, app_id)?;
 
+            let write_checkpoints = ingest_matches.is_present("CHECKPOINTS");
+
             let options = Options::new(
                 topic.to_string(),
                 table_location.to_string(),
@@ -120,6 +125,7 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
                 allowed_latency,
                 max_messages_per_batch,
                 min_bytes_per_file,
+                write_checkpoints,
             );
 
             let mut stream = KafkaJsonToDelta::new(

@@ -177,6 +177,7 @@ impl TestScope {
             allowed_latency,
             max_messages_per_batch,
             min_bytes_per_file,
+            true,
         );
 
         KafkaJsonToDelta::new(

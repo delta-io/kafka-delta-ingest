@@ -43,11 +43,12 @@ impl Playground {
     async fn run_custom_checks(&self) {
         // Run custom checks here!
 
-        // for example, send one message and wait until it's created with new delta version
-        // (works only if MAX_MESSAGES_PER_BATCH is 1)
-        self.send_message(Message::new(1, Some("1".to_string())))
-            .await;
-        helpers::wait_until_version_created(TABLE_PATH, 1);
+        for id in 1..25 {
+            self.send_message(Message::new(id, Some("p".to_string())))
+                .await;
+        }
+
+        helpers::wait_until_version_created(TABLE_PATH, 24);
     }
 
     async fn send_message(&self, msg: Message) {
@@ -90,6 +91,7 @@ impl Playground {
         playground.run_custom_checks().await;
 
         token.cancel();
+        playground.send_json(&Value::Null).await;
         kdi.await.unwrap();
         rt.shutdown_background();
 

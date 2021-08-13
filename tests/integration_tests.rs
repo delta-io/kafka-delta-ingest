@@ -87,6 +87,7 @@ async fn e2e_smoke_test() {
         allowed_latency,
         max_messages_per_batch,
         min_bytes_per_file,
+        true,
     );
 
     let mut stream = KafkaJsonToDelta::new(
