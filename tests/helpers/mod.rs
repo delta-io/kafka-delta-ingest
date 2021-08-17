@@ -177,6 +177,7 @@ pub fn create_kdi(
         allowed_latency,
         max_messages_per_batch,
         min_bytes_per_file,
+        true,
     );
 
     let dummy = channel(1_000_000);
