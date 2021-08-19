@@ -1,5 +1,7 @@
 use chrono::Local;
+use deltalake::action::{Action, Add, MetaData, Protocol, Remove, Txn};
 use kafka_delta_ingest::{KafkaJsonToDelta, Options};
+use parquet::util::cursor::SliceableCursor;
 use parquet::{
     file::reader::{FileReader, SerializedFileReader},
     record::RowAccessor,
@@ -8,11 +10,13 @@ use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::util::Timeout;
 use rdkafka::ClientConfig;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::env;
 use std::fs::{File, OpenOptions};
 use std::io::prelude::*;
+use std::io::{BufReader, Cursor};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -222,11 +226,12 @@ pub fn init_logger() {
                 .to_string();
             writeln!(
                 buf,
-                "{} [{}] - {}: {}",
+                "{} {} [{}] - {}: {}",
                 Local::now().format("%Y-%m-%dT%H:%M:%S"),
+                record.module_path().unwrap(),
                 record.level(),
                 thread_name,
-                record.args()
+                record.args(),
             )
         })
         .filter(None, log::LevelFilter::Info)
@@ -270,4 +275,90 @@ pub async fn read_table_content(table_uri: &str) -> Vec<Value> {
 
 pub fn commit_file_path(table: &str, version: i64) -> String {
     format!("{}/_delta_log/{:020}.json", table, version)
+}
+
+pub async fn inspect_table(path: &str) {
+    let table = deltalake::open_table(path).await.unwrap();
+    println!("Inspecting table {}", path);
+    for (k, v) in table.get_app_transaction_version().iter() {
+        println!("  {}: {}", k, v);
+    }
+    let backend = deltalake::get_backend_for_uri(path).unwrap();
+
+    for version in 1..=table.version {
+        let log_path = format!("{}/_delta_log/{:020}.json", path, version);
+        let bytes = backend.get_obj(&log_path).await.unwrap();
+        let reader = BufReader::new(Cursor::new(bytes));
+
+        println!("Version {}:", version);
+
+        for line in reader.lines() {
+            let action: Action = serde_json::from_str(line.unwrap().as_str()).unwrap();
+            match action {
+                Action::txn(t) => {
+                    println!("  Txn: {}: {}", t.app_id, t.version)
+                }
+                Action::add(a) => {
+                    let stats = a.get_stats().unwrap().unwrap();
+                    println!("  Add: {}. Records: {}", &a.path, stats.num_records);
+                    let full_path = format!("{}/{}", &path, &a.path);
+                    let parquet_bytes = backend.get_obj(&full_path).await.unwrap();
+                    let reader =
+                        SerializedFileReader::new(SliceableCursor::new(parquet_bytes)).unwrap();
+                    for record in reader.get_row_iter(None).unwrap() {
+                        println!("  - {}", record.to_json_value())
+                    }
+                }
+                _ => println!("Unknown action {:?}", action),
+            }
+        }
+    }
+    println!();
+    println!("Checkpoints:");
+    for version in 1..=table.version {
+        if version % 10 == 0 {
+            println!("Version: {}", version);
+            let log_path = format!("{}/_delta_log/{:020}.checkpoint.parquet", path, version);
+            let bytes = backend.get_obj(&log_path).await.unwrap();
+            let reader = SerializedFileReader::new(SliceableCursor::new(bytes)).unwrap();
+            let mut i = 0;
+            for record in reader.get_row_iter(None).unwrap() {
+                let json = record.to_json_value();
+                if let Some(m) = parse_json_field::<MetaData>(&json, "metaData") {
+                    println!(" {}. metaData: {}", i, m.id);
+                }
+                if let Some(p) = parse_json_field::<Protocol>(&json, "protocol") {
+                    println!(
+                        " {}. protocol: minReaderVersion={}, minWriterVersion={}",
+                        i, p.min_reader_version, p.min_writer_version
+                    );
+                }
+                if let Some(t) = parse_json_field::<Txn>(&json, "txn") {
+                    println!(" {}. txn: appId={}, version={}", i, t.app_id, t.version);
+                }
+                if let Some(r) = parse_json_field::<Remove>(&json, "remove") {
+                    println!(" {}. remove: {}", i, r.path);
+                }
+                if let Some(a) = parse_json_field::<Add>(&json, "add") {
+                    let records = a
+                        .get_stats()
+                        .ok()
+                        .flatten()
+                        .map(|s| s.num_records)
+                        .unwrap_or(-1);
+                    println!(" {}. add[{}]: {}", i, records, a.path);
+                }
+
+                i += 1;
+            }
+            println!()
+        }
+    }
+}
+
+fn parse_json_field<T: DeserializeOwned>(value: &Value, key: &str) -> Option<T> {
+    value
+        .as_object()
+        .and_then(|v| v.get(key))
+        .and_then(|v| serde_json::from_value::<T>(v.clone()).ok())
 }
