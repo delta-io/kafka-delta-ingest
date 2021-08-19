@@ -191,8 +191,14 @@ impl KafkaJsonToDelta {
         let mut kafka_client_config = ClientConfig::new();
 
         info!("App id is {}", opts.app_id);
+        info!("Delta table location is {}", opts.table_location);
         info!("Kafka broker string is {}", kafka_brokers);
+        info!("Kafka topic is {}", opts.topic);
         info!("Kafka consumer group id is {}", consumer_group_id);
+        info!("Writing checkpoints? {}", opts.write_checkpoints);
+        info!("Allowed latency {}", opts.allowed_latency);
+        info!("Min bytes per files is {}", opts.min_bytes_per_file);
+        info!("Max messages per batch is {}", opts.max_messages_per_batch);
 
         if let Ok(cert_pem) = std::env::var("KAFKA_DELTA_INGEST_CERT") {
             kafka_client_config.set("ssl.certificate.pem", cert_pem);
@@ -289,6 +295,8 @@ impl KafkaJsonToDelta {
                 return Err(ProcessingError::Continue);
             }
         };
+
+        self.log_message_bytes(message_bytes.len()).await;
 
         let value: Value = match serde_json::from_slice(message_bytes) {
             Ok(v) => v,
@@ -559,6 +567,9 @@ impl KafkaJsonToDelta {
         // upload pending parquet file to delta store
         // TODO remove it if we got conflict error? or it'll be considered as tombstone
         let add = state.delta_writer.write_parquet_files().await?;
+        for a in add.iter() {
+            self.log_delta_add_file_size(a.size).await;
+        }
 
         let mut attempt_number: u32 = 0;
 
