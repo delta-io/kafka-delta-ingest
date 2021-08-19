@@ -649,8 +649,18 @@ impl KafkaJsonToDelta {
     ) -> Result<(), KafkaJsonToDeltaError> {
         // Make delta-rs to leverage of existing table and backend instances
         if version % 10 == 0 {
-            checkpoints::create_checkpoint_from_table(&mut state.delta_writer.table, version)
-                .await?;
+            // if there's new version right after current commit, then we need to reset
+            // the table right back to version to create the checkpoint
+            let version_updated = state.delta_writer.table.version != version;
+            if version_updated {
+                state.delta_writer.table.load_version(version).await?;
+            }
+
+            checkpoints::create_checkpoint_from_table(&state.delta_writer.table).await?;
+
+            if version_updated {
+                state.delta_writer.table.update_incremental().await?;
+            }
         }
         Ok(())
     }
