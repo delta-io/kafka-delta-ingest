@@ -27,7 +27,7 @@ const TEST_APP_ID: &str = "emails_test";
 const TEST_BROKER: &str = "0.0.0.0:9092";
 const TEST_CONSUMER_GROUP_ID: &str = "kafka_delta_ingest_emails";
 const TEST_PARTITIONS: i32 = 4;
-const TEST_TOTAL_MESSAGES: i32 = 150;
+const TEST_TOTAL_MESSAGES: i32 = 200;
 
 const WORKER_1: &str = "WORKER-1";
 const WORKER_2: &str = "WORKER-2";
@@ -238,6 +238,11 @@ impl TestScope {
         let result = helpers::read_files_from_s3(table.get_file_uris()).await;
         let r: Vec<i32> = (0..TEST_TOTAL_MESSAGES).collect();
         println!("Got messages {}/{}", result.len(), TEST_TOTAL_MESSAGES);
+
+        if result.len() != TEST_TOTAL_MESSAGES as usize {
+            helpers::inspect_table(&self.table).await;
+        }
+
         assert_eq!(result, r);
     }
 }

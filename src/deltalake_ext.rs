@@ -190,7 +190,7 @@ impl DeltaWriter {
 
     /// Updates the wrapped delta table to load new delta log entries.
     pub async fn update_table(&mut self) -> Result<(), DeltaWriterError> {
-        self.table.update().await?;
+        self.table.update_incremental().await?;
         Ok(())
     }
 
