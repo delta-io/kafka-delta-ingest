@@ -42,3 +42,5 @@ serial_test = "*"
 tempfile = "3"
 parquet = { git = "https://github.com/apache/arrow-rs", rev = "fa5acd971c973161f17e69d5c6b50d6e77c7da03", features = ["cli"] }
 
+[profile.release]
+lto = true

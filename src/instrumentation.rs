@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use deltalake::DeltaDataTypeVersion;
 use dipstick::{Input, InputScope, Prefixed, Statsd, StatsdScope};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use rdkafka::message::{BorrowedMessage, Message};
 use std::convert::TryInto;
 use std::time::Instant;
@@ -46,13 +46,18 @@ pub trait Instrumentation {
             .await;
     }
 
+    async fn log_message_bytes(&self, bytes: usize) {
+        self.record_stat((StatTypes::MessageSize, bytes as i64))
+            .await;
+    }
+
     async fn log_message_transformed(&self, m: &BorrowedMessage) {
         debug_message("Message transformed", m);
         self.record_stat((StatTypes::MessageTransformed, 1)).await;
     }
 
     async fn log_message_transform_failed(&self, m: &BorrowedMessage) {
-        debug_message("Message transformed failed", m);
+        warn_message("Message transformed failed", m);
         self.record_stat((StatTypes::MessageTransformFailed, 1))
             .await;
     }
@@ -81,8 +86,8 @@ pub trait Instrumentation {
         buffered_record_batch_count: usize,
         timer: &Instant,
     ) {
-        let duration = timer.elapsed().as_micros() as i64;
-        debug!("Record batch completed in {} microseconds", duration);
+        let duration = timer.elapsed().as_millis() as i64;
+        debug!("Record batch completed in {} millis", duration);
         self.record_stat((StatTypes::RecordBatchCompleted, 1)).await;
         self.record_stat((
             StatTypes::BufferedRecordBatches,
@@ -101,9 +106,9 @@ pub trait Instrumentation {
     }
 
     async fn log_delta_write_completed(&self, version: DeltaDataTypeVersion, timer: &Instant) {
-        let duration = timer.elapsed().as_micros() as i64;
+        let duration = timer.elapsed().as_millis() as i64;
         info!(
-            "Delta write for version {} has completed in {} microseconds",
+            "Delta write for version {} has completed in {} millis",
             version, duration
         );
         self.record_stat((StatTypes::DeltaWriteCompleted, 1)).await;
@@ -112,8 +117,12 @@ pub trait Instrumentation {
     }
 
     async fn log_delta_write_failed(&self) {
-        info!("Delta write failed");
+        warn!("Delta write failed");
         self.record_stat((StatTypes::DeltaWriteFailed, 1)).await;
+    }
+
+    async fn log_delta_add_file_size(&self, size: i64) {
+        self.record_stat((StatTypes::DeltaAddFileSize, size)).await
     }
 
     // delta tx
@@ -159,9 +168,7 @@ impl StatsHandler {
 
     pub async fn run_loop(&mut self) {
         loop {
-            debug!("StatsHandler awaiting channel.");
             if let Some((stat, val)) = self.rx.recv().await {
-                debug!("StatsHandler received stat {:?} with value {}", stat, val);
                 match stat {
                     // timers
                     StatTypes::RecordBatchWriteDuration
@@ -171,7 +178,10 @@ impl StatsHandler {
                     }
 
                     // gauges
-                    StatTypes::BufferedMessages | StatTypes::BufferedRecordBatches => {
+                    StatTypes::BufferedMessages
+                    | StatTypes::BufferedRecordBatches
+                    | StatTypes::MessageSize
+                    | StatTypes::DeltaAddFileSize => {
                         self.handle_gauge(stat, val);
                     }
 
@@ -231,6 +241,15 @@ fn info_message(description: &str, m: &BorrowedMessage) {
     );
 }
 
+fn warn_message(description: &str, m: &BorrowedMessage) {
+    warn!(
+        "{} - partition {} offset {}",
+        description,
+        m.partition(),
+        m.offset()
+    );
+}
+
 #[derive(Debug, Display, Hash, PartialEq, Eq)]
 pub enum StatTypes {
     // counters
@@ -282,4 +301,8 @@ pub enum StatTypes {
     BufferedMessages,
     #[strum(serialize = "buffered.record_batches")]
     BufferedRecordBatches,
+    #[strum(serialize = "messages.size")]
+    MessageSize,
+    #[strum(serialize = "delta.add.size")]
+    DeltaAddFileSize,
 }
