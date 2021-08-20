@@ -18,6 +18,8 @@ async fn main() -> anyhow::Result<()> {
             (@arg TOPIC: +required "The Kafka topic to stream from")
             (@arg TABLE_LOCATION: +required "The Delta table location to write to")
 
+            (@arg DLQ_TABLE_LOCATION: --dlq_table_location +takes_value "Optional table to write dead letters to")
+
             (@arg KAFKA_BROKERS: -k --kafka +takes_value default_value("localhost:9092") 
              "The Kafka broker connection string to use when connecting to Kafka.")
             (@arg CONSUMER_GROUP: -g --consumer_group_id +takes_value default_value("kafka_delta_ingest") 
@@ -80,6 +82,9 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
         Some(("ingest", ingest_matches)) => {
             let topic = ingest_matches.value_of("TOPIC").unwrap();
             let table_location = ingest_matches.value_of("TABLE_LOCATION").unwrap();
+
+            let dlq_table_location = ingest_matches.value_of("DLQ_TABLE_LOCATION");
+
             let kafka_brokers = ingest_matches.value_of("KAFKA_BROKERS").unwrap();
             let consumer_group_id = ingest_matches.value_of("CONSUMER_GROUP").unwrap();
 
@@ -121,6 +126,7 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
             let options = Options::new(
                 topic.to_string(),
                 table_location.to_string(),
+                dlq_table_location.map(|s| s.to_owned()),
                 app_id.to_string(),
                 allowed_latency,
                 max_messages_per_batch,

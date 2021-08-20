@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use deltalake::DeltaDataTypeVersion;
 use dipstick::{Input, InputScope, Prefixed, Statsd, StatsdScope};
 use log::{debug, error, info, warn};
+use parquet::errors::ParquetError;
 use rdkafka::message::{BorrowedMessage, Message};
 use std::convert::TryInto;
 use std::time::Instant;
@@ -74,6 +75,7 @@ pub trait Instrumentation {
     async fn log_assignment_untracked_skipped(&self, m: &BorrowedMessage) {
         info_message("Partition is not tracked. Resetting partition assignment and skipping message. Will process the same message again after consumer seek.", m);
     }
+
     // record batches
 
     async fn log_record_batch_started(&self) {
@@ -114,6 +116,17 @@ pub trait Instrumentation {
         self.record_stat((StatTypes::DeltaWriteCompleted, 1)).await;
         self.record_stat((StatTypes::DeltaWriteDuration, duration))
             .await;
+    }
+
+    async fn log_partial_parquet_write(
+        &self,
+        skipped: usize,
+        parquet_error: Option<&ParquetError>,
+    ) {
+        warn!(
+            "Partial Parquet Write, skipped {}. ParquetError {:?}",
+            skipped, parquet_error
+        );
     }
 
     async fn log_delta_write_failed(&self) {

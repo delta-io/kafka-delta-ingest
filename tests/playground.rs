@@ -78,6 +78,7 @@ impl Playground {
             "schema_update",
             &topic,
             TABLE_PATH,
+            None,
             5,
             MAX_MESSAGES_PER_BATCH,
             20,

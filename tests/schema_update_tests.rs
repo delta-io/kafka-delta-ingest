@@ -36,7 +36,7 @@ async fn schema_update_test() {
     let topic = format!("schema_update_{}", Uuid::new_v4());
     helpers::create_topic(&topic, 1).await;
 
-    let (kdi, token, rt) = helpers::create_kdi("schema_update", &topic, &table, 5, 1, 20);
+    let (kdi, token, rt) = helpers::create_kdi("schema_update", &topic, &table, None, 5, 1, 20);
     let producer = helpers::create_producer();
 
     let msg_v1 = MsgV1 {

@@ -68,6 +68,11 @@ pub async fn send_json(producer: &FutureProducer, topic: &str, json: &Value) {
     let _ = producer.send(record, Timeout::Never).await;
 }
 
+pub async fn send_bytes(producer: &FutureProducer, topic: &str, bytes: &Vec<u8>) {
+    let record: FutureRecord<String, Vec<u8>> = FutureRecord::to(topic).payload(&bytes);
+    let _ = producer.send(record, Timeout::Never).await;
+}
+
 // Example parquet read is taken from https://docs.rs/parquet/4.1.0/parquet/arrow/index.html#example-of-reading-parquet-file-into-arrow-record-batch
 // TODO Research whether it's possible to read parquet data from bytes but not from file
 pub async fn read_files_from_s3(paths: Vec<String>) -> Vec<i32> {
@@ -104,18 +109,48 @@ pub async fn read_files_from_s3(paths: Vec<String>) -> Vec<i32> {
     list
 }
 
+pub fn create_schema_field(name: &str, data_type: &str) -> String {
+    let data_type = if data_type.starts_with("{") {
+        data_type.to_string()
+    } else {
+        format!("\\\"{}\\\"", data_type)
+    };
+
+    format!(
+        r#"{{\"metadata\":{{}}, \"name\":\"{}\",\"nullable\":true,\"type\":{}}}"#,
+        name, data_type
+    )
+}
+
+pub fn create_struct_schema_field(fields: Vec<String>) -> String {
+    format!(
+        r#"{{\"type\":\"struct\",\"fields\":[{}]}}"#,
+        fields.join(",")
+    )
+}
+
+pub fn create_array_schema_field(element_type: String) -> String {
+    let element_type = if element_type.starts_with("{") {
+        element_type.to_string()
+    } else {
+        format!("\"{}\"", element_type)
+    };
+    format!(
+        r#"{{\"type\":\"array\",\"elementType\":{},\"containsNull\":true}}"#,
+        element_type
+    )
+}
+
 pub fn create_metadata_action_json(schema: &HashMap<&str, &str>, partitions: &[&str]) -> String {
     let mut fields = Vec::new();
     for (name, tpe) in schema {
-        fields.push(format!(
-            r#"{{\"metadata\":{{}},\"name\":\"{}\",\"nullable\":true,\"type\":\"{}\"}}"#,
-            name, tpe
-        ));
+        fields.push(create_schema_field(name, tpe));
     }
     let schema = format!(
         r#"{{\"type\":\"struct\",\"fields\":[{}]}}"#,
         fields.join(",")
     );
+
     let partitions = partitions
         .iter()
         .map(|s| format!("\"{}\"", s))
@@ -159,6 +194,7 @@ pub fn create_kdi(
     app_id: &str,
     topic: &str,
     table: &str,
+    dlq_table_location: Option<String>,
     allowed_latency: u64,
     max_messages_per_batch: usize,
     min_bytes_per_file: usize,
@@ -177,6 +213,7 @@ pub fn create_kdi(
     let opts = Options::new(
         topic.to_string(),
         table.to_string(),
+        dlq_table_location,
         app_id.to_string(),
         allowed_latency,
         max_messages_per_batch,
