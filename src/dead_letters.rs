@@ -159,7 +159,13 @@ impl DeadLetterQueue for DeltaSinkDeadLetterQueue {
         let values = values?;
 
         info!("Starting insert_all");
-        self.delta_writer.insert_all(values).await?;
+        let version = self.delta_writer.insert_all(values).await?;
+
+        // TODO: take opt for checkpoint creation
+        if version % 10 == 0 {
+            // TODO: create checkpoint on every 10th version
+        }
+
         info!("Completed insert_all");
 
         Ok(())

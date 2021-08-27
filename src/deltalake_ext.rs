@@ -534,19 +534,17 @@ impl DeltaWriter {
 
     /// Inserts the given values immediately into the delta table.
     // TODO: Re-using existing methods for now, but this method is batch oriented. We may be able to create a more streamlined implementation for batch writes.
-    pub async fn insert_all(&mut self, values: Vec<Value>) -> Result<(), DeltaWriterError> {
+    pub async fn insert_all(
+        &mut self,
+        values: Vec<Value>,
+    ) -> Result<DeltaDataTypeVersion, DeltaWriterError> {
         self.write(values).await?;
         let mut adds = self.write_parquet_files().await?;
         let mut tx = self.table.create_transaction(None);
         tx.add_actions(adds.drain(..).map(Action::add).collect());
         let version = tx.commit(None).await?;
 
-        // TODO: take opt for checkpoint creation
-        if version % 10 == 0 {
-            // TODO: create checkpoint on every 10th version
-        }
-
-        Ok(())
+        Ok(version)
     }
 }
 
