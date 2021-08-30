@@ -60,6 +60,8 @@ async fn test_dlq_partial_parquet_write() {
         date: "2021-01-01".to_string(),
     });
 
+    // 4 good messages
+    // 2 bad messages that fail parquet write
     let batch_to_send: Vec<TestMsg> = good_generator
         .clone()
         .take(2)
@@ -76,6 +78,7 @@ async fn test_dlq_partial_parquet_write() {
     helpers::wait_until_version_created(&dlq_table, 1);
     helpers::wait_until_version_created(&table, 1);
 
+    // 1 message with bad bytes
     let bad_bytes_generator = std::iter::repeat("bad bytes".as_bytes().to_vec());
 
     for m in bad_bytes_generator.clone().take(1) {
@@ -86,6 +89,7 @@ async fn test_dlq_partial_parquet_write() {
 
     helpers::wait_until_version_created(&dlq_table, 2);
 
+    // 6 more good messages just to make sure the stream keep working after hitting some bad
     let good_bytes_generator = good_generator.clone().map(|g| {
         let json = serde_json::to_string(&g).unwrap();
         json.as_bytes().to_vec()
@@ -101,13 +105,15 @@ async fn test_dlq_partial_parquet_write() {
     kdi.await.unwrap();
     rt.shutdown_background();
 
+    // after above sequence - we should have 10 good messages and 3 dead letters - each in their own table
+
     let table_content: Vec<TestMsg> = helpers::read_table_content(&table)
         .await
         .iter()
         .map(|v| serde_json::from_value(v.clone()).unwrap())
         .collect();
 
-    println!("{:#?}", table_content);
+    assert_eq!(table_content.len(), 10);
 
     let dlq_content: Vec<DeadLetter> = helpers::read_table_content(&dlq_table)
         .await
@@ -115,9 +121,31 @@ async fn test_dlq_partial_parquet_write() {
         .map(|v| serde_json::from_value(v.clone()).unwrap())
         .collect();
 
-    println!("{:#?}", dlq_content);
+    assert_eq!(dlq_content.len(), 3);
 
-    todo!()
+    let bad_serde_records: Vec<DeadLetter> = dlq_content
+        .iter()
+        .filter(|d| d.base64_bytes == Some("YmFkIGJ5dGVz".to_string()))
+        .map(|d| d.to_owned())
+        .collect();
+    assert_eq!(bad_serde_records.len(), 1);
+
+    // NOTE: this will break when upstream arrow fix is made for list<struct<...>> (helpful reminder to change test)
+    // See: https://github.com/apache/arrow-rs/pull/704
+    let bad_null_struct_records: Vec<DeadLetter> = dlq_content
+        .iter()
+        .filter(|d| {
+            d.error.is_some()
+                && d.error
+                    .as_ref()
+                    .unwrap()
+                    .as_str()
+                    .starts_with("Inconsistent length of definition and repetition levels")
+        })
+        .map(|d| d.to_owned())
+        .collect();
+
+    assert_eq!(bad_null_struct_records.len(), 2);
 }
 
 fn create_table() -> String {

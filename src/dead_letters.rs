@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use chrono::prelude::*;
 use core::fmt::Debug;
-use log::{debug, error, info, warn};
+use log::{error, info};
 use parquet::errors::ParquetError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -10,11 +10,11 @@ use crate::{deltalake_ext::*, transforms::TransformError};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DeadLetter {
-    base64_bytes: Option<String>,
-    json_string: Option<String>,
-    error: Option<String>,
-    timestamp: String,
-    date: String,
+    pub base64_bytes: Option<String>,
+    pub json_string: Option<String>,
+    pub error: Option<String>,
+    pub timestamp: String,
+    pub date: String,
 }
 
 impl DeadLetter {
@@ -101,14 +101,14 @@ pub async fn dlq_from_opts(
             DeltaSinkDeadLetterQueue::for_table_uri(table_uri.as_str()).await?,
         ))
     } else {
-        Ok(Box::new(NullDeadLetterQueue {}))
+        Ok(Box::new(NoopDeadLetterQueue {}))
     }
 }
 
-pub struct NullDeadLetterQueue {}
+pub struct NoopDeadLetterQueue {}
 
 #[async_trait]
-impl DeadLetterQueue for NullDeadLetterQueue {
+impl DeadLetterQueue for NoopDeadLetterQueue {
     async fn write_dead_letters(
         &mut self,
         _dead_letters: Vec<DeadLetter>,

@@ -336,7 +336,7 @@ impl KafkaJsonToDelta {
         let value: Value = match serde_json::from_slice(message_bytes) {
             Ok(v) => v,
             Err(e) => {
-                error!("Error deserializing message {:?}", e);
+                warn!("Error deserializing message {:?}", e);
                 self.log_message_deserialization_failed(msg).await;
 
                 state
