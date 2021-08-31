@@ -56,6 +56,13 @@ impl DeadLetter {
             _ => unreachable!(),
         }
     }
+
+    pub fn vec_from_failed_parquet_rows(failed: Vec<(Value, ParquetError)>) -> Vec<Self> {
+        failed
+            .iter()
+            .map(|(v, e)| Self::from_failed_parquet_row(v, e.to_owned()))
+            .collect()
+    }
 }
 
 #[derive(thiserror::Error, Debug)]

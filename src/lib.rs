@@ -417,42 +417,25 @@ impl KafkaJsonToDelta {
 
         let record_batch_timer = Instant::now();
 
-        let write_result = state.delta_writer.write(values).await;
-
-        if let Err(write_error) = write_result {
-            match &write_error {
-                DeltaWriterError::AggregatePartialParquetWrite {
-                    skipped_values,
-                    parquet_errors,
-                } => {
-                    let dead_letters = skipped_values
-                        .iter()
-                        .zip(parquet_errors)
-                        .map(|(skipped, error)| {
-                            skipped.iter().map(move |v| {
-                                DeadLetter::from_failed_parquet_row(v, error.to_owned())
-                            })
-                        })
-                        .flatten()
-                        .collect();
-
-                    state.dlq.write_dead_letters(dead_letters).await?;
-
-                    self.log_partial_parquet_write(
-                        skipped_values.iter().map(|v| v.len()).sum(),
-                        parquet_errors.first(),
-                    )
+        match state.delta_writer.write(values).await {
+            Err(DeltaWriterError::PartialParquetWrite {
+                skipped_values,
+                sample_error,
+            }) => {
+                self.log_partial_parquet_write(skipped_values.len(), Some(&sample_error))
                     .await;
-                }
-                _ => {
-                    return Err(KafkaJsonToDeltaError::DeltaWriteFailed {
-                        ending_offsets: serde_json::to_string(&partition_offsets).unwrap(),
-                        partition_counts: serde_json::to_string(&partition_counts).unwrap(),
-                        source: write_error,
-                    });
-                }
+                let dead_letters = DeadLetter::vec_from_failed_parquet_rows(skipped_values);
+                state.dlq.write_dead_letters(dead_letters).await?;
             }
-        }
+            Err(e) => {
+                return Err(KafkaJsonToDeltaError::DeltaWriteFailed {
+                    ending_offsets: serde_json::to_string(&partition_offsets).unwrap(),
+                    partition_counts: serde_json::to_string(&partition_counts).unwrap(),
+                    source: e,
+                });
+            }
+            _ => { /* ok - noop */ }
+        };
 
         self.log_record_batch_completed(
             state.delta_writer.buffered_record_batch_count(),
@@ -553,7 +536,7 @@ impl KafkaJsonToDelta {
             if msg.offset() <= *offset {
                 // If message offset is lower than the one stored in state then we consumed message
                 // after rebalance but before seek.
-                // If message offset is equals to the one stored in state then this is the message
+                // If message offset equals the one stored in state then this is the message
                 // consumed right after seek. It's not safe to seek to the (last_offset+1) because
                 // such offset might not exists yet and offset tracking will be reset by kafka which
                 // might lead to data duplication.
@@ -674,16 +657,16 @@ impl KafkaJsonToDelta {
             state.delta_writer.update_table().await?;
 
             if !self.are_partition_offsets_match(state) {
-                debug!("Transaction attempt failed. Got conflict partition offsets from delta store. Resetting consumer");
+                debug!("Transaction attempt failed. Delta log contains conflicting offsets. Resetting consumer.");
                 self.reset_state_guarded(state).await?;
-                // todo delete parquet file
+                // TODO: delete parquet file
                 return Ok(());
             }
 
             if state.delta_writer.update_schema()? {
-                info!("Transaction attempt failed. Got conflict schema from delta store. Resetting consumer");
+                info!("Transaction attempt failed. Delta log contains conflicting offsets. Resetting consumer.");
                 self.reset_state_guarded(state).await?;
-                // todo delete parquet file
+                // TODO: delete parquet file
                 return Ok(());
             }
 
@@ -770,7 +753,7 @@ impl KafkaJsonToDelta {
                     Some(offset) if *offset == version => (),
                     _ => {
                         info!(
-                            "Conflict offset for partition {}: state={:?}, delta={:?}",
+                            "Conflicting offset for partition {}: state={:?}, delta={:?}",
                             partition, offset, version
                         );
                         result = false;

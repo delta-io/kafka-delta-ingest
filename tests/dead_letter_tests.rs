@@ -23,7 +23,7 @@ struct TestMsg {
 }
 
 #[tokio::test]
-async fn test_dlq_partial_parquet_write() {
+async fn test_dlq() {
     helpers::init_logger();
 
     let table = create_table();
@@ -105,7 +105,8 @@ async fn test_dlq_partial_parquet_write() {
     kdi.await.unwrap();
     rt.shutdown_background();
 
-    // after above sequence - we should have 10 good messages and 3 dead letters - each in their own table
+    // after above sequence - we should have 10 good messages and 3 dead letters
+    // good messages should be in the data table and dead letters should be in the dlq_table
 
     let table_content: Vec<TestMsg> = helpers::read_table_content(&table)
         .await
@@ -140,7 +141,7 @@ async fn test_dlq_partial_parquet_write() {
                     .as_ref()
                     .unwrap()
                     .as_str()
-                    .starts_with("Inconsistent length of definition and repetition levels")
+                    .contains("Inconsistent length of definition and repetition levels")
         })
         .map(|d| d.to_owned())
         .collect();

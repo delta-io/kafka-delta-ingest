@@ -65,16 +65,10 @@ pub enum DeltaWriterError {
     #[error("Record {0} is not a JSON object")]
     InvalidRecord(String),
 
-    #[error("Failed to write some values to parquet. parquet_error: {parquet_error}")]
+    #[error("Failed to write some values to parquet. Sample error: {sample_error}.")]
     PartialParquetWrite {
-        skipped_values: Vec<Value>,
-        parquet_error: ParquetError,
-    },
-
-    #[error("Failed to write some values to parquet.")]
-    AggregatePartialParquetWrite {
-        skipped_values: Vec<Vec<Value>>,
-        parquet_errors: Vec<ParquetError>,
+        skipped_values: Vec<(Value, ParquetError)>,
+        sample_error: ParquetError,
     },
 
     // TODO: derive Debug for Stats in delta-rs
@@ -166,27 +160,33 @@ impl DeltaArrowWriter {
             .await;
 
         if let Err(DeltaWriterError::Parquet { source }) = result {
-            warn!("Failed with parquet error. Attempting quarantine of bad records.");
-
-            let (good, bad) = quarantine_failed_parquet_rows(arrow_schema.clone(), json_buffer)?;
-
-            let record_batch = record_batch_from_json(arrow_schema, good.as_slice())?;
-
-            self.write_record_batch(partition_columns, record_batch)
-                .await?;
-
-            warn!(
-                "Succeeded with partial write by quarantining {} bad records.",
-                bad.len()
-            );
-
-            Err(DeltaWriterError::PartialParquetWrite {
-                skipped_values: bad,
-                parquet_error: source,
-            })
+            self.write_partial(partition_columns, arrow_schema, json_buffer, source)
+                .await
         } else {
             result
         }
+    }
+
+    async fn write_partial(
+        &mut self,
+        partition_columns: &[String],
+        arrow_schema: Arc<ArrowSchema>,
+        json_buffer: Vec<Value>,
+        parquet_error: ParquetError,
+    ) -> Result<(), DeltaWriterError> {
+        warn!("Failed with parquet error. Attempting quarantine of bad records.");
+        let (good, bad) = quarantine_failed_parquet_rows(arrow_schema.clone(), json_buffer)?;
+        let record_batch = record_batch_from_json(arrow_schema, good.as_slice())?;
+        self.write_record_batch(partition_columns, record_batch)
+            .await?;
+        warn!(
+            "Succeeded with partial write by quarantining {} bad records.",
+            bad.len()
+        );
+        Err(DeltaWriterError::PartialParquetWrite {
+            skipped_values: bad,
+            sample_error: parquet_error,
+        })
     }
 
     /// Writes the record batch in-memory and updates internal state accordingly.
@@ -349,7 +349,7 @@ impl DeltaWriter {
 
     /// Writes the given values to internal parquet buffers for each represented partition.
     pub async fn write(&mut self, values: Vec<Value>) -> Result<(), DeltaWriterError> {
-        let mut partial_writes: Vec<(Vec<Value>, ParquetError)> = Vec::new();
+        let mut partial_writes: Vec<(Value, ParquetError)> = Vec::new();
         let arrow_schema = self.arrow_schema();
 
         for (key, values) in self.divide_by_partition_values(values)? {
@@ -379,12 +379,15 @@ impl DeltaWriter {
         }
 
         if !partial_writes.is_empty() {
-            let (skipped_values, parquet_errors) = partial_writes.iter().cloned().unzip();
-
-            return Err(DeltaWriterError::AggregatePartialParquetWrite {
-                skipped_values,
-                parquet_errors,
-            });
+            let sample = partial_writes.first().map(|t| t.to_owned());
+            if let Some((_, e)) = sample {
+                return Err(DeltaWriterError::PartialParquetWrite {
+                    skipped_values: partial_writes,
+                    sample_error: e.to_owned(),
+                });
+            } else {
+                unreachable!()
+            }
         }
 
         Ok(())
@@ -564,11 +567,11 @@ pub fn record_batch_from_json(
 fn quarantine_failed_parquet_rows(
     arrow_schema: Arc<ArrowSchema>,
     values: Vec<Value>,
-) -> Result<(Vec<Value>, Vec<Value>), DeltaWriterError> {
+) -> Result<(Vec<Value>, Vec<(Value, ParquetError)>), DeltaWriterError> {
     warn!("Attempting to quarantine bad records");
 
     let mut good: Vec<Value> = Vec::new();
-    let mut bad: Vec<Value> = Vec::new();
+    let mut bad: Vec<(Value, ParquetError)> = Vec::new();
 
     for value in values {
         let record_batch = match record_batch_from_json(arrow_schema.clone(), &[value.clone()]) {
@@ -581,7 +584,7 @@ fn quarantine_failed_parquet_rows(
 
         match writer.write(&record_batch) {
             Ok(_) => good.push(value),
-            Err(_) => bad.push(value),
+            Err(e) => bad.push((value, e)),
         }
     }
 
@@ -595,15 +598,12 @@ fn quarantine_failed_parquet_rows(
 }
 
 fn collect_partial_write_failure(
-    partial_writes: &mut Vec<(Vec<Value>, ParquetError)>,
+    partial_writes: &mut Vec<(Value, ParquetError)>,
     writer_result: Result<(), DeltaWriterError>,
 ) -> Result<(), DeltaWriterError> {
     match writer_result {
-        Err(DeltaWriterError::PartialParquetWrite {
-            skipped_values,
-            parquet_error,
-        }) => {
-            partial_writes.push((skipped_values, parquet_error));
+        Err(DeltaWriterError::PartialParquetWrite { skipped_values, .. }) => {
+            partial_writes.extend(skipped_values);
             Ok(())
         }
         _ => writer_result,
