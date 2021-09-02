@@ -43,14 +43,11 @@ impl DeadLetter {
     /// `base64_bytes` will always be `None`.
     pub fn from_failed_transform(value: &Value, err: TransformError) -> Self {
         let timestamp = Utc::now();
-        match serde_json::to_string(value) {
-            Ok(s) => Self {
-                base64_bytes: None,
-                json_string: Some(s),
-                error: Some(err.to_string()),
-                timestamp: timestamp.timestamp_nanos() / 1000,
-            },
-            _ => unreachable!(),
+        Self {
+            base64_bytes: None,
+            json_string: Some(value.to_string()),
+            error: Some(err.to_string()),
+            timestamp: timestamp.timestamp_nanos() / 1000,
         }
     }
 
@@ -59,14 +56,11 @@ impl DeadLetter {
     /// `json_string` will contain the stringified JSON that was not writeable to parquet.
     pub fn from_failed_parquet_row(value: &Value, err: ParquetError) -> Self {
         let timestamp = Utc::now();
-        match serde_json::to_string(value) {
-            Ok(s) => Self {
-                base64_bytes: None,
-                json_string: Some(s),
-                error: Some(err.to_string()),
-                timestamp: timestamp.timestamp_nanos() / 1000,
-            },
-            _ => unreachable!(),
+        Self {
+            base64_bytes: None,
+            json_string: Some(value.to_string()),
+            error: Some(err.to_string()),
+            timestamp: timestamp.timestamp_nanos() / 1000,
         }
     }
 

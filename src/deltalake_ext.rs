@@ -604,10 +604,7 @@ fn quarantine_failed_parquet_rows(
     let mut bad: Vec<(Value, ParquetError)> = Vec::new();
 
     for value in values {
-        let record_batch = match record_batch_from_json(arrow_schema.clone(), &[value.clone()]) {
-            Ok(batch) => batch,
-            _ => unreachable!(),
-        };
+        let record_batch = record_batch_from_json(arrow_schema.clone(), &[value.clone()])?;
 
         let cursor = InMemoryWriteableCursor::default();
         let mut writer = ArrowWriter::try_new(cursor.clone(), arrow_schema.clone(), None)?;

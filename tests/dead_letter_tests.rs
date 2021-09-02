@@ -121,42 +121,10 @@ async fn test_dlq() {
 
     assert_eq!(table_content.len(), 10);
 
-    // Since we are using timestamp data type in delta -
-    // the timestamp column of the table is read back as a JSON string and not immediately deserializable into a `DeadLetter` struct.
-    // So we will validate against a serde_json::Value instead.
-    //
-    // let dlq_content: Vec<DeadLetter> = helpers::read_table_content(&dlq_table)
-    //     .await
-    //     .iter()
-    //     .map(|v| serde_json::from_value(v.clone()).unwrap())
-    //     .collect();
-
-    // let bad_serde_records: Vec<DeadLetter> = dlq_content
-    //     .iter()
-    //     .filter(|d| d.base64_bytes == Some("YmFkIGJ5dGVz".to_string()))
-    //     .map(|d| d.to_owned())
-    //     .collect();
-    // assert_eq!(bad_serde_records.len(), 1);
-
-    // // NOTE: this should break when upstream arrow fix is made for list<struct<...>> (helpful reminder to change test)
-    // // See: https://github.com/apache/arrow-rs/pull/704
-    // let bad_null_struct_records: Vec<DeadLetter> = dlq_content
-    //     .iter()
-    //     .filter(|d| {
-    //         d.error.is_some()
-    //             && d.error
-    //                 .as_ref()
-    //                 .unwrap()
-    //                 .as_str()
-    //                 .contains("Inconsistent length of definition and repetition levels")
-    //     })
-    //     .map(|d| d.to_owned())
-    //     .collect();
-
-    // assert_eq!(bad_null_struct_records.len(), 2);
-
     let dlq_content: Vec<Value> = helpers::read_table_content(&dlq_table).await;
     assert_eq!(dlq_content.len(), 3);
+
+    println!("{:#?}", dlq_content);
 
     let bad_serde_records: Vec<Value> = dlq_content
         .iter()
