@@ -124,7 +124,7 @@ async fn test_dlq() {
     let dlq_content: Vec<Value> = helpers::read_table_content(&dlq_table).await;
     assert_eq!(dlq_content.len(), 3);
 
-    println!("{:#?}", dlq_content);
+    println!("Dead letter table content{:#?}", dlq_content);
 
     let bad_serde_records: Vec<Value> = dlq_content
         .iter()

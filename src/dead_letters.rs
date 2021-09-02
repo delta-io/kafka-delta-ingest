@@ -2,7 +2,9 @@ use crate::transforms::Transformer;
 use async_trait::async_trait;
 use chrono::prelude::*;
 use core::fmt::Debug;
+use deltalake::{dynamo_lock_options, s3_storage_options};
 use log::{error, info, warn};
+use maplit::hashmap;
 use parquet::errors::ParquetError;
 use rdkafka::message::BorrowedMessage;
 use serde::{Deserialize, Serialize};
@@ -10,6 +12,11 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::{deltalake_ext::*, transforms::TransformError};
+
+mod env_vars {
+    pub(crate) const DEAD_LETTER_DYNAMO_LOCK_PARTITION_KEY_VALUE: &str =
+        "DEAD_LETTER_DYNAMO_LOCK_PARTITION_KEY_VALUE";
+}
 
 /// Struct that represents a dead letter record.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -191,7 +198,23 @@ impl DeadLetterQueue for LoggingDeadLetterQueue {
 
 /// Implementation of the [DeadLetterQueue] trait that writes dead letters to a delta table.
 /// NOTE: The delta table where dead letters are written must be created beforehand
-/// and be compatible with the [DeadLetter] struct.
+/// and be based on the [DeadLetter] struct.
+/// DeadLetter transforms may be specified to enrich the serialized [DeadLetter] before writing it to the table.
+///
+/// For example, given a delta table schema created from:
+///
+/// ```sql
+/// CREATE TABLE `kafka_delta_ingest`.`dead_letters` (
+///   `base64_bytes` STRING COMMENT 'Base 64 encoded bytes of a message that failed deserialization.',
+///   `json_string` STRING COMMENT 'JSON string captured when either transform or parquet write fails for a message.',
+///   `error` STRING COMMENT 'Error string captured when the dead letter failed.',
+///   `timestamp` TIMESTAMP COMMENT 'Timestamp when the dead letter was created.',
+///   `date` STRING COMMENT '(e.g. 2021-01-01) Date when the dead letter was created.')
+/// USING DELTA
+/// PARTITIONED BY (date)
+/// ```
+///
+/// A dead letter transform with key: `date` and value: `substr(epoch_micros_to_iso8601(timestamp),`0`,`10`)` should be provided to generate the `date` field.
 pub struct DeltaSinkDeadLetterQueue {
     delta_writer: DeltaWriter,
     transformer: Transformer,
@@ -203,11 +226,20 @@ impl DeltaSinkDeadLetterQueue {
         options: DeadLetterQueueOptions,
     ) -> Result<Self, DeadLetterQueueError> {
         match &options.delta_table_uri {
-            Some(table_uri) => Ok(Self {
-                delta_writer: DeltaWriter::for_table_path(table_uri).await?,
+            Some(table_uri) => {
+                Ok(Self {
+                delta_writer: DeltaWriter::for_table_uri_with_storage_options(
+                    table_uri,
+                    hashmap! {
+                        dynamo_lock_options::DYNAMO_LOCK_PARTITION_KEY_VALUE.to_string() => std::env::var(env_vars::DEAD_LETTER_DYNAMO_LOCK_PARTITION_KEY_VALUE)
+                        .unwrap_or("kafka_delta_ingest-dead_letters".to_string()),
+                    },
+                )
+                .await?,
                 transformer: Transformer::from_transforms(&options.dead_letter_transforms)?,
                 write_checkpoints: options.write_checkpoints,
-            }),
+            })
+            }
             _ => Err(DeadLetterQueueError::NoTableUri),
         }
     }
@@ -217,6 +249,7 @@ impl DeltaSinkDeadLetterQueue {
 impl DeadLetterQueue for DeltaSinkDeadLetterQueue {
     /// Writes dead letters to the delta table specified in [DeadLetterQueueOptions].
     /// Transforms specified in [DeadLetterQueueOptions] are applied before write.
+    /// If the `write_checkpoints` options is specified - writes a checkpoint on every version divisible by 10.
     async fn write_dead_letters(
         &mut self,
         dead_letters: Vec<DeadLetter>,

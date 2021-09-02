@@ -459,7 +459,7 @@ impl KafkaJsonToDelta {
         .await?;
 
         let mut state = ProcessingState {
-            delta_writer: DeltaWriter::for_table_path(&self.opts.table_location).await?,
+            delta_writer: DeltaWriter::for_table_uri(&self.opts.table_location).await?,
             dlq,
             value_buffers: ValueBuffers::new(),
             latency_timer: Instant::now(),

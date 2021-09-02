@@ -14,6 +14,8 @@ use deltalake::{
     action::{Action, Add, ColumnCountStat, ColumnValueStat, Stats},
     checkpoints,
     checkpoints::CheckpointError,
+    get_backend_for_uri_with_options,
+    storage::s3::S3StorageOptions,
     writer::time_utils::timestamp_to_delta_stats_string,
     DeltaDataTypeLong, DeltaDataTypeVersion, DeltaTable, DeltaTableError, DeltaTransactionError,
     Schema, StorageBackend, StorageError, UriError,
@@ -285,10 +287,22 @@ impl DeltaArrowWriter {
 }
 
 impl DeltaWriter {
-    /// Initialize the writer from the given table path and delta schema
-    pub async fn for_table_path(table_path: &str) -> Result<DeltaWriter, DeltaWriterError> {
-        let table = deltalake::open_table(table_path).await?;
-        let storage = deltalake::get_backend_for_uri(table_path)?;
+    /// Creates a DeltaWriter to write to the given table URI
+    pub async fn for_table_uri(table_uri: &str) -> Result<DeltaWriter, DeltaWriterError> {
+        Self::for_table_uri_with_storage_options(table_uri, HashMap::new()).await
+    }
+
+    /// Creates a DeltaWriter to write to the given table URI with a storage backend configured through the provided storage options.
+    pub async fn for_table_uri_with_storage_options(
+        table_uri: &str,
+        options: HashMap<String, String>,
+    ) -> Result<DeltaWriter, DeltaWriterError> {
+        let mut table = DeltaTable::new(
+            table_uri,
+            get_backend_for_uri_with_options(table_uri, options.clone())?,
+        )?;
+        table.load().await?;
+        let storage = get_backend_for_uri_with_options(table_uri, options)?;
 
         // Initialize an arrow schema ref from the delta table schema
         let metadata = table.get_metadata()?;
@@ -1097,7 +1111,7 @@ mod tests {
         let table_path = temp_dir.path();
         create_temp_table(table_path);
 
-        let mut writer = DeltaWriter::for_table_path(table_path.to_str().unwrap())
+        let mut writer = DeltaWriter::for_table_uri(table_path.to_str().unwrap())
             .await
             .unwrap();
 

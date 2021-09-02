@@ -38,7 +38,7 @@ async fn test_delta_partitions() {
         vec!["color"],
     );
 
-    let mut delta_writer = DeltaWriter::for_table_path(&table_path).await.unwrap();
+    let mut delta_writer = DeltaWriter::for_table_uri(&table_path).await.unwrap();
 
     let batch1 = vec![
         TestMsg::new(1, "red"),
