@@ -174,6 +174,7 @@ impl TestScope {
             self.topic.clone(),
             self.table.clone(),
             None,
+            HashMap::new(),
             TEST_APP_ID.to_string(),
             allowed_latency,
             max_messages_per_batch,

@@ -1,4 +1,4 @@
-use chrono::prelude::*;
+use chrono::{prelude::*, Duration};
 use jmespatch::{
     functions::{ArgumentType, CustomFunction, Signature},
     Context, ErrorReason, Expression, JmespathError, Rcvar, Runtime, RuntimeError, Variable,
@@ -77,6 +77,10 @@ lazy_static! {
         runtime.register_function(
             "epoch_seconds_to_iso8601",
             Box::new(create_epoch_seconds_to_iso8601_fn()),
+        );
+        runtime.register_function(
+            "epoch_micros_to_iso8601",
+            Box::new(create_epoch_micros_to_iso8601_fn()),
         );
         runtime
     };
@@ -181,6 +185,14 @@ fn create_epoch_seconds_to_iso8601_fn() -> CustomFunction {
     )
 }
 
+// TODO: Consolidate these custom function factories
+fn create_epoch_micros_to_iso8601_fn() -> CustomFunction {
+    CustomFunction::new(
+        Signature::new(vec![ArgumentType::Number], None),
+        Box::new(jmespath_epoch_micros_to_iso8601),
+    )
+}
+
 fn substr(args: &[Rcvar], context: &mut Context) -> Result<Rcvar, JmespathError> {
     let s = args[0].as_string().ok_or_else(|| {
         InvalidTypeError::new(context, "string", args[0].get_type().to_string(), 0)
@@ -202,38 +214,67 @@ fn substr(args: &[Rcvar], context: &mut Context) -> Result<Rcvar, JmespathError>
     Ok(Arc::new(var))
 }
 
-fn epoch_seconds_to_iso8601(seconds: i64) -> Result<String, EpochToIso8601Error> {
-    let utc = match Utc.timestamp_opt(seconds, 0) {
-        chrono::offset::LocalResult::Single(dt) => dt,
-        _ => {
-            return Err(EpochToIso8601Error { value: seconds });
-        }
+// fn epoch_seconds_to_iso8601(seconds: i64) -> Result<String, EpochToIso8601Error> {
+//     let utc = match Utc.timestamp_opt(seconds, 0) {
+//         chrono::offset::LocalResult::Single(dt) => dt,
+//         _ => {
+//             return Err(EpochToIso8601Error { value: seconds });
+//         }
+//     };
+//     Ok(format!("{:?}", utc))
+// }
+
+enum EpochUnit {
+    Seconds(i64),
+    Microseconds(i64),
+}
+
+fn iso8601_from_epoch(epoch_unit: EpochUnit) -> String {
+    let dt = match epoch_unit {
+        EpochUnit::Seconds(s) => Utc.timestamp_nanos(s * 1000_000_000),
+        EpochUnit::Microseconds(u) => Utc.timestamp_nanos(u * 1000),
     };
-    Ok(format!("{:?}", utc))
+
+    format!("{:?}", dt)
 }
 
 fn jmespath_epoch_seconds_to_iso8601(
     args: &[Rcvar],
     context: &mut Context,
 ) -> Result<Rcvar, JmespathError> {
-    let seconds = args[0].as_number().ok_or_else(|| {
-        InvalidTypeError::new(context, "number", args[0].get_type().to_string(), 0)
-    })?;
+    let seconds = i64_from_args(args, context, 0)?;
+    let value = serde_json::Value::String(iso8601_from_epoch(EpochUnit::Seconds(seconds)));
+    let variable = Variable::try_from(value)?;
+    Ok(Arc::new(variable))
+}
 
-    let seconds = seconds as i64;
-    let n = epoch_seconds_to_iso8601(seconds).map_err(|err| {
-        JmespathError::new(
-            context.expression,
-            context.offset,
-            ErrorReason::Parse(err.to_string()),
+fn jmespath_epoch_micros_to_iso8601(
+    args: &[Rcvar],
+    context: &mut Context,
+) -> Result<Rcvar, JmespathError> {
+    let micros = i64_from_args(args, context, 0)?;
+    let value = serde_json::Value::String(iso8601_from_epoch(EpochUnit::Microseconds(micros)));
+    let variable = Variable::try_from(value)?;
+    Ok(Arc::new(variable))
+}
+
+fn i64_from_args(
+    args: &[Rcvar],
+    context: &mut Context,
+    position: usize,
+) -> Result<i64, JmespathError> {
+    let n = args[0].as_number().ok_or_else(|| {
+        InvalidTypeError::new(
+            context,
+            "number",
+            args[position].get_type().to_string(),
+            position,
         )
     })?;
 
-    let val = serde_json::Value::String(n);
+    let n = n as i64;
 
-    let var = Variable::try_from(val)?;
-
-    Ok(Arc::new(var))
+    Ok(n)
 }
 
 pub enum KafkaMetaProperty {
@@ -314,7 +355,11 @@ impl Transformer {
         Ok(Self { transforms })
     }
 
-    pub fn transform<M>(&self, value: &mut Value, kafka_message: &M) -> Result<(), TransformError>
+    pub fn transform<M>(
+        &self,
+        value: &mut Value,
+        kafka_message: Option<&M>,
+    ) -> Result<(), TransformError>
     where
         M: Message,
     {
@@ -323,40 +368,47 @@ impl Transformer {
         match value.as_object_mut() {
             Some(map) => {
                 for (value_path, message_transform) in self.transforms.iter() {
-                    let property_value = match message_transform {
+                    match message_transform {
                         MessageTransform::ExpressionTransform(expression) => {
                             let variable = expression.search(&data)?;
-                            serde_json::to_value(variable)?
+                            let v = serde_json::to_value(variable)?;
+                            set_value(map, value_path, 0, v);
                         }
                         MessageTransform::KafkaMetaTransform(meta_property) => {
-                            match meta_property {
-                                KafkaMetaProperty::Partition => {
-                                    serde_json::to_value(kafka_message.partition())?
-                                }
-                                KafkaMetaProperty::Offset => {
-                                    serde_json::to_value(kafka_message.offset())?
-                                }
-                                KafkaMetaProperty::Topic => {
-                                    serde_json::to_value(kafka_message.topic())?
-                                }
-                                KafkaMetaProperty::Timestamp => {
-                                    timestamp_value_from_kafka(kafka_message.timestamp())?
-                                }
-                                // For enum int value definitions, see:
-                                // https://github.com/apache/kafka/blob/fd36e5a8b657b0858dbfef4ae9706bf714db4ca7/clients/src/main/java/org/apache/kafka/common/record/TimestampType.java#L24-L46
-                                KafkaMetaProperty::TimestampType => match kafka_message.timestamp()
-                                {
-                                    rdkafka::Timestamp::NotAvailable => serde_json::to_value(-1)?,
-                                    rdkafka::Timestamp::CreateTime(_) => serde_json::to_value(0)?,
-                                    rdkafka::Timestamp::LogAppendTime(_) => {
-                                        serde_json::to_value(1)?
+                            if let Some(kafka_message) = kafka_message {
+                                let v = match meta_property {
+                                    KafkaMetaProperty::Partition => {
+                                        serde_json::to_value(kafka_message.partition())?
                                     }
-                                },
+                                    KafkaMetaProperty::Offset => {
+                                        serde_json::to_value(kafka_message.offset())?
+                                    }
+                                    KafkaMetaProperty::Topic => {
+                                        serde_json::to_value(kafka_message.topic())?
+                                    }
+                                    KafkaMetaProperty::Timestamp => {
+                                        timestamp_value_from_kafka(kafka_message.timestamp())?
+                                    }
+                                    // For enum int value definitions, see:
+                                    // https://github.com/apache/kafka/blob/fd36e5a8b657b0858dbfef4ae9706bf714db4ca7/clients/src/main/java/org/apache/kafka/common/record/TimestampType.java#L24-L46
+                                    KafkaMetaProperty::TimestampType => {
+                                        match kafka_message.timestamp() {
+                                            rdkafka::Timestamp::NotAvailable => {
+                                                serde_json::to_value(-1)?
+                                            }
+                                            rdkafka::Timestamp::CreateTime(_) => {
+                                                serde_json::to_value(0)?
+                                            }
+                                            rdkafka::Timestamp::LogAppendTime(_) => {
+                                                serde_json::to_value(1)?
+                                            }
+                                        }
+                                    }
+                                };
+                                set_value(map, value_path, 0, v);
                             }
                         }
-                    };
-
-                    set_value(map, value_path, 0, property_value);
+                    }
                 }
                 Ok(())
             }
@@ -485,7 +537,7 @@ mod tests {
         let transformer = Transformer::from_transforms(&transforms).unwrap();
 
         let _ = transformer
-            .transform(&mut test_value, &test_message)
+            .transform(&mut test_value, Some(&test_message))
             .unwrap();
 
         let name = test_value.get("name").unwrap().as_str().unwrap();
@@ -498,15 +550,23 @@ mod tests {
     }
 
     #[test]
-    fn epoch_seconds_to_iso8601_test() {
+    fn test_iso8601_from_epoch_seconds_test() {
         let expected_iso = "2021-07-20T23:18:18Z";
-        let dt = epoch_seconds_to_iso8601(1626823098).unwrap();
+        let dt = iso8601_from_epoch(EpochUnit::Seconds(1626823098));
 
         assert_eq!(expected_iso, dt);
     }
 
     #[test]
-    fn transforms_with_epoch_seconds_to_iso8601() {
+    fn test_iso8601_from_epoch_micros_test() {
+        let expected_iso = "2021-07-20T23:18:18Z";
+        let dt = iso8601_from_epoch(EpochUnit::Microseconds(1626823098000000));
+
+        assert_eq!(expected_iso, dt);
+    }
+
+    #[test]
+    fn test_transforms_with_epoch_seconds_to_iso8601() {
         let expected_iso = "2021-07-20T23:18:18Z";
 
         let mut test_value = json!({
@@ -548,7 +608,7 @@ mod tests {
         let transformer = Transformer::from_transforms(&transforms).unwrap();
 
         let _ = transformer
-            .transform(&mut test_value, &test_message)
+            .transform(&mut test_value, Some(&test_message))
             .unwrap();
 
         let name = test_value.get("name").unwrap().as_str().unwrap();
@@ -581,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn transforms_with_kafka_meta() {
+    fn test_transforms_with_kafka_meta() {
         let mut test_value = json!({
             "name": "A",
             "modified": "2021-03-16T14:38:58Z",
@@ -617,7 +677,7 @@ mod tests {
         let transformer = Transformer::from_transforms(&&transforms).unwrap();
 
         let _ = transformer
-            .transform(&mut test_value, &test_message)
+            .transform(&mut test_value, Some(&test_message))
             .unwrap();
 
         let name = test_value.get("name").unwrap().as_str().unwrap();

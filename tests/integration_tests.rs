@@ -84,6 +84,7 @@ async fn e2e_smoke_test() {
         topic.to_string(),
         TEST_DELTA_TABLE_LOCATION.to_string(),
         None,
+        HashMap::new(),
         TEST_APP_ID.to_string(),
         allowed_latency,
         max_messages_per_batch,

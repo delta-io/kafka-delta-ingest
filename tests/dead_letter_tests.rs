@@ -32,7 +32,6 @@ async fn test_dlq() {
 
     let allowed_latency = 5;
     let max_messages_per_batch = 6;
-    // let max_messages_per_batch = 6;
     let min_bytes_per_file = 20;
 
     let (kdi, token, rt) = helpers::create_kdi(
@@ -40,6 +39,9 @@ async fn test_dlq() {
         &data_topic,
         &table,
         Some(dlq_table.clone()),
+        hashmap! {
+            "date".to_string() => "substr(epoch_micros_to_iso8601(timestamp),`0`,`10`)".to_string(),
+        },
         allowed_latency,
         max_messages_per_batch,
         min_bytes_per_file,
@@ -131,7 +133,7 @@ async fn test_dlq() {
         .collect();
     assert_eq!(bad_serde_records.len(), 1);
 
-    // NOTE: this will break when upstream arrow fix is made for list<struct<...>> (helpful reminder to change test)
+    // NOTE: this should break when upstream arrow fix is made for list<struct<...>> (helpful reminder to change test)
     // See: https://github.com/apache/arrow-rs/pull/704
     let bad_null_struct_records: Vec<DeadLetter> = dlq_content
         .iter()
@@ -177,7 +179,7 @@ async fn create_dlq_table() -> String {
             "base64_bytes" => "string",
             "json_string" => "string",
             "error" => "string",
-            "timestamp" => "string",
+            "timestamp" => "timestamp",
             "date" => "string",
         },
         vec!["date"],

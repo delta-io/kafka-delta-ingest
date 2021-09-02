@@ -67,6 +67,8 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
 * kafka.timestamp
 "#)
 
+            (@arg DLQ_TRANSFORM: --dlq_transform +multiple_occurrences + multiple_values +takes_value validator(parse_transform) "Transforms to apply before writing dead letters to delta")
+
             (@arg STATSD_ENDPOINT: -s --statsd_endpoint +takes_value
              "The statsd endpoint to send statistics to.")
 
@@ -116,6 +118,15 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
                 .map(|t| parse_transform(t).unwrap())
                 .collect();
 
+            let dlq_transforms: Vec<&str> = ingest_matches
+                .values_of("DLQ_TRANSFORM")
+                .map(Values::collect)
+                .unwrap_or_else(|| vec![]);
+            let dlq_transforms: HashMap<String, String> = dlq_transforms
+                .iter()
+                .map(|t| parse_transform(t).unwrap())
+                .collect();
+
             let stats_endpoint = ingest_matches
                 .value_of("STATSD_ENDPOINT")
                 .unwrap_or("localhost:8125");
@@ -127,6 +138,7 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
                 topic.to_string(),
                 table_location.to_string(),
                 dlq_table_location.map(|s| s.to_owned()),
+                dlq_transforms,
                 app_id.to_string(),
                 allowed_latency,
                 max_messages_per_batch,

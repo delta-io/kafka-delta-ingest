@@ -1,10 +1,13 @@
+use crate::transforms::Transformer;
 use async_trait::async_trait;
 use chrono::prelude::*;
 use core::fmt::Debug;
 use log::{error, info, warn};
 use parquet::errors::ParquetError;
+use rdkafka::message::BorrowedMessage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 
 use crate::{deltalake_ext::*, transforms::TransformError};
 
@@ -18,11 +21,9 @@ pub struct DeadLetter {
     /// Error string that correlates with the failure.
     /// The error type will vary depending on the context.
     pub error: Option<String>,
-    /// RFC-3339 timestamp when the dead letter was created.
-    pub timestamp: String,
-    /// Date the dead letter was created.
-    /// Useful for the [DeltaSinkDeadLetterQueue] to provide a partition column.
-    pub date: String,
+    /// Timestamp microseconds representing when the dead letter was created.
+    /// Microseconds are used for compatability with the deltalake `timestamp` type.
+    pub timestamp: i64,
 }
 
 impl DeadLetter {
@@ -34,8 +35,7 @@ impl DeadLetter {
             base64_bytes: Some(base64::encode(bytes)),
             json_string: None,
             error: Some(err.to_string()),
-            timestamp: timestamp.to_rfc3339(),
-            date: timestamp.date().to_string(),
+            timestamp: timestamp.timestamp_nanos() / 1000,
         }
     }
 
@@ -48,8 +48,7 @@ impl DeadLetter {
                 base64_bytes: None,
                 json_string: Some(s),
                 error: Some(err.to_string()),
-                timestamp: timestamp.to_rfc3339(),
-                date: timestamp.date().to_string(),
+                timestamp: timestamp.timestamp_nanos() / 1000,
             },
             _ => unreachable!(),
         }
@@ -65,8 +64,7 @@ impl DeadLetter {
                 base64_bytes: None,
                 json_string: Some(s),
                 error: Some(err.to_string()),
-                timestamp: timestamp.to_rfc3339(),
-                date: timestamp.date().to_string(),
+                timestamp: timestamp.timestamp_nanos() / 1000,
             },
             _ => unreachable!(),
         }
@@ -99,12 +97,27 @@ pub enum DeadLetterQueueError {
         #[from]
         source: DeltaWriterError,
     },
+
+    /// Error returned by the internal dead letter transformer.
+    #[error("TransformError: {source}")]
+    Transform {
+        #[from]
+        source: TransformError,
+    },
+
+    /// Error returned when the DeltaSinkDeadLetterQueue is used but no table uri is specified.
+    #[error("No table_uri for DeltaSinkDeadLetterQueue")]
+    NoTableUri,
 }
 
 /// Options that should be passed to `dlq_from_opts` to create the desired [DeadLetterQueue] instance.
 pub struct DeadLetterQueueOptions {
     /// Table URI of the delta table to write dead letters to. Implies usage of the DeltaSinkDeadLetterQueue.
     pub delta_table_uri: Option<String>,
+    /// A list of transforms to apply to dead letters before writing to delta.
+    pub dead_letter_transforms: HashMap<String, String>,
+    /// Whether to write checkpoints on every 10th version of the dead letter table.
+    pub write_checkpoints: bool,
 }
 
 /// Trait that defines a dead letter queue interface.
@@ -138,9 +151,9 @@ pub trait DeadLetterQueue: Send + Sync {
 pub async fn dlq_from_opts(
     options: DeadLetterQueueOptions,
 ) -> Result<Box<dyn DeadLetterQueue>, DeadLetterQueueError> {
-    if let Some(table_uri) = options.delta_table_uri {
+    if options.delta_table_uri.is_some() {
         Ok(Box::new(
-            DeltaSinkDeadLetterQueue::for_table_uri(table_uri.as_str()).await?,
+            DeltaSinkDeadLetterQueue::from_options(options).await?,
         ))
     } else {
         Ok(Box::new(NoopDeadLetterQueue {}))
@@ -187,35 +200,52 @@ impl DeadLetterQueue for LoggingDeadLetterQueue {
 /// and be compatible with the [DeadLetter] struct.
 pub struct DeltaSinkDeadLetterQueue {
     delta_writer: DeltaWriter,
+    transformer: Transformer,
+    write_checkpoints: bool,
 }
 
 impl DeltaSinkDeadLetterQueue {
-    /// Creates a [DeltaSinkDeadLetterQueue] that writes to the given `table_uri`.
-    pub async fn for_table_uri(table_uri: &str) -> Result<Self, DeadLetterQueueError> {
-        Ok(Self {
-            delta_writer: DeltaWriter::for_table_path(table_uri).await?,
-        })
+    pub async fn from_options(
+        options: DeadLetterQueueOptions,
+    ) -> Result<Self, DeadLetterQueueError> {
+        match &options.delta_table_uri {
+            Some(table_uri) => Ok(Self {
+                delta_writer: DeltaWriter::for_table_path(table_uri).await?,
+                transformer: Transformer::from_transforms(&options.dead_letter_transforms)?,
+                write_checkpoints: options.write_checkpoints,
+            }),
+            _ => Err(DeadLetterQueueError::NoTableUri),
+        }
     }
 }
 
 #[async_trait]
 impl DeadLetterQueue for DeltaSinkDeadLetterQueue {
+    /// Writes dead letters to the delta table specified in [DeadLetterQueueOptions].
+    /// Transforms specified in [DeadLetterQueueOptions] are applied before write.
     async fn write_dead_letters(
         &mut self,
         dead_letters: Vec<DeadLetter>,
     ) -> Result<(), DeadLetterQueueError> {
         let values: Result<Vec<Value>, _> = dead_letters
             .iter()
-            .map(|dl| serde_json::to_value(dl))
+            .map(|dl| {
+                serde_json::to_value(dl)
+                    .map_err(|e| DeadLetterQueueError::SerdeJson { source: e })
+                    .and_then(|mut v| {
+                        self.transformer
+                            .transform(&mut v, None as Option<&BorrowedMessage>)?;
+                        Ok(v)
+                    })
+            })
             .collect();
         let values = values?;
 
         info!("Starting insert_all");
         let version = self.delta_writer.insert_all(values).await?;
 
-        // TODO: take opt for checkpoint creation
-        if version % 10 == 0 {
-            // TODO: create checkpoint on every 10th version
+        if self.write_checkpoints {
+            self.delta_writer.try_create_checkpoint(version).await?;
         }
 
         info!("Completed insert_all");

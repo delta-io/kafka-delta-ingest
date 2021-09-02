@@ -12,6 +12,8 @@ use arrow::{
 };
 use deltalake::{
     action::{Action, Add, ColumnCountStat, ColumnValueStat, Stats},
+    checkpoints,
+    checkpoints::CheckpointError,
     writer::time_utils::timestamp_to_delta_stats_string,
     DeltaDataTypeLong, DeltaDataTypeVersion, DeltaTable, DeltaTableError, DeltaTransactionError,
     Schema, StorageBackend, StorageError, UriError,
@@ -115,6 +117,12 @@ pub enum DeltaWriterError {
     DeltaTransactionError {
         #[from]
         source: DeltaTransactionError,
+    },
+
+    #[error("CheckpointErrorError error: {source}")]
+    CheckpointErrorError {
+        #[from]
+        source: CheckpointError,
     },
 }
 
@@ -548,6 +556,28 @@ impl DeltaWriter {
         let version = tx.commit(None).await?;
 
         Ok(version)
+    }
+
+    /// Create a checkpoint if the given version is a 10th commit.
+    pub async fn try_create_checkpoint(
+        &mut self,
+        version: DeltaDataTypeVersion,
+    ) -> Result<(), DeltaWriterError> {
+        if version % 10 == 0 {
+            // if there's new version right after current commit, then we need to reset
+            // the table right back to version to create the checkpoint
+            let version_updated = self.table.version != version;
+            if version_updated {
+                self.table.load_version(version).await?;
+            }
+
+            checkpoints::create_checkpoint_from_table(&self.table).await?;
+
+            if version_updated {
+                self.table.update_incremental().await?;
+            }
+        }
+        Ok(())
     }
 }
 

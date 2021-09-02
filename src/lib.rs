@@ -7,7 +7,7 @@ extern crate strum_macros;
 #[cfg(test)]
 extern crate serde_json;
 
-use deltalake::{action, DeltaDataTypeVersion, DeltaTableError, DeltaTransactionError};
+use deltalake::{action, DeltaTableError, DeltaTransactionError};
 use futures::stream::StreamExt;
 use log::{debug, error, info, warn};
 use rdkafka::{
@@ -37,8 +37,6 @@ use crate::{
     transforms::*,
 };
 use deltalake::action::{Action, Add};
-use deltalake::checkpoints;
-use deltalake::checkpoints::CheckpointError;
 
 type DataTypePartition = i32;
 type DataTypeOffset = i64;
@@ -75,12 +73,6 @@ pub enum KafkaJsonToDeltaError {
     DeadLetterQueueError {
         #[from]
         source: DeadLetterQueueError,
-    },
-
-    #[error("CheckpointErrorError error: {source}")]
-    CheckpointErrorError {
-        #[from]
-        source: CheckpointError,
     },
 
     #[error("TransformError: {source}")]
@@ -157,6 +149,8 @@ pub struct Options {
     pub table_location: String,
     /// An optional dead letter table to write messages that fail deserialization, transformation or schema validation
     pub dlq_table_location: Option<String>,
+    /// Transforms to apply to dead letters when writing to a delta table.
+    pub dlq_transforms: HashMap<String, String>,
     /// Unique per topic per environment. Must be the same for all processes that are part of a single job.
     pub app_id: String,
     /// Max desired latency from when a message is received to when it is written and
@@ -177,6 +171,7 @@ impl Options {
         topic: String,
         table_location: String,
         dlq_table_location: Option<String>,
+        dlq_transforms: HashMap<String, String>,
         app_id: String,
         allowed_latency: u64,
         max_messages_per_batch: usize,
@@ -187,6 +182,7 @@ impl Options {
             topic,
             table_location,
             dlq_table_location,
+            dlq_transforms,
             app_id,
             allowed_latency,
             max_messages_per_batch,
@@ -358,7 +354,7 @@ impl KafkaJsonToDelta {
         value: &mut Value,
         msg: &BorrowedMessage<'_>,
     ) -> Result<(), ProcessingError> {
-        match self.transformer.transform(value, msg) {
+        match self.transformer.transform(value, Some(msg)) {
             Err(e) => {
                 self.log_message_transform_failed(msg).await;
                 state
@@ -457,6 +453,8 @@ impl KafkaJsonToDelta {
     ) -> Result<(), KafkaJsonToDeltaError> {
         let dlq = dead_letters::dlq_from_opts(DeadLetterQueueOptions {
             delta_table_uri: self.opts.dlq_table_location.clone(),
+            dead_letter_transforms: self.opts.dlq_transforms.clone(),
+            write_checkpoints: self.opts.write_checkpoints,
         })
         .await?;
 
@@ -686,7 +684,7 @@ impl KafkaJsonToDelta {
                     }
 
                     if self.opts.write_checkpoints {
-                        self.try_create_checkpoint(state, version).await?;
+                        state.delta_writer.try_create_checkpoint(version).await?;
                     }
 
                     self.log_delta_write_completed(version, &delta_write_timer)
@@ -714,29 +712,6 @@ impl KafkaJsonToDelta {
                 },
             }
         }
-    }
-
-    async fn try_create_checkpoint(
-        &self,
-        state: &mut ProcessingState,
-        version: DeltaDataTypeVersion,
-    ) -> Result<(), KafkaJsonToDeltaError> {
-        // Make delta-rs to leverage of existing table and backend instances
-        if version % 10 == 0 {
-            // if there's new version right after current commit, then we need to reset
-            // the table right back to version to create the checkpoint
-            let version_updated = state.delta_writer.table.version != version;
-            if version_updated {
-                state.delta_writer.table.load_version(version).await?;
-            }
-
-            checkpoints::create_checkpoint_from_table(&state.delta_writer.table).await?;
-
-            if version_updated {
-                state.delta_writer.table.update_incremental().await?;
-            }
-        }
-        Ok(())
     }
 
     /// Checks whether partition offsets from last writes matches the ones from delta log
