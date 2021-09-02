@@ -1,4 +1,4 @@
-use chrono::{prelude::*, Duration};
+use chrono::prelude::*;
 use jmespatch::{
     functions::{ArgumentType, CustomFunction, Signature},
     Context, ErrorReason, Expression, JmespathError, Rcvar, Runtime, RuntimeError, Variable,
