@@ -15,7 +15,6 @@ use deltalake::{
     checkpoints,
     checkpoints::CheckpointError,
     get_backend_for_uri_with_options,
-    storage::s3::S3StorageOptions,
     writer::time_utils::timestamp_to_delta_stats_string,
     DeltaDataTypeLong, DeltaDataTypeVersion, DeltaTable, DeltaTableError, DeltaTransactionError,
     Schema, StorageBackend, StorageError, UriError,

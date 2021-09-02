@@ -2,7 +2,7 @@ use crate::transforms::Transformer;
 use async_trait::async_trait;
 use chrono::prelude::*;
 use core::fmt::Debug;
-use deltalake::{dynamo_lock_options, s3_storage_options};
+use deltalake::dynamo_lock_options;
 use log::{error, info, warn};
 use maplit::hashmap;
 use parquet::errors::ParquetError;
