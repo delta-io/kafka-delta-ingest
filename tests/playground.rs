@@ -2,6 +2,7 @@ use log::info;
 use rdkafka::producer::FutureProducer;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 #[macro_use]
@@ -78,6 +79,8 @@ impl Playground {
             "schema_update",
             &topic,
             TABLE_PATH,
+            None,
+            HashMap::new(),
             5,
             MAX_MESSAGES_PER_BATCH,
             20,

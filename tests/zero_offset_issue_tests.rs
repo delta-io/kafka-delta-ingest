@@ -1,5 +1,6 @@
 use deltalake::DeltaTable;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 use uuid::Uuid;
 
@@ -29,7 +30,8 @@ async fn zero_offset_issue() {
 
     helpers::create_topic(&topic, 1).await;
 
-    let (kdi, token, rt) = helpers::create_kdi("zero_offset", &topic, table, 5, 1, 20);
+    let (kdi, token, rt) =
+        helpers::create_kdi("zero_offset", &topic, table, None, HashMap::new(), 5, 1, 20);
 
     {
         // check that there's only 1 record in table

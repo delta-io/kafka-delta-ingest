@@ -373,7 +373,7 @@ dependencies = [
 [[package]]
 name = "deltalake"
 version = "0.4.1"
-source = "git+https://github.com/delta-io/delta-rs.git?branch=writer-map-support#3c9608d7aa803c7b437968e1537d82080d6cba2c"
+source = "git+https://github.com/delta-io/delta-rs.git?branch=writer-map-support#8b53c67cb1c264a716b841540dbbaf23709b2d60"
 dependencies = [
  "anyhow",
  "arrow",
@@ -885,6 +885,7 @@ dependencies = [
  "anyhow",
  "arrow",
  "async-trait",
+ "base64",
  "chrono",
  "clap 3.0.0-beta.4",
  "deltalake",
