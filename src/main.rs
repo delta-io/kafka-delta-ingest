@@ -67,7 +67,7 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
 * kafka.timestamp
 "#)
 
-            (@arg DLQ_TRANSFORM: --dlq_transform +multiple_occurrences + multiple_values +takes_value validator(parse_transform) "Transforms to apply before writing dead letters to delta")
+            (@arg DLQ_TRANSFORM: --dlq_transform +multiple_occurrences +multiple_values +takes_value validator(parse_transform) "Transforms to apply before writing dead letters to delta")
 
             (@arg STATSD_ENDPOINT: -s --statsd_endpoint +takes_value
              "The statsd endpoint to send statistics to.")

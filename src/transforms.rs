@@ -214,16 +214,6 @@ fn substr(args: &[Rcvar], context: &mut Context) -> Result<Rcvar, JmespathError>
     Ok(Arc::new(var))
 }
 
-// fn epoch_seconds_to_iso8601(seconds: i64) -> Result<String, EpochToIso8601Error> {
-//     let utc = match Utc.timestamp_opt(seconds, 0) {
-//         chrono::offset::LocalResult::Single(dt) => dt,
-//         _ => {
-//             return Err(EpochToIso8601Error { value: seconds });
-//         }
-//     };
-//     Ok(format!("{:?}", utc))
-// }
-
 enum EpochUnit {
     Seconds(i64),
     Microseconds(i64),

@@ -1,4 +1,3 @@
-use kafka_delta_ingest::dead_letters::DeadLetter;
 use log::info;
 use serde::{Deserialize, Serialize};
 use serde_json;
@@ -62,6 +61,9 @@ async fn test_dlq() {
         a_list_of_structs: None,
         date: "2021-01-01".to_string(),
     });
+
+    let expected_date = chrono::Utc::now();
+    let expected_date = format!("{}", expected_date.format("%Y-%m-%d"));
 
     // 4 good messages
     // 2 bad messages that fail parquet write
@@ -154,10 +156,35 @@ async fn test_dlq() {
     // assert_eq!(bad_null_struct_records.len(), 2);
 
     let dlq_content: Vec<Value> = helpers::read_table_content(&dlq_table).await;
-
     assert_eq!(dlq_content.len(), 3);
 
-    println!("{:#?}", dlq_content);
+    let bad_serde_records: Vec<Value> = dlq_content
+        .iter()
+        .filter(|v| {
+            v.get("base64_bytes")
+                .map(|v| v.as_str() == Some("YmFkIGJ5dGVz"))
+                .unwrap_or(false)
+        })
+        .map(|v| v.to_owned())
+        .collect();
+    assert_eq!(bad_serde_records.len(), 1);
+
+    let bad_null_struct_records: Vec<Value> = dlq_content
+        .iter()
+        .filter(|v| {
+            v.get("error")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .contains("Inconsistent length of definition and repetition levels")
+        })
+        .map(|v| v.to_owned())
+        .collect();
+    assert_eq!(bad_null_struct_records.len(), 2);
+
+    assert!(dlq_content
+        .iter()
+        .all(|v| v.get("date").unwrap().as_str() == Some(expected_date.as_str())));
 }
 
 fn create_table() -> String {
