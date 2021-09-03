@@ -1,3 +1,6 @@
+#![deny(warnings)]
+// #![deny(missing_docs)]
+
 #[macro_use]
 extern crate lazy_static;
 
@@ -239,7 +242,7 @@ impl KafkaJsonToDelta {
         }
 
         kafka_client_config
-            .set("bootstrap.servers", kafka_brokers.clone())
+            .set("bootstrap.servers", kafka_brokers)
             .set("group.id", consumer_group_id)
             .set("enable.auto.commit", "false");
 
@@ -250,7 +253,7 @@ impl KafkaJsonToDelta {
             }
         }
 
-        let partition_assignment = Arc::new(Mutex::new(PartitionAssignment::new()));
+        let partition_assignment = Arc::new(Mutex::new(PartitionAssignment::default()));
         let consumer_context = Context::new(partition_assignment.clone());
         let transformer = Transformer::from_transforms(&transforms)?;
 
@@ -461,7 +464,7 @@ impl KafkaJsonToDelta {
         let mut state = ProcessingState {
             delta_writer: DeltaWriter::for_table_uri(&self.opts.table_location).await?,
             dlq,
-            value_buffers: ValueBuffers::new(),
+            value_buffers: ValueBuffers::default(),
             latency_timer: Instant::now(),
             delta_partition_offsets: HashMap::new(),
         };
@@ -759,7 +762,7 @@ impl KafkaJsonToDelta {
 
         // assuming that partition_assignment has correct partitions as keys
         let partitions: Vec<DataTypePartition> =
-            partition_assignment.assignment.keys().map(|p| *p).collect();
+            partition_assignment.assignment.keys().copied().collect();
 
         info!("Resetting state with partitions: {:?}", &partitions);
 
@@ -800,25 +803,31 @@ pub struct ValueBuffers {
     len: usize,
 }
 
-impl ValueBuffers {
-    pub fn new() -> Self {
+impl Default for ValueBuffers {
+    fn default() -> Self {
         Self {
             buffers: HashMap::new(),
             len: 0,
         }
     }
+}
 
+impl ValueBuffers {
     pub fn add(&mut self, partition: DataTypePartition, offset: DataTypeOffset, value: Value) {
         let buffer = self
             .buffers
             .entry(partition)
-            .or_insert_with(|| ValueBuffer::new());
+            .or_insert_with(ValueBuffer::new);
         buffer.add(value, offset);
         self.len += 1;
     }
 
     pub fn len(&self) -> usize {
         self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
     }
 
     pub fn consume(&mut self) -> ConsumedBuffers {
@@ -881,7 +890,7 @@ impl ValueBuffer {
     fn consume(&mut self) -> Option<(Vec<Value>, DataTypeOffset)> {
         match self.last_offset {
             Some(last_offset) => {
-                let consumed = (std::mem::replace(&mut self.values, vec![]), last_offset);
+                let consumed = (std::mem::take(&mut self.values), last_offset);
                 self.last_offset = None;
                 Some(consumed)
             }
@@ -962,14 +971,16 @@ pub struct PartitionAssignment {
     rebalance: Option<Vec<DataTypePartition>>,
 }
 
-impl PartitionAssignment {
-    pub fn new() -> Self {
+impl Default for PartitionAssignment {
+    fn default() -> Self {
         Self {
             assignment: HashMap::new(),
             rebalance: None,
         }
     }
+}
 
+impl PartitionAssignment {
     pub fn on_rebalance_assign(
         partition_assignment: Arc<Mutex<PartitionAssignment>>,
         partitions: Vec<DataTypePartition>,
@@ -990,7 +1001,7 @@ impl PartitionAssignment {
     /// Resets this assignment with new list of partitions.
     ///
     /// Note that this should be called only within loop on the executing thread.
-    fn reset_with(&mut self, partitions: &Vec<DataTypePartition>) {
+    fn reset_with(&mut self, partitions: &[DataTypePartition]) {
         self.assignment.clear();
         for p in partitions {
             self.assignment.insert(*p, None);
@@ -1011,10 +1022,7 @@ impl PartitionAssignment {
         let partition_offsets = self
             .assignment
             .iter()
-            .filter_map(|(k, v)| match v {
-                Some(o) => Some((*k, *o)),
-                None => None,
-            })
+            .filter_map(|(k, v)| v.as_ref().map(|o| (*k, *o)))
             .collect();
 
         partition_offsets

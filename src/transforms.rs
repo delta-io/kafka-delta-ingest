@@ -48,7 +48,7 @@ impl InvalidTypeError {
             expression: context.expression.to_owned(),
             offset: context.offset,
             expected: expected.to_owned(),
-            actual: actual.to_string(),
+            actual,
             position,
         }
     }
@@ -221,7 +221,7 @@ enum EpochUnit {
 
 fn iso8601_from_epoch(epoch_unit: EpochUnit) -> String {
     let dt = match epoch_unit {
-        EpochUnit::Seconds(s) => Utc.timestamp_nanos(s * 1000_000_000),
+        EpochUnit::Seconds(s) => Utc.timestamp_nanos(s * 1_000_000_000),
         EpochUnit::Microseconds(u) => Utc.timestamp_nanos(u * 1000),
     };
 
@@ -286,7 +286,7 @@ pub struct ValuePath {
 
 impl ValuePath {
     fn from_str(path: &str) -> Self {
-        let parts: Vec<String> = path.split(".").map(|s| s.to_string()).collect();
+        let parts: Vec<String> = path.split('.').map(|s| s.to_string()).collect();
 
         ValuePath { parts }
     }
@@ -311,21 +311,19 @@ fn set_value(object: &mut Map<String, Value>, path: &ValuePath, path_index: usiz
                 if path_index == path.len() - 1 {
                     // this is the leaf property - set value on the current object in context.
                     object.insert(property.to_string(), value);
+                } else if let Some(next_o) = object
+                    .get_mut(property)
+                    .map(|v| v.as_object_mut())
+                    .flatten()
+                {
+                    // the next object already exists on the object. recurse.
+                    set_value(next_o, path, path_index + 1, value);
                 } else {
-                    if let Some(next_o) = object
-                        .get_mut(property)
-                        .map(|v| v.as_object_mut())
-                        .flatten()
-                    {
-                        // the next object already exists on the object. recurse.
-                        set_value(next_o, path, path_index + 1, value);
-                    } else {
-                        // this is not the leaf property and the parent object does not exist yet.
-                        // create an object, then recurse.
-                        let mut next_o = Map::new();
-                        set_value(&mut next_o, path, path_index + 1, value);
-                        object.insert(property.to_string(), Value::Object(next_o));
-                    }
+                    // this is not the leaf property and the parent object does not exist yet.
+                    // create an object, then recurse.
+                    let mut next_o = Map::new();
+                    set_value(&mut next_o, path, path_index + 1, value);
+                    object.insert(property.to_string(), Value::Object(next_o));
                 }
             }
 

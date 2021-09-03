@@ -1,3 +1,6 @@
+// #![deny(warnings)]
+// #![deny(missing_docs)]
+
 #[macro_use]
 extern crate clap;
 

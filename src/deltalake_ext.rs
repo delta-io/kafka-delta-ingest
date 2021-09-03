@@ -232,14 +232,14 @@ impl DeltaArrowWriter {
                 let new_cursor = Self::cursor_from_bytes(current_cursor_bytes.as_slice())?;
                 let _ = std::mem::replace(&mut self.cursor, new_cursor.clone());
                 let arrow_writer = Self::new_underlying_writer(
-                    new_cursor.clone(),
+                    new_cursor,
                     self.arrow_schema.clone(),
                     self.writer_properties.clone(),
                 )?;
                 let _ = std::mem::replace(&mut self.arrow_writer, arrow_writer);
                 self.partition_values.clear();
 
-                return Err(e.into());
+                Err(e.into())
             }
         }
     }
@@ -350,7 +350,7 @@ impl DeltaWriter {
         let schema: ArrowSchema = <ArrowSchema as TryFrom<&Schema>>::try_from(&metadata.schema)?;
 
         let schema_updated = self.arrow_schema_ref.as_ref() != &schema
-            || &self.partition_columns != &metadata.partition_columns;
+            || self.partition_columns != metadata.partition_columns;
 
         if schema_updated {
             let _ = std::mem::replace(&mut self.arrow_schema_ref, Arc::new(schema));
@@ -404,7 +404,7 @@ impl DeltaWriter {
             if let Some((_, e)) = sample {
                 return Err(DeltaWriterError::PartialParquetWrite {
                     skipped_values: partial_writes,
-                    sample_error: e.to_owned(),
+                    sample_error: e,
                 });
             } else {
                 unreachable!()
@@ -500,13 +500,13 @@ impl DeltaWriter {
             first_part, uuid_part, last_part
         );
 
-        let data_path = if partition_cols.len() > 0 {
+        let data_path = if !partition_cols.is_empty() {
             let mut path_parts = vec![];
 
             for k in partition_cols.iter() {
                 let partition_value = partition_values
                     .get(k)
-                    .ok_or(DeltaWriterError::MissingPartitionColumn(k.to_string()))?;
+                    .ok_or_else(|| DeltaWriterError::MissingPartitionColumn(k.to_string()))?;
 
                 let partition_value = partition_value
                     .as_deref()
@@ -601,7 +601,7 @@ pub fn record_batch_from_json(
 ) -> Result<RecordBatch, DeltaWriterError> {
     let row_count = json_buffer.len();
     let mut value_iter = json_buffer.iter().map(|j| Ok(j.to_owned()));
-    let decoder = Decoder::new(arrow_schema_ref.clone(), row_count, None);
+    let decoder = Decoder::new(arrow_schema_ref, row_count, None);
     decoder
         .next_batch(&mut value_iter)?
         .ok_or(DeltaWriterError::EmptyRecordBatch)
@@ -792,10 +792,10 @@ fn apply_min_max_for_column(
         (_, Some(key)) => {
             let child_min_values = min_values
                 .entry(key.to_owned())
-                .or_insert(ColumnValueStat::Column(HashMap::new()));
+                .or_insert_with(|| ColumnValueStat::Column(HashMap::new()));
             let child_max_values = max_values
                 .entry(key.to_owned())
-                .or_insert(ColumnValueStat::Column(HashMap::new()));
+                .or_insert_with(|| ColumnValueStat::Column(HashMap::new()));
 
             match (child_min_values, child_max_values) {
                 (ColumnValueStat::Column(mins), ColumnValueStat::Column(maxes)) => {
@@ -837,7 +837,7 @@ fn min_and_max_from_parquet_statistics(
         .map(|s| *s)
         .collect();
 
-    if stats_with_min_max.len() == 0 {
+    if stats_with_min_max.is_empty() {
         return Ok((None, None));
     }
 
@@ -881,10 +881,10 @@ fn min_and_max_from_parquet_statistics(
     match data_type {
         DataType::Boolean => {
             let min = arrow::compute::min_boolean(as_boolean_array(&min_array));
-            let min = min.map(|b| Value::Bool(b));
+            let min = min.map(Value::Bool);
 
             let max = arrow::compute::max_boolean(as_boolean_array(&max_array));
-            let max = max.map(|b| Value::Bool(b));
+            let max = max.map(Value::Bool);
 
             Ok((min, max))
         }
@@ -907,8 +907,8 @@ fn min_and_max_from_parquet_statistics(
 
             match column_descr.logical_type().as_ref() {
                 Some(LogicalType::TIMESTAMP(TimestampType { unit, .. })) => {
-                    let min = min.map(|n| Value::String(timestamp_to_delta_stats_string(n, &unit)));
-                    let max = max.map(|n| Value::String(timestamp_to_delta_stats_string(n, &unit)));
+                    let min = min.map(|n| Value::String(timestamp_to_delta_stats_string(n, unit)));
+                    let max = max.map(|n| Value::String(timestamp_to_delta_stats_string(n, unit)));
 
                     Ok((min, max))
                 }
@@ -924,13 +924,13 @@ fn min_and_max_from_parquet_statistics(
             let min_array = as_primitive_array::<arrow::datatypes::Float32Type>(&min_array);
             let min = arrow::compute::min(min_array);
             let min = min
-                .map(|f| Number::from_f64(f as f64).map(|n| Value::Number(n)))
+                .map(|f| Number::from_f64(f as f64).map(Value::Number))
                 .flatten();
 
             let max_array = as_primitive_array::<arrow::datatypes::Float32Type>(&max_array);
             let max = arrow::compute::max(max_array);
             let max = max
-                .map(|f| Number::from_f64(f as f64).map(|n| Value::Number(n)))
+                .map(|f| Number::from_f64(f as f64).map(Value::Number))
                 .flatten();
 
             Ok((min, max))
@@ -939,13 +939,13 @@ fn min_and_max_from_parquet_statistics(
             let min_array = as_primitive_array::<arrow::datatypes::Float64Type>(&min_array);
             let min = arrow::compute::min(min_array);
             let min = min
-                .map(|f| Number::from_f64(f).map(|n| Value::Number(n)))
+                .map(|f| Number::from_f64(f).map(Value::Number))
                 .flatten();
 
             let max_array = as_primitive_array::<arrow::datatypes::Float64Type>(&max_array);
             let max = arrow::compute::max(max_array);
             let max = max
-                .map(|f| Number::from_f64(f).map(|n| Value::Number(n)))
+                .map(|f| Number::from_f64(f).map(Value::Number))
                 .flatten();
 
             Ok((min, max))
@@ -963,7 +963,7 @@ fn is_utf8(opt: Option<LogicalType>) -> bool {
 }
 
 fn min_max_strings_from_stats(
-    stats_with_min_max: &Vec<&Statistics>,
+    stats_with_min_max: &[&Statistics],
 ) -> (Option<Value>, Option<Value>) {
     let min_string_candidates = stats_with_min_max
         .iter()
@@ -981,7 +981,7 @@ fn min_max_strings_from_stats(
         .max()
         .map(|s| Value::String(s.to_string()));
 
-    return (min_value, max_value);
+    (min_value, max_value)
 }
 
 fn arrow_array_from_bytes(
