@@ -232,7 +232,7 @@ impl DeltaSinkDeadLetterQueue {
                     table_uri,
                     hashmap! {
                         dynamo_lock_options::DYNAMO_LOCK_PARTITION_KEY_VALUE.to_string() => std::env::var(env_vars::DEAD_LETTER_DYNAMO_LOCK_PARTITION_KEY_VALUE)
-                        .unwrap_or("kafka_delta_ingest-dead_letters".to_string()),
+                        .unwrap_or_else(|_| "kafka_delta_ingest-dead_letters".to_string()),
                     },
                 )
                 .await?,

@@ -1,3 +1,6 @@
+#![deny(warnings)]
+//#![deny(missing_docs)]
+
 #[macro_use]
 extern crate lazy_static;
 
@@ -81,12 +84,6 @@ pub enum KafkaJsonToDeltaError {
         source: TransformError,
     },
 
-    #[error("ValueBufferError: {source}")]
-    ValueBuffer {
-        #[from]
-        source: ValueBufferError,
-    },
-
     #[error("JSON serialization failed: {source}")]
     SerdeJson {
         #[from]
@@ -118,6 +115,7 @@ pub enum KafkaJsonToDeltaError {
 /// This error is used in stream run_loop to indicate whether the stream should
 /// jump straight to the next message with `Continue` or completely fail with `General` error.
 #[derive(thiserror::Error, Debug)]
+#[allow(clippy::large_enum_variant)]
 enum ProcessingError {
     #[error("Continue to the next message")]
     Continue,
@@ -167,6 +165,7 @@ pub struct Options {
 }
 
 impl Options {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         topic: String,
         table_location: String,
@@ -239,7 +238,7 @@ impl KafkaJsonToDelta {
         }
 
         kafka_client_config
-            .set("bootstrap.servers", kafka_brokers.clone())
+            .set("bootstrap.servers", kafka_brokers)
             .set("group.id", consumer_group_id)
             .set("enable.auto.commit", "false");
 
@@ -250,7 +249,7 @@ impl KafkaJsonToDelta {
             }
         }
 
-        let partition_assignment = Arc::new(Mutex::new(PartitionAssignment::new()));
+        let partition_assignment = Arc::new(Mutex::new(PartitionAssignment::default()));
         let consumer_context = Context::new(partition_assignment.clone());
         let transformer = Transformer::from_transforms(&transforms)?;
 
@@ -266,7 +265,7 @@ impl KafkaJsonToDelta {
         })
     }
 
-    pub fn app_id_for_partition(&self, partition: DataTypePartition) -> String {
+    fn app_id_for_partition(&self, partition: DataTypePartition) -> String {
         format!("{}-{}", self.opts.app_id, partition)
     }
 
@@ -461,7 +460,7 @@ impl KafkaJsonToDelta {
         let mut state = ProcessingState {
             delta_writer: DeltaWriter::for_table_uri(&self.opts.table_location).await?,
             dlq,
-            value_buffers: ValueBuffers::new(),
+            value_buffers: ValueBuffers::default(),
             latency_timer: Instant::now(),
             delta_partition_offsets: HashMap::new(),
         };
@@ -759,7 +758,7 @@ impl KafkaJsonToDelta {
 
         // assuming that partition_assignment has correct partitions as keys
         let partitions: Vec<DataTypePartition> =
-            partition_assignment.assignment.keys().map(|p| *p).collect();
+            partition_assignment.assignment.keys().copied().collect();
 
         info!("Resetting state with partitions: {:?}", &partitions);
 
@@ -789,30 +788,26 @@ struct ProcessingState {
     delta_partition_offsets: HashMap<DataTypePartition, Option<DataTypeOffset>>,
 }
 
-#[derive(thiserror::Error, Debug)]
-pub enum ValueBufferError {
-    #[error("Illegal tracked buffer state for partition {partition}.")]
-    IllegalTrackedBufferState { partition: DataTypePartition },
-}
-
 pub struct ValueBuffers {
     buffers: HashMap<DataTypePartition, ValueBuffer>,
     len: usize,
 }
 
-impl ValueBuffers {
-    pub fn new() -> Self {
+impl Default for ValueBuffers {
+    fn default() -> Self {
         Self {
             buffers: HashMap::new(),
             len: 0,
         }
     }
+}
 
-    pub fn add(&mut self, partition: DataTypePartition, offset: DataTypeOffset, value: Value) {
+impl ValueBuffers {
+    fn add(&mut self, partition: DataTypePartition, offset: DataTypeOffset, value: Value) {
         let buffer = self
             .buffers
             .entry(partition)
-            .or_insert_with(|| ValueBuffer::new());
+            .or_insert_with(ValueBuffer::new);
         buffer.add(value, offset);
         self.len += 1;
     }
@@ -821,7 +816,11 @@ impl ValueBuffers {
         self.len
     }
 
-    pub fn consume(&mut self) -> ConsumedBuffers {
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn consume(&mut self) -> ConsumedBuffers {
         let mut partition_offsets = HashMap::new();
         let mut partition_counts = HashMap::new();
 
@@ -854,13 +853,13 @@ impl ValueBuffers {
     }
 }
 
-pub struct ConsumedBuffers {
+struct ConsumedBuffers {
     pub values: Vec<Value>,
     pub partition_offsets: HashMap<DataTypePartition, DataTypeOffset>,
     pub partition_counts: HashMap<DataTypePartition, usize>,
 }
 
-pub struct ValueBuffer {
+struct ValueBuffer {
     last_offset: Option<DataTypeOffset>,
     values: Vec<Value>,
 }
@@ -881,7 +880,7 @@ impl ValueBuffer {
     fn consume(&mut self) -> Option<(Vec<Value>, DataTypeOffset)> {
         match self.last_offset {
             Some(last_offset) => {
-                let consumed = (std::mem::replace(&mut self.values, vec![]), last_offset);
+                let consumed = (std::mem::take(&mut self.values), last_offset);
                 self.last_offset = None;
                 Some(consumed)
             }
@@ -890,7 +889,7 @@ impl ValueBuffer {
     }
 }
 
-pub struct Context {
+struct Context {
     partition_assignment: Arc<Mutex<PartitionAssignment>>,
 }
 
@@ -933,7 +932,7 @@ impl ConsumerContext for Context {
 }
 
 impl Context {
-    pub fn new(partition_assignment: Arc<Mutex<PartitionAssignment>>) -> Self {
+    fn new(partition_assignment: Arc<Mutex<PartitionAssignment>>) -> Self {
         Self {
             partition_assignment,
         }
@@ -951,7 +950,7 @@ fn partition_vec_from_topic_partition_list(
 }
 
 /// Contains the partition to offset assignment for a consumer.
-pub struct PartitionAssignment {
+struct PartitionAssignment {
     /// The `None` offset for a partition means that it has never been consumed by
     /// application before.
     assignment: HashMap<DataTypePartition, Option<DataTypeOffset>>,
@@ -962,15 +961,17 @@ pub struct PartitionAssignment {
     rebalance: Option<Vec<DataTypePartition>>,
 }
 
-impl PartitionAssignment {
-    pub fn new() -> Self {
+impl Default for PartitionAssignment {
+    fn default() -> Self {
         Self {
             assignment: HashMap::new(),
             rebalance: None,
         }
     }
+}
 
-    pub fn on_rebalance_assign(
+impl PartitionAssignment {
+    fn on_rebalance_assign(
         partition_assignment: Arc<Mutex<PartitionAssignment>>,
         partitions: Vec<DataTypePartition>,
     ) {
@@ -980,7 +981,7 @@ impl PartitionAssignment {
         });
     }
 
-    pub fn on_rebalance_revoke(partition_assignment: Arc<Mutex<PartitionAssignment>>) {
+    fn on_rebalance_revoke(partition_assignment: Arc<Mutex<PartitionAssignment>>) {
         let _ = tokio::spawn(async move {
             let mut pa = partition_assignment.lock().await;
             pa.rebalance = Some(Vec::new());
@@ -990,7 +991,7 @@ impl PartitionAssignment {
     /// Resets this assignment with new list of partitions.
     ///
     /// Note that this should be called only within loop on the executing thread.
-    fn reset_with(&mut self, partitions: &Vec<DataTypePartition>) {
+    fn reset_with(&mut self, partitions: &[DataTypePartition]) {
         self.assignment.clear();
         for p in partitions {
             self.assignment.insert(*p, None);
@@ -1011,10 +1012,7 @@ impl PartitionAssignment {
         let partition_offsets = self
             .assignment
             .iter()
-            .filter_map(|(k, v)| match v {
-                Some(o) => Some((*k, *o)),
-                None => None,
-            })
+            .filter_map(|(k, v)| v.as_ref().map(|o| (*k, *o)))
             .collect();
 
         partition_offsets

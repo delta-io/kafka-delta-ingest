@@ -1,3 +1,5 @@
+#![deny(warnings)]
+
 #[macro_use]
 extern crate clap;
 
@@ -93,7 +95,7 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
             let additional_kafka_properties = ingest_matches
                 .values_of("ADDITIONAL_KAFKA_SETTINGS")
                 .map(Values::collect)
-                .unwrap_or_else(|| vec![]);
+                .unwrap_or_else(Vec::new);
             let additional_kafka_settings: HashMap<String, String> = additional_kafka_properties
                 .iter()
                 .map(|p| parse_kafka_property(p).unwrap())
@@ -112,7 +114,7 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
             let transforms: Vec<&str> = ingest_matches
                 .values_of("TRANSFORM")
                 .map(Values::collect)
-                .unwrap_or_else(|| vec![]);
+                .unwrap_or_else(Vec::new);
             let transforms: HashMap<String, String> = transforms
                 .iter()
                 .map(|t| parse_transform(t).unwrap())
@@ -121,7 +123,7 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
             let dlq_transforms: Vec<&str> = ingest_matches
                 .values_of("DLQ_TRANSFORM")
                 .map(Values::collect)
-                .unwrap_or_else(|| vec![]);
+                .unwrap_or_else(Vec::new);
             let dlq_transforms: HashMap<String, String> = dlq_transforms
                 .iter()
                 .map(|t| parse_transform(t).unwrap())
