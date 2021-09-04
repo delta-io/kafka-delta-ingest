@@ -607,14 +607,16 @@ pub fn record_batch_from_json(
         .ok_or(DeltaWriterError::EmptyRecordBatch)
 }
 
+type BadValue = (Value, ParquetError);
+
 fn quarantine_failed_parquet_rows(
     arrow_schema: Arc<ArrowSchema>,
     values: Vec<Value>,
-) -> Result<(Vec<Value>, Vec<(Value, ParquetError)>), DeltaWriterError> {
+) -> Result<(Vec<Value>, Vec<BadValue>), DeltaWriterError> {
     warn!("Attempting to quarantine bad records");
 
     let mut good: Vec<Value> = Vec::new();
-    let mut bad: Vec<(Value, ParquetError)> = Vec::new();
+    let mut bad: Vec<BadValue> = Vec::new();
 
     for value in values {
         let record_batch = record_batch_from_json(arrow_schema.clone(), &[value.clone()])?;
@@ -834,7 +836,7 @@ fn min_and_max_from_parquet_statistics(
     let stats_with_min_max: Vec<&Statistics> = statistics
         .iter()
         .filter(|s| s.has_min_max_set())
-        .map(|s| *s)
+        .copied()
         .collect();
 
     if stats_with_min_max.is_empty() {
@@ -956,10 +958,7 @@ fn min_and_max_from_parquet_statistics(
 
 #[inline]
 fn is_utf8(opt: Option<LogicalType>) -> bool {
-    match opt.as_ref() {
-        Some(LogicalType::STRING(_)) => true,
-        _ => false,
-    }
+    matches!(opt.as_ref(), Some(LogicalType::STRING(_)))
 }
 
 fn min_max_strings_from_stats(

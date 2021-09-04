@@ -1,5 +1,5 @@
 #![deny(warnings)]
-// #![deny(missing_docs)]
+//#![deny(missing_docs)]
 
 #[macro_use]
 extern crate lazy_static;
@@ -121,6 +121,7 @@ pub enum KafkaJsonToDeltaError {
 /// This error is used in stream run_loop to indicate whether the stream should
 /// jump straight to the next message with `Continue` or completely fail with `General` error.
 #[derive(thiserror::Error, Debug)]
+#[allow(clippy::large_enum_variant)]
 enum ProcessingError {
     #[error("Continue to the next message")]
     Continue,
@@ -170,6 +171,7 @@ pub struct Options {
 }
 
 impl Options {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         topic: String,
         table_location: String,
