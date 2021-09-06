@@ -1,6 +1,6 @@
 use chrono::Local;
 use deltalake::action::{Action, Add, MetaData, Protocol, Remove, Txn};
-use kafka_delta_ingest::{KafkaJsonToDelta, Options};
+use kafka_delta_ingest::{IngestOptions, IngestProcessor};
 use parquet::util::cursor::SliceableCursor;
 use parquet::{
     file::reader::{FileReader, SerializedFileReader},
@@ -20,7 +20,6 @@ use std::io::{BufReader, Cursor};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
-use tokio::sync::mpsc::channel;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -191,50 +190,23 @@ pub fn create_local_table_in(schema: HashMap<&str, &str>, partitions: Vec<&str>,
 }
 
 pub fn create_kdi(
-    app_id: &str,
     topic: &str,
     table: &str,
-    dlq_table_location: Option<String>,
-    dlq_transforms: HashMap<String, String>,
-    allowed_latency: u64,
-    max_messages_per_batch: usize,
-    min_bytes_per_file: usize,
+    options: IngestOptions,
 ) -> (JoinHandle<()>, Arc<CancellationToken>, Runtime) {
+    let app_id = options.app_id.to_string();
+
     env::set_var("AWS_S3_LOCKING_PROVIDER", "dynamodb");
     env::set_var("DYNAMO_LOCK_TABLE_NAME", "locks");
     env::set_var("DYNAMO_LOCK_OWNER_NAME", Uuid::new_v4().to_string());
-    env::set_var("DYNAMO_LOCK_PARTITION_KEY_VALUE", app_id);
+    env::set_var("DYNAMO_LOCK_PARTITION_KEY_VALUE", app_id.clone());
     env::set_var("DYNAMO_LOCK_REFRESH_PERIOD_MILLIS", "100");
     env::set_var("DYNAMO_LOCK_ADDITIONAL_TIME_TO_WAIT_MILLIS", "100");
     env::set_var("DYNAMO_LOCK_LEASE_DURATION", "2");
 
-    let mut additional_kafka_settings = HashMap::new();
-    additional_kafka_settings.insert("auto.offset.reset".to_string(), "earliest".to_string());
+    let mut kdi = IngestProcessor::new(topic.to_string(), table.to_string(), options).unwrap();
 
-    let opts = Options::new(
-        topic.to_string(),
-        table.to_string(),
-        dlq_table_location,
-        dlq_transforms,
-        app_id.to_string(),
-        allowed_latency,
-        max_messages_per_batch,
-        min_bytes_per_file,
-        true,
-    );
-
-    let dummy = channel(1_000_000);
-
-    let mut kdi = KafkaJsonToDelta::new(
-        opts,
-        TEST_BROKER.to_string(),
-        format!("{}_{}", app_id, Uuid::new_v4()),
-        Some(additional_kafka_settings),
-        HashMap::new(),
-        dummy.0,
-    )
-    .unwrap();
-    let rt = create_runtime(app_id);
+    let rt = create_runtime(app_id.as_str());
     let token = Arc::new(CancellationToken::new());
 
     let run_loop = {

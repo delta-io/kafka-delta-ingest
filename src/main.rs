@@ -1,10 +1,38 @@
+//! Binary used to run a kafka-delta-ingest command.
+//!
+//! # Summary
+//! [`kafka_delta_ingest`] is a tool for writing data from a Kafka topic into a Delta Lake table.
+//!
+//! # Features
+//!
+//! * Apply simple transforms (using JMESPath queries or well known properties) to JSON before writing to Delta
+//! * Write bad messages to a dead letter queue
+//! * Send metrics to a Statsd endpoint
+//! * Control the characteristics of output files written to Delta Lake by tuning buffer latency and file size parameters
+//! * Automatically write Delta log checkpoints
+//! * Passthrough of [librdkafka properties](https://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md) for additional Kafka configuration
+//! * Write to any table URI supported by [`deltalake::storage::StorageBackend`]
+//!
+//! # Usage
+//!
+//! ```
+//! // Start an ingest process to ingest data from `my-topic` into the Delta Lake table at `/my/table/uri`.
+//! kafka-delta-ingest ingest my-topic /my/table/uri
+//! ```
+//!
+//! ```
+//! // List the available command line flags available for the `ingest` subcommand
+//! kafka-delta-ingest ingest -h
+//! ```
+
 #![deny(warnings)]
+#![deny(missing_docs)]
 
 #[macro_use]
 extern crate clap;
 
 use clap::{AppSettings, Values};
-use kafka_delta_ingest::{instrumentation, KafkaJsonToDelta, Options};
+use kafka_delta_ingest::{IngestOptions, IngestProcessor};
 use log::{error, info};
 use std::collections::HashMap;
 
@@ -71,7 +99,7 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
 
             (@arg DLQ_TRANSFORM: --dlq_transform +multiple_occurrences +multiple_values +takes_value validator(parse_transform) "Transforms to apply before writing dead letters to delta")
 
-            (@arg STATSD_ENDPOINT: -s --statsd_endpoint +takes_value
+            (@arg STATSD_ENDPOINT: -s --statsd_endpoint +takes_value default_value("localhost:8125")
              "The statsd endpoint to send statistics to.")
 
             (@arg CHECKPOINTS: -c --checkpoints
@@ -84,13 +112,24 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
 
     match matches.subcommand() {
         Some(("ingest", ingest_matches)) => {
-            let topic = ingest_matches.value_of("TOPIC").unwrap();
-            let table_location = ingest_matches.value_of("TABLE_LOCATION").unwrap();
+            let topic = ingest_matches.value_of("TOPIC").unwrap().to_string();
+            let table_location = ingest_matches
+                .value_of("TABLE_LOCATION")
+                .unwrap()
+                .to_string();
 
-            let dlq_table_location = ingest_matches.value_of("DLQ_TABLE_LOCATION");
+            let dlq_table_location = ingest_matches
+                .value_of("DLQ_TABLE_LOCATION")
+                .map(|s| s.to_owned());
 
-            let kafka_brokers = ingest_matches.value_of("KAFKA_BROKERS").unwrap();
-            let consumer_group_id = ingest_matches.value_of("CONSUMER_GROUP").unwrap();
+            let kafka_brokers = ingest_matches
+                .value_of("KAFKA_BROKERS")
+                .unwrap()
+                .to_string();
+            let consumer_group_id = ingest_matches
+                .value_of("CONSUMER_GROUP")
+                .unwrap()
+                .to_string();
 
             let additional_kafka_properties = ingest_matches
                 .values_of("ADDITIONAL_KAFKA_SETTINGS")
@@ -100,8 +139,9 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
                 .iter()
                 .map(|p| parse_kafka_property(p).unwrap())
                 .collect();
+            let additional_kafka_settings = Some(additional_kafka_settings);
 
-            let app_id = ingest_matches.value_of("APP_ID").unwrap();
+            let app_id = ingest_matches.value_of("APP_ID").unwrap().to_string();
 
             let allowed_latency = ingest_matches.value_of_t::<u64>("ALLOWED_LATENCY").unwrap();
             let max_messages_per_batch = ingest_matches
@@ -129,38 +169,34 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
                 .map(|t| parse_transform(t).unwrap())
                 .collect();
 
-            let stats_endpoint = ingest_matches
+            let statsd_endpoint = ingest_matches
                 .value_of("STATSD_ENDPOINT")
-                .unwrap_or("localhost:8125");
-            let stats_sender = instrumentation::init_stats(stats_endpoint, app_id)?;
+                .unwrap()
+                .to_string();
 
             let write_checkpoints = ingest_matches.is_present("CHECKPOINTS");
 
-            let options = Options::new(
-                topic.to_string(),
-                table_location.to_string(),
-                dlq_table_location.map(|s| s.to_owned()),
+            let options = IngestOptions {
+                transforms,
+                dlq_table_uri: dlq_table_location,
                 dlq_transforms,
-                app_id.to_string(),
+                kafka_brokers,
+                consumer_group_id,
+                additional_kafka_settings,
+                app_id,
                 allowed_latency,
                 max_messages_per_batch,
                 min_bytes_per_file,
                 write_checkpoints,
-            );
+                statsd_endpoint,
+            };
 
-            let mut stream = KafkaJsonToDelta::new(
-                options,
-                kafka_brokers.to_string(),
-                consumer_group_id.to_string(),
-                Some(additional_kafka_settings),
-                transforms,
-                stats_sender,
-            )?;
+            let mut ingest_service = IngestProcessor::new(topic, table_location, options)?;
 
             let _ = tokio::spawn(async move {
-                match stream.start(None).await {
-                    Ok(_) => info!("Stream exited gracefully"),
-                    Err(e) => error!("Stream exited with error {:?}", e),
+                match ingest_service.start(None).await {
+                    Ok(_) => info!("Ingest service exited gracefully"),
+                    Err(e) => error!("Ingest service exited with error {:?}", e),
                 }
             })
             .await;

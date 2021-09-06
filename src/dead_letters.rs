@@ -36,7 +36,7 @@ pub struct DeadLetter {
 impl DeadLetter {
     /// Creates a dead letter from bytes that failed deserialization.
     /// `json_string` will always be `None`.
-    pub fn from_failed_deserialization(bytes: &[u8], err: serde_json::Error) -> Self {
+    pub(crate) fn from_failed_deserialization(bytes: &[u8], err: serde_json::Error) -> Self {
         let timestamp = Utc::now();
         Self {
             base64_bytes: Some(base64::encode(bytes)),
@@ -48,7 +48,7 @@ impl DeadLetter {
 
     /// Creates a dead letter from a failed transform.
     /// `base64_bytes` will always be `None`.
-    pub fn from_failed_transform(value: &Value, err: TransformError) -> Self {
+    pub(crate) fn from_failed_transform(value: &Value, err: TransformError) -> Self {
         let timestamp = Utc::now();
         Self {
             base64_bytes: None,
@@ -61,7 +61,7 @@ impl DeadLetter {
     /// Creates a dead letter from a record that fails on parquet write.
     /// `base64_bytes` will always be `None`.
     /// `json_string` will contain the stringified JSON that was not writeable to parquet.
-    pub fn from_failed_parquet_row(value: &Value, err: ParquetError) -> Self {
+    pub(crate) fn from_failed_parquet_row(value: &Value, err: ParquetError) -> Self {
         let timestamp = Utc::now();
         Self {
             base64_bytes: None,
@@ -74,7 +74,7 @@ impl DeadLetter {
     /// Creates a vector of tuples where the first element is the
     /// stringified JSON value that was not writeable to parquet and
     /// the second element is the `ParquetError` that occurred for that record when attempting the write.
-    pub fn vec_from_failed_parquet_rows(failed: Vec<(Value, ParquetError)>) -> Vec<Self> {
+    pub(crate) fn vec_from_failed_parquet_rows(failed: Vec<(Value, ParquetError)>) -> Vec<Self> {
         failed
             .iter()
             .map(|(v, e)| Self::from_failed_parquet_row(v, e.to_owned()))
@@ -112,7 +112,7 @@ pub enum DeadLetterQueueError {
 }
 
 /// Options that should be passed to `dlq_from_opts` to create the desired [DeadLetterQueue] instance.
-pub struct DeadLetterQueueOptions {
+pub(crate) struct DeadLetterQueueOptions {
     /// Table URI of the delta table to write dead letters to. Implies usage of the DeltaSinkDeadLetterQueue.
     pub delta_table_uri: Option<String>,
     /// A list of transforms to apply to dead letters before writing to delta.
@@ -130,7 +130,7 @@ pub struct DeadLetterQueueOptions {
 /// The [LoggingDeadLetterQueue] is intended for local development only
 /// and is not provided by the [dlq_from_opts] factory method.
 #[async_trait]
-pub trait DeadLetterQueue: Send + Sync {
+pub(crate) trait DeadLetterQueue: Send + Sync {
     /// Writes one [DeadLetter] to the [DeadLetterQueue].
     async fn write_dead_letter(
         &mut self,
@@ -149,7 +149,7 @@ pub trait DeadLetterQueue: Send + Sync {
 /// Factory method for creating a [DeadLetterQueue] based on the passed options.
 /// The default implementation is [NoopDeadLetterQueue].
 /// To opt-in for the [DeltaSinkDeadLetterQueue], the `delta_table_uri` should be set in options.
-pub async fn dlq_from_opts(
+pub(crate) async fn dlq_from_opts(
     options: DeadLetterQueueOptions,
 ) -> Result<Box<dyn DeadLetterQueue>, DeadLetterQueueError> {
     if options.delta_table_uri.is_some() {
@@ -164,7 +164,7 @@ pub async fn dlq_from_opts(
 /// Default implementation of [DeadLetterQueue] which does nothing.
 /// This is used as the default to avoid forcing users to setup additional infrastructure for capturing dead letters.
 /// and avoid any risk of exposing PII in logs,
-pub struct NoopDeadLetterQueue {}
+pub(crate) struct NoopDeadLetterQueue {}
 
 #[async_trait]
 impl DeadLetterQueue for NoopDeadLetterQueue {
@@ -180,7 +180,7 @@ impl DeadLetterQueue for NoopDeadLetterQueue {
 /// Implementation of the [DeadLetterQueue] trait that writes dead letter content as warn logs.
 /// This implementation is currently only intended for debug development usage.
 /// Be mindful of your PII when using this implementation.
-pub struct LoggingDeadLetterQueue {}
+pub(crate) struct LoggingDeadLetterQueue {}
 
 #[async_trait]
 impl DeadLetterQueue for LoggingDeadLetterQueue {
@@ -215,14 +215,14 @@ impl DeadLetterQueue for LoggingDeadLetterQueue {
 /// ```
 ///
 /// A dead letter transform with key: `date` and value: `substr(epoch_micros_to_iso8601(timestamp),`0`,`10`)` should be provided to generate the `date` field.
-pub struct DeltaSinkDeadLetterQueue {
+pub(crate) struct DeltaSinkDeadLetterQueue {
     delta_writer: DeltaWriter,
     transformer: Transformer,
     write_checkpoints: bool,
 }
 
 impl DeltaSinkDeadLetterQueue {
-    pub async fn from_options(
+    pub(crate) async fn from_options(
         options: DeadLetterQueueOptions,
     ) -> Result<Self, DeadLetterQueueError> {
         match &options.delta_table_uri {

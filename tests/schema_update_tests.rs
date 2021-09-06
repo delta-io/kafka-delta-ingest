@@ -1,3 +1,4 @@
+use kafka_delta_ingest::IngestOptions;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
@@ -37,14 +38,15 @@ async fn schema_update_test() {
     helpers::create_topic(&topic, 1).await;
 
     let (kdi, token, rt) = helpers::create_kdi(
-        "schema_update",
         &topic,
         &table,
-        None,
-        HashMap::new(),
-        5,
-        1,
-        20,
+        IngestOptions {
+            app_id: "schema_update".to_string(),
+            allowed_latency: 5,
+            max_messages_per_batch: 1,
+            min_bytes_per_file: 20,
+            ..Default::default()
+        },
     );
     let producer = helpers::create_producer();
 
