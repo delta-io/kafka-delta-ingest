@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use deltalake::{DeltaDataTypeVersion, DeltaTableError};
 use dipstick::{Input, InputScope, Prefixed, Statsd, StatsdScope};
 use log::{debug, error, info, warn};
@@ -13,70 +12,62 @@ use tokio::{
 
 use crate::transforms::TransformError;
 
-/// A tuple where the first element is a variant of [StatTypes] and the second element is the value to record for the statistic.
+/// A tuple where the first element is a variant of [`StatTypes`] and the second element is the value to record for the statistic.
 pub(crate) type Statistic = (StatTypes, i64);
 
-/// Initializes a channel for sending statistics to statsd.
-pub(crate) fn init_stats(
-    endpoint: &str,
-    app_id: &str,
-) -> Result<Sender<Statistic>, std::io::Error> {
-    let scope = Statsd::send_to(endpoint)?.named(app_id).metrics();
-
-    let mut handler = StatsHandler::new(scope);
-
-    let sender = handler.tx.clone();
-
-    task::spawn(async move {
-        handler.run_loop().await;
-    });
-
-    Ok(sender)
+/// Struct with helper methods for writing logs and metrics.
+pub(crate) struct IngestLogger {
+    stats_sender: Sender<Statistic>,
 }
 
-/// Trait that exposes helper methods for writing logs and metrics.
-#[async_trait]
-pub(crate) trait Instrumentation {
+impl IngestLogger {
+    pub(crate) fn new(endpoint: &str, app_id: &str) -> Result<Self, std::io::Error> {
+        let stats_sender = init_stats(endpoint, app_id)?;
+
+        Ok(Self { stats_sender })
+    }
+
     // messages
 
     /// Records a Kafka message has been deserialized.
-    async fn log_message_deserialized(&self, m: &BorrowedMessage) {
+    pub(crate) fn log_message_deserialized(&self, m: &BorrowedMessage) {
         debug_message("Message deserialized", m);
-        self.record_stat((StatTypes::MessageDeserialized, 1)).await;
+        self.record_stat((StatTypes::MessageDeserialized, 1));
     }
 
     /// Records a failure when deserializing a Kafka message.
-    async fn log_message_deserialization_failed(&self, m: &BorrowedMessage, e: &serde_json::Error) {
+    pub(crate) fn log_message_deserialization_failed(
+        &self,
+        m: &BorrowedMessage,
+        e: &serde_json::Error,
+    ) {
         error_message(
             "Message deserialization failed",
             m,
             e as &dyn std::error::Error,
         );
-        self.record_stat((StatTypes::MessageDeserializationFailed, 1))
-            .await;
+        self.record_stat((StatTypes::MessageDeserializationFailed, 1));
     }
 
     /// Records the size of the last message received from Kafka.
-    async fn log_message_bytes(&self, bytes: usize) {
-        self.record_stat((StatTypes::MessageSize, bytes as i64))
-            .await;
+    pub(crate) fn log_message_bytes(&self, bytes: usize) {
+        self.record_stat((StatTypes::MessageSize, bytes as i64));
     }
 
     /// Records that a Kafka message has been transformed.
-    async fn log_message_transformed(&self, m: &BorrowedMessage) {
+    pub(crate) fn log_message_transformed(&self, m: &BorrowedMessage) {
         debug_message("Message transformed", m);
-        self.record_stat((StatTypes::MessageTransformed, 1)).await;
+        self.record_stat((StatTypes::MessageTransformed, 1));
     }
 
     /// Records that transforming a Kafka message failed.
-    async fn log_message_transform_failed(&self, m: &BorrowedMessage, e: &TransformError) {
+    pub(crate) fn log_message_transform_failed(&self, m: &BorrowedMessage, e: &TransformError) {
         error_message("Message transformed failed", m, e as &dyn std::error::Error);
-        self.record_stat((StatTypes::MessageTransformFailed, 1))
-            .await;
+        self.record_stat((StatTypes::MessageTransformFailed, 1));
     }
 
     /// Records that a set of buffered messages was only _partially_ written due to a Parquet error.
-    async fn log_partial_parquet_write(
+    pub(crate) fn log_partial_parquet_write(
         &self,
         skipped: usize,
         parquet_error: Option<&ParquetError>,
@@ -90,91 +81,76 @@ pub(crate) trait Instrumentation {
     // record batches
 
     /// Records that an Arrow RecordBatch has been started from buffered messages.
-    async fn log_record_batch_started(&self) {
+    pub(crate) fn log_record_batch_started(&self) {
         debug!("Record batch started");
-        self.record_stat((StatTypes::RecordBatchStarted, 1)).await;
+        self.record_stat((StatTypes::RecordBatchStarted, 1));
     }
 
     /// Records that an Arrow RecordBatch has been created from buffered messages.
-    async fn log_record_batch_completed(
+    pub(crate) fn log_record_batch_completed(
         &self,
         buffered_record_batch_count: usize,
         timer: &Instant,
     ) {
         let duration = timer.elapsed().as_millis() as i64;
         debug!("Record batch completed in {} millis", duration);
-        self.record_stat((StatTypes::RecordBatchCompleted, 1)).await;
+        self.record_stat((StatTypes::RecordBatchCompleted, 1));
         self.record_stat((
             StatTypes::BufferedRecordBatches,
             buffered_record_batch_count as i64,
-        ))
-        .await;
-        self.record_stat((StatTypes::RecordBatchWriteDuration, duration))
-            .await;
+        ));
+        self.record_stat((StatTypes::RecordBatchWriteDuration, duration));
     }
 
     // delta writes
 
     /// Records that a delta write has started.
-    async fn log_delta_write_started(&self) {
+    pub(crate) fn log_delta_write_started(&self) {
         debug!("Delta write started");
-        self.record_stat((StatTypes::DeltaWriteStarted, 1)).await;
+        self.record_stat((StatTypes::DeltaWriteStarted, 1));
     }
 
     /// Records that a delta write has completed.
-    async fn log_delta_write_completed(&self, version: DeltaDataTypeVersion, timer: &Instant) {
+    pub(crate) fn log_delta_write_completed(&self, version: DeltaDataTypeVersion, timer: &Instant) {
         let duration = timer.elapsed().as_millis() as i64;
         info!(
             "Delta write for version {} has completed in {} millis",
             version, duration
         );
-        self.record_stat((StatTypes::DeltaWriteCompleted, 1)).await;
-        self.record_stat((StatTypes::DeltaWriteDuration, duration))
-            .await;
+        self.record_stat((StatTypes::DeltaWriteCompleted, 1));
+        self.record_stat((StatTypes::DeltaWriteDuration, duration));
     }
 
     /// Records that a delta write has failed.
-    async fn log_delta_write_failed(&self, e: &DeltaTableError) {
+    pub(crate) fn log_delta_write_failed(&self, e: &DeltaTableError) {
         error!("Delta write failed {}", e);
-        self.record_stat((StatTypes::DeltaWriteFailed, 1)).await;
+        self.record_stat((StatTypes::DeltaWriteFailed, 1));
     }
 
     /// Records the size of a file added to Delta.
-    async fn log_delta_add_file_size(&self, size: i64) {
-        self.record_stat((StatTypes::DeltaAddFileSize, size)).await
-    }
-
-    // delta txn
-
-    /// Records the last txn version for the app id in the delta log.
-    async fn log_delta_tx_version_found(&self, app_id: &str, txn_version: i64) {
-        info!("Read tx version of {} for app {}", txn_version, app_id);
-    }
-
-    /// Records that a delta txn was not found for the app id.
-    async fn log_delta_tx_version_not_found(&self, app_id: &str) {
-        info!(
-            "Delta table does not contain a txn for app id {}. Starting write-ahead-log from 1.",
-            app_id
-        );
+    pub(crate) fn log_delta_add_file_size(&self, size: i64) {
+        self.record_stat((StatTypes::DeltaAddFileSize, size));
     }
 
     // control plane
 
     /// Records that the ingest stream has been cancelled and will terminate.
-    async fn log_stream_cancelled(&self, m: &BorrowedMessage) {
+    pub(crate) fn log_stream_cancelled(&self, m: &BorrowedMessage) {
         info_message("Found cancellation token set. Stopping run loop.", m);
     }
 
-    // helpers
+    // ---
 
     /// Records a statistic.
-    async fn record_stat(&self, statistic: Statistic) {
-        let _ = self.stats_sender().send(statistic).await;
-    }
+    fn record_stat(&self, statistic: Statistic) {
+        let sender_ref = self.stats_sender.clone();
 
-    /// Returns the stat sender channel.
-    fn stats_sender(&self) -> Sender<Statistic>;
+        task::spawn(async move {
+            if let Err(e) = sender_ref.send(statistic).await {
+                error!("Failed recording stat {:?}. Error: {:?}", statistic, e);
+            }
+        });
+    }
 }
 
 pub(crate) struct StatsHandler {
@@ -190,7 +166,7 @@ impl StatsHandler {
         StatsHandler { metrics, rx, tx }
     }
 
-    pub(crate) async fn run_loop(&mut self) {
+    async fn run_loop(&mut self) {
         loop {
             if let Some((stat, val)) = self.rx.recv().await {
                 match stat {
@@ -273,7 +249,7 @@ fn error_message(description: &str, m: &BorrowedMessage, e: &dyn std::error::Err
 }
 
 /// Statistic types handled by [crate::instrumentation].
-#[derive(Debug, Display, Hash, PartialEq, Eq)]
+#[derive(Debug, Display, Hash, PartialEq, Eq, Clone, Copy)]
 pub(crate) enum StatTypes {
     //
     // counters
@@ -328,4 +304,19 @@ pub(crate) enum StatTypes {
     /// Guage for Delta add file size
     #[strum(serialize = "delta.add.size")]
     DeltaAddFileSize,
+}
+
+/// Initializes a channel for sending statistics to statsd.
+fn init_stats(endpoint: &str, app_id: &str) -> Result<Sender<Statistic>, std::io::Error> {
+    let scope = Statsd::send_to(endpoint)?.named(app_id).metrics();
+
+    let mut handler = StatsHandler::new(scope);
+
+    let sender = handler.tx.clone();
+
+    task::spawn(async move {
+        handler.run_loop().await;
+    });
+
+    Ok(sender)
 }

@@ -28,7 +28,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{mpsc::Sender, Mutex};
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 mod dead_letters;
@@ -39,7 +39,7 @@ mod transforms;
 use crate::{
     dead_letters::*,
     deltalake_ext::{DeltaWriter, DeltaWriterError},
-    instrumentation::{Instrumentation, Statistic},
+    instrumentation::IngestLogger,
     transforms::*,
 };
 use deltalake::action::{Action, Add};
@@ -217,13 +217,7 @@ pub struct IngestProcessor {
     transformer: Transformer,
     consumer: StreamConsumer<Context>,
     partition_assignment: Arc<Mutex<PartitionAssignment>>,
-    stats_sender: Sender<Statistic>,
-}
-
-impl Instrumentation for IngestProcessor {
-    fn stats_sender(&self) -> Sender<Statistic> {
-        self.stats_sender.clone()
-    }
+    logger: IngestLogger,
 }
 
 impl IngestProcessor {
@@ -262,8 +256,7 @@ impl IngestProcessor {
             }
         }
 
-        let stats_sender =
-            instrumentation::init_stats(opts.statsd_endpoint.as_str(), opts.app_id.as_str())?;
+        let logger = IngestLogger::new(opts.statsd_endpoint.as_str(), opts.app_id.as_str())?;
 
         let partition_assignment = Arc::new(Mutex::new(PartitionAssignment::default()));
         let consumer_context = Context::new(partition_assignment.clone());
@@ -279,7 +272,7 @@ impl IngestProcessor {
             transformer,
             consumer,
             partition_assignment,
-            stats_sender,
+            logger,
         })
     }
 
@@ -339,13 +332,13 @@ impl IngestProcessor {
             }
         };
 
-        self.log_message_bytes(message_bytes.len()).await;
+        self.logger.log_message_bytes(message_bytes.len());
 
         let value: Value = match serde_json::from_slice(message_bytes) {
             Ok(v) => v,
             Err(e) => {
                 warn!("Error deserializing message {:?}", e);
-                self.log_message_deserialization_failed(msg, &e).await;
+                self.logger.log_message_deserialization_failed(msg, &e);
 
                 state
                     .dlq
@@ -356,7 +349,7 @@ impl IngestProcessor {
             }
         };
 
-        self.log_message_deserialized(msg).await;
+        self.logger.log_message_deserialized(msg);
         Ok(value)
     }
 
@@ -368,7 +361,7 @@ impl IngestProcessor {
     ) -> Result<(), ProcessingError> {
         match self.transformer.transform(value, Some(msg)) {
             Err(e) => {
-                self.log_message_transform_failed(msg, &e).await;
+                self.logger.log_message_transform_failed(msg, &e);
                 state
                     .dlq
                     .write_dead_letter(DeadLetter::from_failed_transform(value, e))
@@ -376,7 +369,7 @@ impl IngestProcessor {
                 Err(ProcessingError::Continue)
             }
             _ => {
-                self.log_message_transformed(msg).await;
+                self.logger.log_message_transformed(msg);
                 Ok(())
             }
         }
@@ -411,7 +404,7 @@ impl IngestProcessor {
     }
 
     async fn finalize_record_batch(&self, state: &mut ProcessingState) -> Result<(), IngestError> {
-        self.log_record_batch_started().await;
+        self.logger.log_record_batch_started();
 
         let (values, partition_offsets, partition_counts) =
             self.consume_value_buffers(state).await?;
@@ -427,8 +420,8 @@ impl IngestProcessor {
                 skipped_values,
                 sample_error,
             }) => {
-                self.log_partial_parquet_write(skipped_values.len(), Some(&sample_error))
-                    .await;
+                self.logger
+                    .log_partial_parquet_write(skipped_values.len(), Some(&sample_error));
                 let dead_letters = DeadLetter::vec_from_failed_parquet_rows(skipped_values);
                 state.dlq.write_dead_letters(dead_letters).await?;
             }
@@ -442,11 +435,10 @@ impl IngestProcessor {
             _ => { /* ok - noop */ }
         };
 
-        self.log_record_batch_completed(
+        self.logger.log_record_batch_completed(
             state.delta_writer.buffered_record_batch_count(),
             &record_batch_timer,
-        )
-        .await;
+        );
 
         // Finalize file and write Delta transaction
         if self.should_complete_file(&state.delta_writer, &state.latency_timer) {
@@ -492,7 +484,7 @@ impl IngestProcessor {
                             // Exit if the cancellation token is set
                             if let Some(token) = cancellation_token {
                                 if token.is_cancelled() {
-                                    self.log_stream_cancelled(&m).await;
+                                    self.logger.log_stream_cancelled(&m);
                                     return Ok(());
                                 }
                             }
@@ -643,13 +635,13 @@ impl IngestProcessor {
 
         let delta_write_timer = Instant::now();
 
-        self.log_delta_write_started().await;
+        self.logger.log_delta_write_started();
 
         // upload pending parquet file to delta store
         // TODO remove it if we got conflict error? or it'll be considered as tombstone
         let add = state.delta_writer.write_parquet_files().await?;
         for a in add.iter() {
-            self.log_delta_add_file_size(a.size).await;
+            self.logger.log_delta_add_file_size(a.size);
         }
 
         let mut attempt_number: u32 = 0;
@@ -696,8 +688,8 @@ impl IngestProcessor {
                         state.delta_writer.try_create_checkpoint(version).await?;
                     }
 
-                    self.log_delta_write_completed(version, &delta_write_timer)
-                        .await;
+                    self.logger
+                        .log_delta_write_completed(version, &delta_write_timer);
                     return Ok(());
                 }
                 Err(e) => match e {
@@ -705,7 +697,7 @@ impl IngestProcessor {
                         source: DeltaTransactionError::VersionAlreadyExists { .. },
                     } if attempt_number > DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS + 1 => {
                         debug!("Transaction attempt failed. Attempts exhausted beyond max_retry_commit_attempts of {} so failing.", DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS);
-                        self.log_delta_write_failed(&e).await;
+                        self.logger.log_delta_write_failed(&e);
                         return Err(e.into());
                     }
                     DeltaTableError::TransactionError {
@@ -715,7 +707,7 @@ impl IngestProcessor {
                         debug!("Transaction attempt failed. Incrementing attempt number to {} and retrying.", attempt_number);
                     }
                     _ => {
-                        self.log_delta_write_failed(&e).await;
+                        self.logger.log_delta_write_failed(&e);
                         return Err(e.into());
                     }
                 },
