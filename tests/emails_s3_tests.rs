@@ -10,13 +10,12 @@ use std::time::Duration;
 use tokio::runtime::Runtime;
 
 use chrono::prelude::*;
-use dipstick::{Input, Prefixed, Statsd};
 use serde_json::json;
 use serial_test::serial;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use kafka_delta_ingest::{instrumentation::StatsHandler, KafkaJsonToDelta, Options};
+use kafka_delta_ingest::{IngestOptions, IngestProcessor};
 use rusoto_core::Region;
 use rusoto_s3::{CopyObjectRequest, S3};
 use tokio::task::JoinHandle;
@@ -140,7 +139,7 @@ impl TestScope {
         rt.spawn(async move { worker.start(Some(&token)).await.unwrap() })
     }
 
-    fn create_worker(&self, name: &str) -> KafkaJsonToDelta {
+    fn create_worker(&self, name: &str) -> IngestProcessor {
         env::set_var("AWS_S3_LOCKING_PROVIDER", "dynamodb");
         env::set_var("DYNAMO_LOCK_TABLE_NAME", "locks");
         env::set_var("DYNAMO_LOCK_OWNER_NAME", name);
@@ -151,46 +150,30 @@ impl TestScope {
 
         let mut additional_kafka_settings = HashMap::new();
         additional_kafka_settings.insert("auto.offset.reset".to_string(), "earliest".to_string());
+        let additional_kafka_settings = Some(additional_kafka_settings);
 
         let allowed_latency = 2;
         let max_messages_per_batch = 10;
         let min_bytes_per_file = 370;
 
         let mut transforms = HashMap::new();
-        transforms.insert(
-            "date".to_string(),
-            "substr(timestamp, `0`, `10`)".to_string(),
-        );
+        transforms.insert("date".to_string(), "substr(timestamp,`0`,`10`)".to_string());
         transforms.insert("_kafka_offset".to_string(), "kafka.offset".to_string());
 
-        let stast_scope = Statsd::send_to("localhost:8125")
-            .expect("Failed to create Statsd recorder")
-            .named(TEST_APP_ID)
-            .metrics();
-        let stats_handler = StatsHandler::new(stast_scope);
-        let stats_sender = stats_handler.tx.clone();
-
-        let opts = Options::new(
-            self.topic.clone(),
-            self.table.clone(),
-            None,
-            HashMap::new(),
-            TEST_APP_ID.to_string(),
+        let opts = IngestOptions {
+            transforms,
+            kafka_brokers: TEST_BROKER.to_string(),
+            consumer_group_id: TEST_CONSUMER_GROUP_ID.to_string(),
+            app_id: TEST_APP_ID.to_string(),
+            additional_kafka_settings,
             allowed_latency,
             max_messages_per_batch,
             min_bytes_per_file,
-            true,
-        );
+            write_checkpoints: true,
+            ..Default::default()
+        };
 
-        KafkaJsonToDelta::new(
-            opts,
-            TEST_BROKER.to_string(),
-            TEST_CONSUMER_GROUP_ID.to_string(),
-            Some(additional_kafka_settings),
-            transforms,
-            stats_sender,
-        )
-        .unwrap()
+        IngestProcessor::new(self.topic.clone(), self.table.clone(), opts).unwrap()
     }
 
     async fn send_messages(&self, amount: i32) {

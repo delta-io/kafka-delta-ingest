@@ -1,5 +1,7 @@
+//! Implementations supporting the kafka-delta-ingest daemon
+
 #![deny(warnings)]
-//#![deny(missing_docs)]
+#![deny(missing_docs)]
 
 #[macro_use]
 extern crate lazy_static;
@@ -13,6 +15,7 @@ extern crate serde_json;
 use deltalake::{action, DeltaTableError, DeltaTransactionError};
 use futures::stream::StreamExt;
 use log::{debug, error, info, warn};
+use maplit::hashmap;
 use rdkafka::{
     config::ClientConfig,
     consumer::{Consumer, ConsumerContext, Rebalance, StreamConsumer},
@@ -28,10 +31,10 @@ use std::time::Instant;
 use tokio::sync::{mpsc::Sender, Mutex};
 use tokio_util::sync::CancellationToken;
 
-pub mod dead_letters;
+mod dead_letters;
 pub mod deltalake_ext;
-pub mod instrumentation;
-pub mod transforms;
+mod instrumentation;
+mod transforms;
 
 use crate::{
     dead_letters::*,
@@ -46,70 +49,86 @@ type DataTypeOffset = i64;
 
 const DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS: u32 = 10_000_000;
 
+/// Errors returned by [`IngestProcessor`]
 #[derive(thiserror::Error, Debug)]
-pub enum KafkaJsonToDeltaError {
+pub enum IngestError {
+    /// Error from [`rdkafka`]
     #[error("Kafka error: {source}")]
     Kafka {
+        /// Wrapped [`KafkaError`]
         #[from]
         source: KafkaError,
     },
 
+    /// Error from [`deltalake::DeltaTable`]
     #[error("DeltaTable interaction failed: {source}")]
     DeltaTable {
+        /// Wrapped [`deltalake::DeltaTableError`]
         #[from]
         source: DeltaTableError,
     },
 
+    /// Error from [`deltalake::DeltaTransaction`]
     #[error("DeltaTransaction failed: {source}")]
     DeltaTransaction {
+        /// Wrapped [`deltalake::DeltaTransactionError`]
         #[from]
         source: DeltaTransactionError,
     },
 
+    /// Error from [`DeltaWriter`]
     #[error("DeltaWriter error: {source}")]
     DeltaWriter {
+        /// Wrapped [`DeltaWriterError`]
         #[from]
         source: DeltaWriterError,
     },
 
+    /// Error from [`DeadLetterQueue`]
     #[error("DeadLetterQueue error: {source}")]
     DeadLetterQueueError {
+        /// Wrapped [`DeadLetterQueueError`]
         #[from]
         source: DeadLetterQueueError,
     },
 
+    /// Error from [`transforms`]
     #[error("TransformError: {source}")]
     Transform {
+        /// Wrapped [`TransformError`]
         #[from]
         source: TransformError,
     },
 
+    /// Error from [`serde_json`]
     #[error("JSON serialization failed: {source}")]
     SerdeJson {
+        /// Wrapped [`serde_json::Error`]
         #[from]
         source: serde_json::Error,
     },
 
+    /// Error from [`std::io`]
+    #[error("IO Error: {source}")]
+    IoError {
+        /// Wrapped [`std::io::Error`]
+        #[from]
+        source: std::io::Error,
+    },
+
+    /// Error returned when a delta write fails.
+    /// Ending Kafka offsets and counts for each partition are included to help identify the Kafka buffer that caused the write to fail.
     #[error(
         "Delta write failed: ending_offsets: {ending_offsets}, partition_counts: {partition_counts}, source: {source}"
     )]
     DeltaWriteFailed {
+        /// Ending offsets for each partition that failed to be written to delta.
         ending_offsets: String,
+        /// Message counts for each partition that failed to be written to delta.
         partition_counts: String,
+        /// The underlying DeltaWriterError.
         source: DeltaWriterError,
     },
-
-    #[error("A message was handled on partition {partition} but this partition is not tracked")]
-    UntrackedTopicPartition { partition: i32 },
-
-    #[error("Topic partition offset list is empty")]
-    MissingPartitionOffsets,
-
-    #[error("Kafka message payload was empty at partition {partition} offset {offset}")]
-    KafkaMessageNoPayload { partition: i32, offset: i64 },
-
-    #[error("Kafka message deserialization failed at partition {partition} offset {offset}")]
-    KafkaMessageDeserialization { partition: i32, offset: i64 },
 }
 
 /// This error is used in stream run_loop to indicate whether the stream should
@@ -120,10 +139,10 @@ enum ProcessingError {
     #[error("Continue to the next message")]
     Continue,
 
-    #[error("KafkaJsonToDeltaError: {source}")]
+    #[error("IngestError: {source}")]
     General {
         #[from]
-        source: KafkaJsonToDeltaError,
+        source: IngestError,
     },
 }
 
@@ -139,16 +158,20 @@ impl From<DeadLetterQueueError> for ProcessingError {
     }
 }
 
-/// Application options
-pub struct Options {
-    /// Source kafka topic to consume messages from
-    pub topic: String,
-    /// Destination delta table location to produce messages into
-    pub table_location: String,
-    /// An optional dead letter table to write messages that fail deserialization, transformation or schema validation
-    pub dlq_table_location: Option<String>,
+/// Options for [`IngestProcessor`]
+pub struct IngestOptions {
+    /// A list of transforms to apply to the message before writing to delta lake.
+    pub transforms: HashMap<String, String>,
+    /// An optional dead letter table to write messages that fail deserialization, transformation or schema validation.
+    pub dlq_table_uri: Option<String>,
     /// Transforms to apply to dead letters when writing to a delta table.
     pub dlq_transforms: HashMap<String, String>,
+    /// The Kafka broker string to connect to.
+    pub kafka_brokers: String,
+    /// The Kafka consumer group id to set to allow for multiple consumers per topic.
+    pub consumer_group_id: String,
+    /// Additional properties to initialize the Kafka consumer with.
+    pub additional_kafka_settings: Option<HashMap<String, String>>,
     /// Unique per topic per environment. Must be the same for all processes that are part of a single job.
     pub app_id: String,
     /// Max desired latency from when a message is received to when it is written and
@@ -159,71 +182,61 @@ pub struct Options {
     /// Desired minimum number of compressed parquet bytes to buffer in memory
     /// before writing to storage and committing a transaction.
     pub min_bytes_per_file: usize,
-
     /// If `true` then application will write checkpoints on each 10th commit.
     pub write_checkpoints: bool,
+    /// A statsd endpoint to send statistics to.
+    pub statsd_endpoint: String,
 }
 
-impl Options {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        topic: String,
-        table_location: String,
-        dlq_table_location: Option<String>,
-        dlq_transforms: HashMap<String, String>,
-        app_id: String,
-        allowed_latency: u64,
-        max_messages_per_batch: usize,
-        min_bytes_per_file: usize,
-        write_checkpoints: bool,
-    ) -> Self {
-        Self {
-            topic,
-            table_location,
-            dlq_table_location,
-            dlq_transforms,
-            app_id,
-            allowed_latency,
-            max_messages_per_batch,
-            min_bytes_per_file,
-            write_checkpoints,
+impl Default for IngestOptions {
+    fn default() -> Self {
+        IngestOptions {
+            transforms: HashMap::new(),
+            dlq_table_uri: None,
+            dlq_transforms: HashMap::new(),
+            kafka_brokers: "localhost:9092".to_string(),
+            consumer_group_id: "kafka_delta_ingest".to_string(),
+            additional_kafka_settings: Some(hashmap! {
+                "auto.offset.reset".to_string() => "earliest".to_string()
+            }),
+            app_id: "kafka_delta_ingest".to_string(),
+            allowed_latency: 300,
+            max_messages_per_batch: 5000,
+            min_bytes_per_file: 134217728,
+            write_checkpoints: false,
+            statsd_endpoint: "localhost:8125".to_string(),
         }
     }
 }
 
 /// Encapsulates a single topic-to-table ingestion stream.
-pub struct KafkaJsonToDelta {
-    opts: Options,
+pub struct IngestProcessor {
+    topic: String,
+    table_uri: String,
+    opts: IngestOptions,
     transformer: Transformer,
     consumer: StreamConsumer<Context>,
     partition_assignment: Arc<Mutex<PartitionAssignment>>,
     stats_sender: Sender<Statistic>,
 }
 
-impl Instrumentation for KafkaJsonToDelta {
+impl Instrumentation for IngestProcessor {
     fn stats_sender(&self) -> Sender<Statistic> {
         self.stats_sender.clone()
     }
 }
 
-impl KafkaJsonToDelta {
-    /// Creates a new instance of KafkaJsonToDelta.
-    pub fn new(
-        opts: Options,
-        kafka_brokers: String,
-        consumer_group_id: String,
-        additional_kafka_settings: Option<HashMap<String, String>>,
-        transforms: HashMap<String, String>,
-        stats_sender: Sender<Statistic>,
-    ) -> Result<Self, KafkaJsonToDeltaError> {
+impl IngestProcessor {
+    /// Creates a new instance of [`IngestProcessor`].
+    pub fn new(topic: String, table_uri: String, opts: IngestOptions) -> Result<Self, IngestError> {
         let mut kafka_client_config = ClientConfig::new();
 
+        info!("Kafka topic is {}", topic);
+        info!("Delta table location is {}", table_uri);
         info!("App id is {}", opts.app_id);
-        info!("Kafka topic is {}", opts.topic);
-        info!("Delta table location is {}", opts.table_location);
-        info!("DLQ table location is {:?}", opts.dlq_table_location);
-        info!("Kafka broker string is {}", kafka_brokers);
-        info!("Kafka consumer group id is {}", consumer_group_id);
+        info!("DLQ table location is {:?}", opts.dlq_table_uri);
+        info!("Kafka broker string is {}", opts.kafka_brokers);
+        info!("Kafka consumer group id is {}", opts.consumer_group_id);
         info!("Writing checkpoints? {}", opts.write_checkpoints);
         info!("Allowed latency {}", opts.allowed_latency);
         info!("Min bytes per files is {}", opts.min_bytes_per_file);
@@ -238,25 +251,30 @@ impl KafkaJsonToDelta {
         }
 
         kafka_client_config
-            .set("bootstrap.servers", kafka_brokers)
-            .set("group.id", consumer_group_id)
+            .set("bootstrap.servers", opts.kafka_brokers.clone())
+            .set("group.id", opts.consumer_group_id.clone())
             .set("enable.auto.commit", "false");
 
-        if let Some(additional) = additional_kafka_settings {
+        if let Some(additional) = &opts.additional_kafka_settings {
             for (k, v) in additional.iter() {
                 info!("Applying additional kafka setting {} = {}", k, v);
                 kafka_client_config.set(k, v);
             }
         }
 
+        let stats_sender =
+            instrumentation::init_stats(opts.statsd_endpoint.as_str(), opts.app_id.as_str())?;
+
         let partition_assignment = Arc::new(Mutex::new(PartitionAssignment::default()));
         let consumer_context = Context::new(partition_assignment.clone());
-        let transformer = Transformer::from_transforms(&transforms)?;
+        let transformer = Transformer::from_transforms(&opts.transforms)?;
 
         let consumer: StreamConsumer<Context> =
             kafka_client_config.create_with_context(consumer_context)?;
 
         Ok(Self {
+            topic,
+            table_uri,
             opts,
             transformer,
             consumer,
@@ -265,18 +283,14 @@ impl KafkaJsonToDelta {
         })
     }
 
-    fn app_id_for_partition(&self, partition: DataTypePartition) -> String {
-        format!("{}-{}", self.opts.app_id, partition)
-    }
-
     /// Starts the topic-to-table ingestion stream.
     pub async fn start(
         &mut self,
         cancellation_token: Option<&CancellationToken>,
-    ) -> Result<(), KafkaJsonToDeltaError> {
+    ) -> Result<(), IngestError> {
         info!("Starting stream");
 
-        self.consumer.subscribe(&[self.opts.topic.as_str()])?;
+        self.consumer.subscribe(&[self.topic.as_str()])?;
 
         let res = self.run_loop(cancellation_token).await;
 
@@ -321,7 +335,6 @@ impl KafkaJsonToDelta {
                     msg.partition(),
                     msg.offset()
                 );
-                self.log_message_deserialization_failed(msg).await;
                 return Err(ProcessingError::Continue);
             }
         };
@@ -332,7 +345,7 @@ impl KafkaJsonToDelta {
             Ok(v) => v,
             Err(e) => {
                 warn!("Error deserializing message {:?}", e);
-                self.log_message_deserialization_failed(msg).await;
+                self.log_message_deserialization_failed(msg, &e).await;
 
                 state
                     .dlq
@@ -355,7 +368,7 @@ impl KafkaJsonToDelta {
     ) -> Result<(), ProcessingError> {
         match self.transformer.transform(value, Some(msg)) {
             Err(e) => {
-                self.log_message_transform_failed(msg).await;
+                self.log_message_transform_failed(msg, &e).await;
                 state
                     .dlq
                     .write_dead_letter(DeadLetter::from_failed_transform(value, e))
@@ -372,7 +385,7 @@ impl KafkaJsonToDelta {
     async fn seek_consumer(
         &self,
         partition_offsets: &HashMap<DataTypePartition, Option<DataTypeOffset>>,
-    ) -> Result<(), KafkaJsonToDeltaError> {
+    ) -> Result<(), IngestError> {
         for (p, v) in partition_offsets.iter() {
             match v {
                 Some(offset) => {
@@ -383,7 +396,7 @@ impl KafkaJsonToDelta {
                         Offset::Offset(*offset)
                     };
                     self.consumer
-                        .seek(&self.opts.topic, *p, offset, Timeout::Never)?;
+                        .seek(&self.topic, *p, offset, Timeout::Never)?;
                 }
                 _ => {
                     info!(
@@ -397,10 +410,7 @@ impl KafkaJsonToDelta {
         Ok(())
     }
 
-    async fn finalize_record_batch(
-        &self,
-        state: &mut ProcessingState,
-    ) -> Result<(), KafkaJsonToDeltaError> {
+    async fn finalize_record_batch(&self, state: &mut ProcessingState) -> Result<(), IngestError> {
         self.log_record_batch_started().await;
 
         let (values, partition_offsets, partition_counts) =
@@ -423,7 +433,7 @@ impl KafkaJsonToDelta {
                 state.dlq.write_dead_letters(dead_letters).await?;
             }
             Err(e) => {
-                return Err(KafkaJsonToDeltaError::DeltaWriteFailed {
+                return Err(IngestError::DeltaWriteFailed {
                     ending_offsets: serde_json::to_string(&partition_offsets).unwrap(),
                     partition_counts: serde_json::to_string(&partition_counts).unwrap(),
                     source: e,
@@ -449,16 +459,16 @@ impl KafkaJsonToDelta {
     async fn run_loop(
         &mut self,
         cancellation_token: Option<&CancellationToken>,
-    ) -> Result<(), KafkaJsonToDeltaError> {
+    ) -> Result<(), IngestError> {
         let dlq = dead_letters::dlq_from_opts(DeadLetterQueueOptions {
-            delta_table_uri: self.opts.dlq_table_location.clone(),
+            delta_table_uri: self.opts.dlq_table_uri.clone(),
             dead_letter_transforms: self.opts.dlq_transforms.clone(),
             write_checkpoints: self.opts.write_checkpoints,
         })
         .await?;
 
         let mut state = ProcessingState {
-            delta_writer: DeltaWriter::for_table_uri(&self.opts.table_location).await?,
+            delta_writer: DeltaWriter::for_table_uri(&self.table_uri).await?,
             dlq,
             value_buffers: ValueBuffers::default(),
             latency_timer: Instant::now(),
@@ -583,7 +593,7 @@ impl KafkaJsonToDelta {
             HashMap<DataTypePartition, DataTypeOffset>,
             HashMap<DataTypePartition, usize>,
         ),
-        KafkaJsonToDeltaError,
+        IngestError,
     > {
         let mut partition_assignment = self.partition_assignment.lock().await;
 
@@ -627,7 +637,7 @@ impl KafkaJsonToDelta {
         &self,
         state: &mut ProcessingState,
         partition_offsets: HashMap<DataTypePartition, DataTypeOffset>,
-    ) -> Result<(), KafkaJsonToDeltaError> {
+    ) -> Result<(), IngestError> {
         // Reset the latency timer to track allowed latency for the next file
         state.latency_timer = Instant::now();
 
@@ -695,7 +705,7 @@ impl KafkaJsonToDelta {
                         source: DeltaTransactionError::VersionAlreadyExists { .. },
                     } if attempt_number > DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS + 1 => {
                         debug!("Transaction attempt failed. Attempts exhausted beyond max_retry_commit_attempts of {} so failing.", DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS);
-                        self.log_delta_write_failed().await;
+                        self.log_delta_write_failed(&e).await;
                         return Err(e.into());
                     }
                     DeltaTableError::TransactionError {
@@ -705,7 +715,7 @@ impl KafkaJsonToDelta {
                         debug!("Transaction attempt failed. Incrementing attempt number to {} and retrying.", attempt_number);
                     }
                     _ => {
-                        self.log_delta_write_failed().await;
+                        self.log_delta_write_failed(&e).await;
                         return Err(e.into());
                     }
                 },
@@ -713,7 +723,7 @@ impl KafkaJsonToDelta {
         }
     }
 
-    /// Checks whether partition offsets from last writes matches the ones from delta log
+    /// Checks whether partition offsets from last write matches the ones from delta log
     /// If not then other consumers already processed them.
     fn are_partition_offsets_match(&self, state: &mut ProcessingState) -> bool {
         let mut result = true;
@@ -738,10 +748,7 @@ impl KafkaJsonToDelta {
         result
     }
 
-    async fn reset_state_guarded(
-        &self,
-        state: &mut ProcessingState,
-    ) -> Result<(), KafkaJsonToDeltaError> {
+    async fn reset_state_guarded(&self, state: &mut ProcessingState) -> Result<(), IngestError> {
         let mut partition_assignment = self.partition_assignment.lock().await;
         self.reset_state(state, &mut partition_assignment).await?;
         Ok(())
@@ -751,7 +758,7 @@ impl KafkaJsonToDelta {
         &self,
         state: &mut ProcessingState,
         partition_assignment: &mut PartitionAssignment,
-    ) -> Result<(), KafkaJsonToDeltaError> {
+    ) -> Result<(), IngestError> {
         state.delta_writer.reset();
         state.value_buffers.reset();
         state.delta_partition_offsets.clear();
@@ -777,6 +784,10 @@ impl KafkaJsonToDelta {
 
         Ok(())
     }
+
+    fn app_id_for_partition(&self, partition: DataTypePartition) -> String {
+        format!("{}-{}", self.opts.app_id, partition)
+    }
 }
 
 /// Processing state, contains mutable data within run_loop
@@ -788,7 +799,7 @@ struct ProcessingState {
     delta_partition_offsets: HashMap<DataTypePartition, Option<DataTypeOffset>>,
 }
 
-pub struct ValueBuffers {
+struct ValueBuffers {
     buffers: HashMap<DataTypePartition, ValueBuffer>,
     len: usize,
 }
@@ -812,12 +823,8 @@ impl ValueBuffers {
         self.len += 1;
     }
 
-    pub fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.len
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
     }
 
     fn consume(&mut self) -> ConsumedBuffers {
@@ -854,9 +861,9 @@ impl ValueBuffers {
 }
 
 struct ConsumedBuffers {
-    pub values: Vec<Value>,
-    pub partition_offsets: HashMap<DataTypePartition, DataTypeOffset>,
-    pub partition_counts: HashMap<DataTypePartition, usize>,
+    values: Vec<Value>,
+    partition_offsets: HashMap<DataTypePartition, DataTypeOffset>,
+    partition_counts: HashMap<DataTypePartition, usize>,
 }
 
 struct ValueBuffer {

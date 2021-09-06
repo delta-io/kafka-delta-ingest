@@ -9,28 +9,26 @@ use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::sync::Arc;
 
+/// Error thrown by [`Transformer`].
 #[derive(thiserror::Error, Debug)]
 pub enum TransformError {
+    /// The value to transform is not a JSON object.
     #[error("Unable to mutate non-object value {value}")]
     ValueNotAnObject { value: Value },
 
+    /// JMESPath query expression failed when querying the source value.
     #[error("JmespathError: {source}")]
     JmesPath {
         #[from]
         source: JmespathError,
     },
 
+    /// A serde json error occurred when processing the transform.
     #[error("serde_json::Error: {source}")]
     Json {
         #[from]
         source: serde_json::Error,
     },
-}
-
-#[derive(thiserror::Error, Debug)]
-#[error("Invalid timestamp value {value}")]
-struct EpochToIso8601Error {
-    value: i64,
 }
 
 // Error thrown from custom functions registered in the jmespath Runtime
@@ -86,7 +84,7 @@ lazy_static! {
     };
 }
 
-pub fn compile_transforms(
+fn compile_transforms(
     definitions: &HashMap<String, String>,
 ) -> Result<Vec<(ValuePath, MessageTransform)>, TransformError> {
     let mut transforms = Vec::new();
@@ -267,7 +265,7 @@ fn i64_from_args(
     Ok(n)
 }
 
-pub enum KafkaMetaProperty {
+enum KafkaMetaProperty {
     Partition,
     Offset,
     Topic,
@@ -275,12 +273,12 @@ pub enum KafkaMetaProperty {
     TimestampType,
 }
 
-pub enum MessageTransform {
+enum MessageTransform {
     KafkaMetaTransform(KafkaMetaProperty),
     ExpressionTransform(Expression<'static>),
 }
 
-pub struct ValuePath {
+struct ValuePath {
     parts: Vec<String>,
 }
 
@@ -333,7 +331,7 @@ fn set_value(object: &mut Map<String, Value>, path: &ValuePath, path_index: usiz
 }
 
 /// Transforms JSON values deserialized from a Kafka topic.
-pub struct Transformer {
+pub(crate) struct Transformer {
     transforms: Vec<(ValuePath, MessageTransform)>,
 }
 
@@ -342,24 +340,6 @@ impl Transformer {
     ///
     /// Transforms should be provided as a HashMap where the key is the property the transformed value should be assigned to
     /// and the value is the JMESPath query expression or well known Kafka metadata property to assign.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use std::collections::HashMap;
-    /// use kafka_delta_ingest::transforms::Transformer;
-    ///
-    /// let mut transforms = HashMap::new();
-    /// transforms.insert("date".to_string(), "substr(epoch_seconds_to_iso8601(timestamp),`0`,`10`)".to_string());
-    /// transforms.insert("meta.kafka.topic".to_string(), "kafka.topic".to_string());
-    /// transforms.insert("meta.kafka.partition".to_string(), "kafka.partition".to_string());
-    /// transforms.insert("meta.kafka.offset".to_string(), "kafka.offset".to_string());
-    /// transforms.insert("meta.kafka.timestamp".to_string(), "kafka.timestamp".to_string());
-    /// transforms.insert("meta.kafka.timestamp_type".to_string(), "kafka.timestamp_type".to_string());
-    ///
-    /// let transformer = Transformer::from_transforms(&transforms);
-    /// ```
-    ///
     pub fn from_transforms(transforms: &HashMap<String, String>) -> Result<Self, TransformError> {
         let transforms = compile_transforms(transforms)?;
 
@@ -368,24 +348,7 @@ impl Transformer {
 
     /// Transforms a serde_json::Value according to the list of transforms used to create the transform.
     /// The optional `kafka_message` must be provided to include well known Kafka properties in the value.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use serde_json::json;
-    /// use std::collections::HashMap;
-    /// use kafka_delta_ingest::transforms::Transformer;
-    ///
-    /// let mut transforms = HashMap::new();
-    /// transforms.insert("date".to_string(), "substr(epoch_seconds_to_iso8601(timestamp),`0`,`10`)".to_string());
-    ///
-    /// let transformer = Transformer::from_transforms(&transforms).expect("A new transformer is ready.");
-    /// let mut value = json!({"timestamp": 1630767200});
-    /// transformer.transform(&mut value, None as Option<&rdkafka::message::BorrowedMessage>).expect("The value should be transformed");
-    ///
-    /// assert_eq!(json!({"timestamp": 1630767200, "date": "2021-09-04"}), value);
-    /// ```
-    pub fn transform<M>(
+    pub(crate) fn transform<M>(
         &self,
         value: &mut Value,
         kafka_message: Option<&M>,

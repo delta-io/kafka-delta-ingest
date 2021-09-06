@@ -1,3 +1,5 @@
+//! High-level writer implementations for [`deltalake`].
+
 use arrow::{
     array::{
         as_boolean_array, as_primitive_array, as_struct_array, make_array, Array, ArrayData,
@@ -48,86 +50,115 @@ type MinAndMaxValues = (
 
 type NullCounts = HashMap<String, ColumnCountStat>;
 
+/// Enum representing an error when calling [`DeltaWriter`].
 #[derive(thiserror::Error, Debug)]
 pub enum DeltaWriterError {
+    /// Partition column is missing in a record written to delta.
     #[error("Missing partition column: {0}")]
     MissingPartitionColumn(String),
 
+    /// The Arrow RecordBatch schema does not match the expected schema.
     #[error("Arrow RecordBatch schema does not match: RecordBatch schema: {record_batch_schema}, {expected_schema}")]
     SchemaMismatch {
+        /// The record batch schema.
         record_batch_schema: SchemaRef,
+        /// The schema of the target delta table.
         expected_schema: Arc<arrow::datatypes::Schema>,
     },
 
-    #[error("{0}")]
-    MissingMetadata(String),
-
+    /// An Arrow RecordBatch could not be created from the JSON buffer.
     #[error("Arrow RecordBatch created from JSON buffer is a None value")]
     EmptyRecordBatch,
 
+    /// A record was written that was not a JSON object.
     #[error("Record {0} is not a JSON object")]
     InvalidRecord(String),
 
+    /// Indicates that a partial write was performed and error records were discarded.
     #[error("Failed to write some values to parquet. Sample error: {sample_error}.")]
     PartialParquetWrite {
+        /// Vec of tuples where the first element of each tuple is the skipped value and the second element is the [`ParquetError`] associated with it.
         skipped_values: Vec<(Value, ParquetError)>,
+        /// A sample [`ParquetError`] representing the overall partial write.
         sample_error: ParquetError,
     },
 
     // TODO: derive Debug for Stats in delta-rs
+    /// Serialization of delta log statistics failed.
     #[error("Serialization of delta log statistics failed")]
-    StatsSerializationFailed { stats: Stats },
+    StatsSerializationFailed {
+        /// The stats object that failed serialization.
+        stats: Stats,
+    },
 
+    /// Invalid table paths was specified for the delta table.
     #[error("Invalid table path: {}", .source)]
     UriError {
+        /// The wrapped [`UriError`].
         #[from]
         source: UriError,
     },
 
+    /// deltalake storage backend returned an error.
     #[error("Storage interaction failed: {source}")]
     Storage {
+        /// The wrapped [`StorageError`]
         #[from]
         source: StorageError,
     },
 
+    /// DeltaTable returned an error.
     #[error("DeltaTable interaction failed: {source}")]
     DeltaTable {
+        /// The wrapped [`DeltaTableError`]
         #[from]
         source: DeltaTableError,
     },
 
+    /// Arrow returned an error.
     #[error("Arrow interaction failed: {source}")]
     Arrow {
+        /// The wrapped [`ArrowError`]
         #[from]
         source: ArrowError,
     },
 
+    /// Parquet write failed.
     #[error("Parquet write failed: {source}")]
     Parquet {
+        /// The wrapped [`ParquetError`]
         #[from]
         source: ParquetError,
     },
 
+    /// Error returned from std::io
     #[error("std::io::Error: {source}")]
     Io {
+        /// The wrapped [`std::io::Error`]
         #[from]
         source: std::io::Error,
     },
 
+    /// Delta transaction commit failed.
     #[error("Delta transaction commit failed: {source}")]
     DeltaTransactionError {
+        /// The wrapped [`DeltaTransactionError`]
         #[from]
         source: DeltaTransactionError,
     },
 
+    /// Error occurred when writing a delta log checkpoint.
     #[error("CheckpointErrorError error: {source}")]
     CheckpointErrorError {
+        /// The wrapped [`CheckpointError`]
         #[from]
         source: CheckpointError,
     },
 }
 
+/// Writes messages to a delta lake table.
 pub struct DeltaWriter {
+    /// The underlying delta table used to manage the transaction log.
     pub table: DeltaTable,
     storage: Box<dyn StorageBackend>,
     arrow_schema_ref: Arc<arrow::datatypes::Schema>,
@@ -136,7 +167,8 @@ pub struct DeltaWriter {
     arrow_writers: HashMap<String, DeltaArrowWriter>,
 }
 
-pub struct DeltaArrowWriter {
+/// Writes messages to an underlying arrow buffer.
+pub(crate) struct DeltaArrowWriter {
     arrow_schema: Arc<ArrowSchema>,
     writer_properties: WriterProperties,
     cursor: InMemoryWriteableCursor,

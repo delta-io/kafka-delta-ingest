@@ -4,8 +4,7 @@ extern crate kafka_delta_ingest;
 mod helpers;
 
 use deltalake::action::Action;
-use dipstick::{Input, Prefixed, Statsd};
-use kafka_delta_ingest::{instrumentation::StatsHandler, KafkaJsonToDelta, Options};
+use kafka_delta_ingest::{IngestOptions, IngestProcessor};
 use log::debug;
 use parquet::{
     file::reader::{FileReader, SerializedFileReader},
@@ -53,6 +52,7 @@ async fn e2e_smoke_test() {
 
     let mut additional_kafka_settings = HashMap::new();
     additional_kafka_settings.insert("auto.offset.reset".to_string(), "earliest".to_string());
+    let additional_kafka_settings = Some(additional_kafka_settings);
 
     let allowed_latency = 1500;
     let max_messages_per_batch = 2;
@@ -73,32 +73,23 @@ async fn e2e_smoke_test() {
         "kafka.timestamp_type".to_string(),
     );
 
-    let stast_scope = Statsd::send_to("localhost:8125")
-        .expect("Failed to create Statsd recorder")
-        .named(TEST_APP_ID)
-        .metrics();
-    let stats_handler = StatsHandler::new(stast_scope);
-    let stats_sender = stats_handler.tx.clone();
-
-    let opts = Options::new(
-        topic.to_string(),
-        TEST_DELTA_TABLE_LOCATION.to_string(),
-        None,
-        HashMap::new(),
-        TEST_APP_ID.to_string(),
+    let options = IngestOptions {
+        app_id: TEST_APP_ID.to_string(),
+        kafka_brokers: TEST_BROKER.to_string(),
+        consumer_group_id: TEST_CONSUMER_GROUP_ID.to_string(),
+        additional_kafka_settings,
+        transforms,
         allowed_latency,
         max_messages_per_batch,
         min_bytes_per_file,
-        true,
-    );
+        write_checkpoints: true,
+        ..Default::default()
+    };
 
-    let mut stream = KafkaJsonToDelta::new(
-        opts,
-        TEST_BROKER.to_string(),
-        TEST_CONSUMER_GROUP_ID.to_string(),
-        Some(additional_kafka_settings),
-        transforms,
-        stats_sender,
+    let mut stream = IngestProcessor::new(
+        topic.to_string(),
+        TEST_DELTA_TABLE_LOCATION.to_string(),
+        options,
     )
     .unwrap();
 

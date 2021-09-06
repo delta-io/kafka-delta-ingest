@@ -1,6 +1,6 @@
 use deltalake::DeltaTable;
+use kafka_delta_ingest::IngestOptions;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::Path;
 use uuid::Uuid;
 
@@ -30,8 +30,17 @@ async fn zero_offset_issue() {
 
     helpers::create_topic(&topic, 1).await;
 
-    let (kdi, token, rt) =
-        helpers::create_kdi("zero_offset", &topic, table, None, HashMap::new(), 5, 1, 20);
+    let (kdi, token, rt) = helpers::create_kdi(
+        &topic,
+        table,
+        IngestOptions {
+            app_id: "zero_offset".to_string(),
+            allowed_latency: 5,
+            max_messages_per_batch: 1,
+            min_bytes_per_file: 20,
+            ..Default::default()
+        },
+    );
 
     {
         // check that there's only 1 record in table

@@ -1,3 +1,4 @@
+use kafka_delta_ingest::IngestOptions;
 use log::info;
 use serde::{Deserialize, Serialize};
 use serde_json;
@@ -35,16 +36,19 @@ async fn test_dlq() {
     let min_bytes_per_file = 20;
 
     let (kdi, token, rt) = helpers::create_kdi(
-        "dlq_test",
         &data_topic,
         &table,
-        Some(dlq_table.clone()),
-        hashmap! {
-            "date".to_string() => "substr(epoch_micros_to_iso8601(timestamp),`0`,`10`)".to_string(),
+        IngestOptions {
+            app_id: "dlq_test".to_string(),
+            dlq_table_uri: Some(dlq_table.clone()),
+            dlq_transforms: hashmap! {
+                "date".to_string() => "substr(epoch_micros_to_iso8601(timestamp),`0`,`10`)".to_string(),
+            },
+            allowed_latency,
+            max_messages_per_batch,
+            min_bytes_per_file,
+            ..Default::default()
         },
-        allowed_latency,
-        max_messages_per_batch,
-        min_bytes_per_file,
     );
     let producer = helpers::create_producer();
 

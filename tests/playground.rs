@@ -1,8 +1,8 @@
+use kafka_delta_ingest::IngestOptions;
 use log::info;
 use rdkafka::producer::FutureProducer;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
 use uuid::Uuid;
 
 #[macro_use]
@@ -75,16 +75,15 @@ impl Playground {
         let topic = format!("playground_{}", Uuid::new_v4());
         helpers::create_topic(&topic, 1).await;
 
-        let (kdi, token, rt) = helpers::create_kdi(
-            "schema_update",
-            &topic,
-            TABLE_PATH,
-            None,
-            HashMap::new(),
-            5,
-            MAX_MESSAGES_PER_BATCH,
-            20,
-        );
+        let ingest_options = IngestOptions {
+            app_id: "schema_update".to_string(),
+            allowed_latency: 5,
+            max_messages_per_batch: MAX_MESSAGES_PER_BATCH,
+            min_bytes_per_file: 20,
+            ..Default::default()
+        };
+
+        let (kdi, token, rt) = helpers::create_kdi(&topic, TABLE_PATH, ingest_options);
         let producer = helpers::create_producer();
         let playground = Playground {
             producer,
