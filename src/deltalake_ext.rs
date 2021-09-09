@@ -370,7 +370,7 @@ impl DeltaWriter {
 
     /// Updates the wrapped delta table to load new delta log entries.
     pub async fn update_table(&mut self) -> Result<(), DeltaWriterError> {
-        self.table.update_incremental().await?;
+        self.table.update().await?;
         Ok(())
     }
 
@@ -619,7 +619,7 @@ impl DeltaWriter {
             checkpoints::create_checkpoint_from_table(&self.table).await?;
 
             if version_updated {
-                self.table.update_incremental().await?;
+                self.table.update().await?;
             }
         }
         Ok(())
