@@ -319,13 +319,37 @@ pub(crate) enum StatTypes {
     //
     // gauges
     //
-    /// Guage for number of Arrow record batches in buffer.
+    /// Gauge for number of Arrow record batches in buffer.
     #[strum(serialize = "buffered.record_batches")]
     BufferedRecordBatches,
-    /// Guage for message size.
+    /// Gauge for message size.
     #[strum(serialize = "messages.size")]
     MessageSize,
-    /// Guage for Delta add file size
+    /// Gauge for Delta add file size.
     #[strum(serialize = "delta.add.size")]
     DeltaAddFileSize,
+    /// Gauge for the number of partitions in buffer.
+    #[strum(serialize = "buffer.lag.num_partitions")]
+    BufferNumPartitions,
+    /// Gauge for total buffer lag across all partitions.
+    #[strum(serialize = "buffer.lag.total")]
+    BufferLagTotal,
+    /// Gauge for max buffer lag across all partitions.
+    #[strum(serialize = "buffer.lag.max")]
+    BufferLagMax,
+    /// Gauge for min buffer lag across all partitions.
+    #[strum(serialize = "buffer.lag.min")]
+    BufferLagMin,
+    /// Gauge for the number of partitions in the last delta write.
+    #[strum(serialize = "delta.write.lag.num_partitions")]
+    DeltaWriteNumPartitions,
+    /// Gauge for total delta write lag across all partitions.
+    #[strum(serialize = "delta.write.lag.total")]
+    DeltaWriteLagTotal,
+    /// Gauge for max delta write lag across all partitions.
+    #[strum(serialize = "delta.write.lag.max")]
+    DeltaWriteLagMax,
+    /// Gauge for min delta write lag across all partitions.
+    #[strum(serialize = "delta.write.lag.min")]
+    DeltaWriteLagMin,
 }

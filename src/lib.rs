@@ -36,10 +36,11 @@ pub mod deltalake_ext;
 mod instrumentation;
 mod transforms;
 
+#[allow(unused_imports)]
 use crate::{
     dead_letters::*,
     deltalake_ext::{DeltaWriter, DeltaWriterError},
-    instrumentation::{Instrumentation, Statistic},
+    instrumentation::{Instrumentation, StatTypes, Statistic},
     transforms::*,
 };
 use deltalake::action::{Action, Add};
@@ -48,6 +49,7 @@ type DataTypePartition = i32;
 type DataTypeOffset = i64;
 
 const DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS: u32 = 10_000_000;
+const BUFFER_LAG_REPORT_SECONDS: u64 = 60;
 
 /// Errors returned by [`IngestProcessor`]
 #[derive(thiserror::Error, Debug)]
@@ -450,7 +452,87 @@ impl IngestProcessor {
 
         // Finalize file and write Delta transaction
         if self.should_complete_file(&state.delta_writer, &state.latency_timer) {
-            self.complete_file(state, partition_offsets).await?;
+            self.complete_file(state, &partition_offsets).await?;
+            self.record_write_lag(&partition_offsets).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn record_buffer_lag(&self, state: &mut ProcessingState) -> Result<(), KafkaError> {
+        let buffer_lags: Result<Vec<i64>, KafkaError> = state
+            .value_buffers
+            .buffers
+            .iter()
+            .map(|(p, b)| {
+                let (_, high_watermark) =
+                    self.consumer
+                        .fetch_watermarks(self.topic.as_str(), *p, Timeout::Never)?;
+
+                let buffer_lag = if let Some(o) = b.last_offset {
+                    high_watermark - o
+                } else {
+                    high_watermark
+                };
+
+                Ok(buffer_lag)
+            })
+            .collect();
+        let buffer_lags = buffer_lags?;
+
+        let total_lag: i64 = buffer_lags.iter().sum();
+        let max_lag = buffer_lags.iter().max();
+        let min_lag = buffer_lags.iter().min();
+        let num_partitions = buffer_lags.len();
+
+        self.record_stat((StatTypes::BufferNumPartitions, num_partitions as i64))
+            .await;
+        self.record_stat((StatTypes::BufferLagTotal, total_lag))
+            .await;
+        if let Some(max_lag) = max_lag {
+            self.record_stat((StatTypes::BufferLagMax, *max_lag)).await;
+        }
+        if let Some(min_lag) = min_lag {
+            self.record_stat((StatTypes::BufferLagMin, *min_lag)).await;
+        }
+
+        state.last_buffer_lag_report = Some(Instant::now());
+
+        Ok(())
+    }
+
+    async fn record_write_lag(
+        &self,
+        partition_offsets: &HashMap<DataTypePartition, DataTypeOffset>,
+    ) -> Result<(), KafkaError> {
+        let write_lags: Result<Vec<i64>, KafkaError> = partition_offsets
+            .iter()
+            .map(|(p, o)| {
+                let (_, high_watermark) =
+                    self.consumer
+                        .fetch_watermarks(self.topic.as_str(), *p, Timeout::Never)?;
+
+                Ok(high_watermark - o)
+            })
+            .collect();
+        let write_lags = write_lags?;
+
+        let total_lag: i64 = write_lags.iter().sum();
+        let max_lag = write_lags.iter().max();
+        let min_lag = write_lags.iter().min();
+        let num_partitions = write_lags.len();
+
+        self.record_stat((StatTypes::DeltaWriteNumPartitions, num_partitions as i64))
+            .await;
+        self.record_stat((StatTypes::DeltaWriteLagTotal, total_lag))
+            .await;
+        if let Some(max_lag) = max_lag {
+            self.record_stat((StatTypes::DeltaWriteLagMax, *max_lag))
+                .await;
+        }
+        if let Some(min_lag) = min_lag {
+            self.record_stat((StatTypes::DeltaWriteLagMin, *min_lag))
+                .await;
         }
 
         Ok(())
@@ -472,6 +554,7 @@ impl IngestProcessor {
             dlq,
             value_buffers: ValueBuffers::default(),
             latency_timer: Instant::now(),
+            last_buffer_lag_report: None,
             delta_partition_offsets: HashMap::new(),
         };
 
@@ -483,7 +566,8 @@ impl IngestProcessor {
         while let Some(message) = stream.next().await {
             match message {
                 Ok(m) => {
-                    match self.process_message(&mut state, &m).await {
+                    // hold the process message result so we can report buffer lag even in case of failure
+                    let result = match self.process_message(&mut state, &m).await {
                         Ok(_) | Err(ProcessingError::Continue) => {
                             if self.should_complete_record_batch(&mut state) {
                                 self.finalize_record_batch(&mut state).await?;
@@ -496,9 +580,23 @@ impl IngestProcessor {
                                     return Ok(());
                                 }
                             }
+                            Ok(())
                         }
-                        Err(ProcessingError::General { source }) => return Err(source),
+                        Err(ProcessingError::General { source }) => Err(source),
+                    };
+                    // report buffer lag every so often
+                    match state.last_buffer_lag_report {
+                        None => self.record_buffer_lag(&mut state).await?,
+                        Some(last_buffer_lag_report)
+                            if last_buffer_lag_report.elapsed().as_secs()
+                                > BUFFER_LAG_REPORT_SECONDS =>
+                        {
+                            self.record_buffer_lag(&mut state).await?
+                        }
+                        _ => { /* noop */ }
                     }
+                    // force return if result was an Err
+                    let _ = result?;
                 }
                 Err(e) => {
                     // TODO: What does an error unwrapping the BorrowedMessage mean? Determine if this should stop the stream.
@@ -636,7 +734,7 @@ impl IngestProcessor {
     async fn complete_file(
         &self,
         state: &mut ProcessingState,
-        partition_offsets: HashMap<DataTypePartition, DataTypeOffset>,
+        partition_offsets: &HashMap<DataTypePartition, DataTypeOffset>,
     ) -> Result<(), IngestError> {
         // Reset the latency timer to track allowed latency for the next file
         state.latency_timer = Instant::now();
@@ -656,7 +754,7 @@ impl IngestProcessor {
 
         let prepared_commit = {
             let mut tx = state.delta_writer.table.create_transaction(None);
-            tx.add_actions(self.build_actions(&partition_offsets, add));
+            tx.add_actions(self.build_actions(partition_offsets, add));
             tx.prepare_commit(None).await?
         };
 
@@ -689,7 +787,7 @@ impl IngestProcessor {
                     assert_eq!(v, version);
 
                     for (p, o) in partition_offsets {
-                        state.delta_partition_offsets.insert(p, Some(o));
+                        state.delta_partition_offsets.insert(*p, Some(*o));
                     }
 
                     if self.opts.write_checkpoints {
@@ -796,6 +894,7 @@ struct ProcessingState {
     dlq: Box<dyn DeadLetterQueue>,
     value_buffers: ValueBuffers,
     latency_timer: Instant,
+    last_buffer_lag_report: Option<Instant>,
     delta_partition_offsets: HashMap<DataTypePartition, Option<DataTypeOffset>>,
 }
 
