@@ -460,16 +460,17 @@ impl IngestProcessor {
     }
 
     async fn record_buffer_lag(&self, state: &mut ProcessingState) -> Result<(), KafkaError> {
-        let buffer_lags: Result<Vec<i64>, KafkaError> = state
-            .value_buffers
-            .buffers
+        let partition_assignment = self.partition_assignment.lock().await;
+
+        let buffer_lags: Result<Vec<i64>, KafkaError> = partition_assignment
+            .assignment
             .iter()
-            .map(|(p, b)| {
+            .map(|(p, oo)| {
                 let (_, high_watermark) =
                     self.consumer
                         .fetch_watermarks(self.topic.as_str(), *p, Timeout::Never)?;
 
-                let buffer_lag = if let Some(o) = b.last_offset {
+                let buffer_lag = if let Some(o) = oo {
                     high_watermark - o
                 } else {
                     high_watermark
@@ -478,6 +479,25 @@ impl IngestProcessor {
                 Ok(buffer_lag)
             })
             .collect();
+
+        // let buffer_lags: Result<Vec<i64>, KafkaError> = state
+        //     .value_buffers
+        //     .buffers
+        //     .iter()
+        //     .map(|(p, b)| {
+        //         let (_, high_watermark) =
+        //             self.consumer
+        //                 .fetch_watermarks(self.topic.as_str(), *p, Timeout::Never)?;
+
+        //         let buffer_lag = if let Some(o) = b.last_offset {
+        //             high_watermark - o
+        //         } else {
+        //             high_watermark
+        //         };
+
+        //         Ok(buffer_lag)
+        //     })
+        //     .collect();
         let buffer_lags = buffer_lags?;
 
         let total_lag: i64 = buffer_lags.iter().sum();
