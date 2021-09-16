@@ -480,25 +480,6 @@ impl IngestProcessor {
         let buffer_lags = buffer_lags?;
         let buffer_lags: Vec<i64> = buffer_lags.iter().filter_map(|l| *l).collect();
 
-        // let buffer_lags: Result<Vec<i64>, KafkaError> = state
-        //     .value_buffers
-        //     .buffers
-        //     .iter()
-        //     .map(|(p, b)| {
-        //         let (_, high_watermark) =
-        //             self.consumer
-        //                 .fetch_watermarks(self.topic.as_str(), *p, Timeout::Never)?;
-
-        //         let buffer_lag = if let Some(o) = b.last_offset {
-        //             high_watermark - o
-        //         } else {
-        //             high_watermark
-        //         };
-
-        //         Ok(buffer_lag)
-        //     })
-        //     .collect();
-
         let total_lag: i64 = buffer_lags.iter().sum();
         let max_lag = buffer_lags.iter().max();
         let min_lag = buffer_lags.iter().min();
