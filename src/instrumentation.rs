@@ -203,14 +203,14 @@ impl StatsHandler {
                     StatTypes::BufferedRecordBatches
                     | StatTypes::MessageSize
                     | StatTypes::DeltaAddFileSize
-                    | StatType::BufferNumPartitions
-                    | StatType::BufferLagTotal
-                    | StatType::BufferLagMax
-                    | StatType::BufferLagMin
-                    | StatType::DeltaWriteNumPartitions
-                    | StatType::DeltaWriteLagTotal
-                    | StatType::DeltaWriteLagMax
-                    | StatType::DeltaWriteLagMin => {
+                    | StatTypes::BufferNumPartitions
+                    | StatTypes::BufferLagTotal
+                    | StatTypes::BufferLagMax
+                    | StatTypes::BufferLagMin
+                    | StatTypes::DeltaWriteNumPartitions
+                    | StatTypes::DeltaWriteLagTotal
+                    | StatTypes::DeltaWriteLagMax
+                    | StatTypes::DeltaWriteLagMin => {
                         self.handle_gauge(stat, val);
                     }
 
