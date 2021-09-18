@@ -202,7 +202,15 @@ impl StatsHandler {
                     // gauges
                     StatTypes::BufferedRecordBatches
                     | StatTypes::MessageSize
-                    | StatTypes::DeltaAddFileSize => {
+                    | StatTypes::DeltaAddFileSize
+                    | StatTypes::BufferNumPartitions
+                    | StatTypes::BufferLagTotal
+                    | StatTypes::BufferLagMax
+                    | StatTypes::BufferLagMin
+                    | StatTypes::DeltaWriteNumPartitions
+                    | StatTypes::DeltaWriteLagTotal
+                    | StatTypes::DeltaWriteLagMax
+                    | StatTypes::DeltaWriteLagMin => {
                         self.handle_gauge(stat, val);
                     }
 
