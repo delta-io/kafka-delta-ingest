@@ -35,6 +35,9 @@ use clap::{AppSettings, Values};
 use kafka_delta_ingest::{IngestOptions, IngestProcessor};
 use log::{error, info};
 use std::collections::HashMap;
+use std::time::Duration;
+
+mod recover_dynamodb_lock;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
@@ -104,6 +107,13 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
 
             (@arg CHECKPOINTS: -c --checkpoints
             "If set then Kafka Delta ingest will write checkpoints on each 10th commit.")
+
+            (@arg RECOVER_NON_ACQUIRABLE_DYNAMODB_LOCK: --recover-non-acquirable-dynamodb-lock
+            r#"If there's non-recoverable dynamodb lock (isNonAcquirable is set) then Kafka Delta Ingest will try to recover from it.
+The recover is only possible if lock's isReleased is set so it could be released.
+Kafka Delta Ingest has no knowlege of other instances so it'll wait at least ALLOWED_LATENCY to ensure that every other writer will face with NonAcquirableLock error.
+Otherwise, if the lock is recovered before every worked faced with an NonAcquirableLock error, it could lead to data corruption.
+"#)
         )
     )
     .setting(AppSettings::SubcommandRequiredElseHelp)
@@ -175,6 +185,13 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
                 .to_string();
 
             let write_checkpoints = ingest_matches.is_present("CHECKPOINTS");
+
+            if ingest_matches.is_present("RECOVER_NON_ACQUIRABLE_DYNAMODB_LOCK") {
+                recover_dynamodb_lock::try_recover_non_acquirable_dynamodb_lock(
+                    Duration::from_secs(allowed_latency),
+                )
+                .await?;
+            }
 
             let options = IngestOptions {
                 transforms,
