@@ -70,7 +70,7 @@ pub async fn recover_dynamodb_lock(
             Some(item) if item.is_non_acquirable && item.is_released => {
                 log::error!(
                     "There is active non-acquirable lock found and it is released. \
-                    Deleting the lock after {} seconds to ensure that other writers are faced the lock too.",
+                    Deleting the lock after {} seconds to ensure that other writers have time to discover the lock too.",
                     min_wait_period.as_secs()
                 );
                 tokio::time::sleep(min_wait_period).await;
