@@ -31,7 +31,7 @@ pub enum RecoverDynamodbLockError {
 /// The possible outcome if the lock is "recovered" by at least one worker was not failed before,
 /// could be that the `is_non_acquirable` lock was acquired to perform drop or drop/create scenario.
 /// If table is dropped but worker is still active, it'll keep writing despite there's no table;
-/// when table is recreated, the worker will keep writer with N+1 version, however the table is on
+/// when table is recreated, the worker will keep writing with N+1 version, however the table is on
 /// version 0, since the delta log is cleared on drop.
 pub async fn try_recover_non_acquirable_dynamodb_lock(
     min_wait_period: Duration,
