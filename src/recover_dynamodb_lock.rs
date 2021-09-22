@@ -21,7 +21,7 @@ pub enum RecoverDynamodbLockError {
 /// other writers. However there's a type of locks that could not be expired or acquired by other
 /// writers, which is the non-acquirable lock. In order to create one, the owner has to set the
 /// `is_non_acquirable` flag once acquire the lock. Other writers will fail to to try to acquire
-/// the log with this flag.
+/// the lock with this flag.
 ///
 /// In order to recover from this lock, KDI ensures that it is released first and waits at least
 /// the `min_wait_period` which is usually the write interval (`allowed_latency`). The additional
