@@ -480,20 +480,10 @@ impl IngestProcessor {
                 }
                 None => {
                     match &self.opts.starting_offsets {
-                        StartingOffsets::Earliest => {
-                            info!("Seeking consumer to beginning. No offset stored in delta log.");
-                            self.consumer.seek(
-                                &self.topic,
-                                *p,
-                                Offset::Beginning,
-                                Timeout::Never,
-                            )?;
+                        StartingOffsets::Earliest | StartingOffsets::Latest => {
+                            info!("Not seeking consumer. No offset is stored in delta log. `auto.offset.reset` will be used for {:?}.", self.opts.starting_offsets);
                         }
-                        StartingOffsets::Latest => {
-                            info!("Seeking consumer to latest. No offset stored in delta log.");
-                            self.consumer
-                                .seek(&self.topic, *p, Offset::End, Timeout::Never)?;
-                        }
+                        // TODO: This is not quite safe yet. We need to reset state since we are doing a seek.
                         StartingOffsets::Explicit(starting_offsets) => {
                             if let Some(offset) = starting_offsets.get(p) {
                                 info!("Seeking consumer to offset {} for partition {}. No offset is stored in delta log but explicit starting offsets are specified.", offset, p);
@@ -503,6 +493,8 @@ impl IngestProcessor {
                                     Offset::Offset(*offset),
                                     Timeout::Never,
                                 )?;
+                            } else {
+                                info!("Not seeking consumer. Offsets are explicit, but an entry is not provided for partition {}.", p);
                             }
                         }
                     };
