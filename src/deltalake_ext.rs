@@ -18,8 +18,8 @@ use deltalake::{
     checkpoints::CheckpointError,
     get_backend_for_uri_with_options,
     writer::time_utils::timestamp_to_delta_stats_string,
-    DeltaDataTypeLong, DeltaDataTypeVersion, DeltaTable, DeltaTableError, DeltaTransactionError,
-    Schema, StorageBackend, StorageError, UriError,
+    DeltaDataTypeLong, DeltaDataTypeVersion, DeltaTable, DeltaTableError, Schema, StorageBackend,
+    StorageError, UriError,
 };
 use log::{debug, warn};
 use parquet::{
@@ -137,14 +137,6 @@ pub enum DeltaWriterError {
         /// The wrapped [`std::io::Error`]
         #[from]
         source: std::io::Error,
-    },
-
-    /// Delta transaction commit failed.
-    #[error("Delta transaction commit failed: {source}")]
-    DeltaTransactionError {
-        /// The wrapped [`DeltaTransactionError`]
-        #[from]
-        source: DeltaTransactionError,
     },
 
     /// Error occurred when writing a delta log checkpoint.
