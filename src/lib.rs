@@ -480,10 +480,24 @@ impl IngestProcessor {
                 }
                 None => {
                     match &self.opts.starting_offsets {
-                        StartingOffsets::Earliest | StartingOffsets::Latest => {
-                            info!("Not seeking consumer. No offset is stored in delta log. `auto.offset.reset` will be used for {:?}.", self.opts.starting_offsets);
+                        StartingOffsets::Earliest => {
+                            info!("Seeking consumer to earliest. No offset stored in delta log.");
+                            self.consumer.seek(
+                                &self.topic,
+                                *p,
+                                Offset::Beginning,
+                                Timeout::Never,
+                            )?;
                         }
-                        // TODO: This is not quite safe yet. We need to reset state since we are doing a seek.
+                        StartingOffsets::Latest => {
+                            info!("Seeking consumer to latest. No offset stored in delta log.");
+                            self.consumer.seek(
+                                &self.topic,
+                                *p,
+                                Offset::End,
+                                Timeout::Never,
+                            )?;
+                        }
                         StartingOffsets::Explicit(starting_offsets) => {
                             if let Some(offset) = starting_offsets.get(p) {
                                 info!("Seeking consumer to offset {} for partition {}. No offset is stored in delta log but explicit starting offsets are specified.", offset, p);
@@ -494,7 +508,7 @@ impl IngestProcessor {
                                     Timeout::Never,
                                 )?;
                             } else {
-                                info!("Not seeking consumer. Offsets are explicit, but an entry is not provided for partition {}.", p);
+                                info!("Not seeking consumer. Offsets are explicit, but an entry is not provided for partition {}. `auto.offset.reset` from additional kafka settings will be used.", p);
                             }
                         }
                     };
@@ -711,7 +725,7 @@ impl IngestProcessor {
     ) -> Result<(), ProcessingError> {
         let mut partition_assignment = self.partition_assignment.lock().await;
 
-        // TODO if the new assignment is only an addition of partitions we don't need to reset state
+        // TODO: if the new assignment is only an addition of partitions we don't need to reset state
         if partition_assignment.rebalance.is_some() {
             let partitions = partition_assignment.rebalance.as_ref().unwrap().clone();
 
@@ -730,18 +744,23 @@ impl IngestProcessor {
         state: &mut ProcessingState,
         msg: &BorrowedMessage<'_>,
     ) -> Result<(), ProcessingError> {
-        if let Some(Some(offset)) = state.delta_partition_offsets.get(&msg.partition()) {
-            if msg.offset() <= *offset {
-                // If message offset is lower than the one stored in state then we consumed message
-                // after rebalance but before seek.
-                // If message offset equals the one stored in state then this is the message
-                // consumed right after seek. It's not safe to seek to the (last_offset+1) because
-                // such offset might not exists yet and offset tracking will be reset by kafka which
-                // might lead to data duplication.
+        let mp = msg.partition();
+        let mo = msg.offset();
+        // Messages prior to the last delta offset or the last buffer offset can still be received after consumer seek.
+        // We check offset here to make sure we don't write already buffered messages or already written messages.
+
+        // Skip messages with offsets before the one last written to delta
+        if let Some(Some(offset)) = state.delta_partition_offsets.get(&mp) {
+            if mo <= *offset {
                 return Err(ProcessingError::Continue);
             }
         }
-
+        // Skip messages with offsets before the last one written to value buffers
+        if let Some(Some(offset)) = state.value_buffers.buffers.get(&mp).map(|b| b.last_offset) {
+            if mo <= offset {
+                return Err(ProcessingError::Continue);
+            }
+        }
         Ok(())
     }
 
