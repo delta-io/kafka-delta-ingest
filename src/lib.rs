@@ -209,12 +209,11 @@ impl StartingOffsets {
             "earliest" => Ok(StartingOffsets::Earliest),
             "latest" => Ok(StartingOffsets::Latest),
             maybe_json => {
-                let starting_partition_offsets: StartingPartitionOffsets = serde_json::from_str(maybe_json).map_err(|e| {
-                    StartingOffsetsParseError {
+                let starting_partition_offsets: StartingPartitionOffsets =
+                    serde_json::from_str(maybe_json).map_err(|e| StartingOffsetsParseError {
                         string_to_parse: s.clone(),
                         error_message: e.to_string(),
-                    }
-                })?;
+                    })?;
 
                 Ok(StartingOffsets::Explicit(starting_partition_offsets))
             }
@@ -238,7 +237,8 @@ pub struct IngestOptions {
     pub starting_offsets: StartingOffsets,
     /// Max desired latency from when a message is received to when it is written and
     /// committed to the target delta table (in seconds)
-    pub allowed_latency: u64,    /// Number of messages to buffer before writing a record batch.
+    pub allowed_latency: u64,
+    /// Number of messages to buffer before writing a record batch.
     pub max_messages_per_batch: usize,
     /// Desired minimum number of compressed parquet bytes to buffer in memory
     /// before writing to storage and committing a transaction.
@@ -467,26 +467,42 @@ impl IngestProcessor {
             match offset {
                 Some(o) if *o == 0 => {
                     info!("Seeking consumer to beginning for partition {}. Delta log offset is 0, but seek to zero is not possible.", p);
-                    self.consumer.seek(&self.topic, *p, Offset::Beginning, Timeout::Never)?;
+                    self.consumer
+                        .seek(&self.topic, *p, Offset::Beginning, Timeout::Never)?;
                 }
                 Some(o) => {
-                    info!("Seeking consumer to offset {} for partition {} found in delta log.", o, p);
-                    self.consumer.seek(&self.topic, *p, Offset::Offset(*o), Timeout::Never)?;
+                    info!(
+                        "Seeking consumer to offset {} for partition {} found in delta log.",
+                        o, p
+                    );
+                    self.consumer
+                        .seek(&self.topic, *p, Offset::Offset(*o), Timeout::Never)?;
                 }
                 None => {
                     match &self.opts.starting_offsets {
                         StartingOffsets::Earliest => {
                             info!("Seeking consumer to beginning. No offset stored in delta log.");
-                            self.consumer.seek(&self.topic, *p, Offset::Beginning, Timeout::Never)?;
+                            self.consumer.seek(
+                                &self.topic,
+                                *p,
+                                Offset::Beginning,
+                                Timeout::Never,
+                            )?;
                         }
                         StartingOffsets::Latest => {
                             info!("Seeking consumer to latest. No offset stored in delta log.");
-                            self.consumer.seek(&self.topic, *p, Offset::End, Timeout::Never)?;
+                            self.consumer
+                                .seek(&self.topic, *p, Offset::End, Timeout::Never)?;
                         }
                         StartingOffsets::Explicit(starting_offsets) => {
                             if let Some(offset) = starting_offsets.get(p) {
                                 info!("Seeking consumer to offset {} for partition {}. No offset is stored in delta log but explicit starting offsets are specified.", offset, p);
-                                self.consumer.seek(&self.topic, *p, Offset::Offset(*offset), Timeout::Never)?;
+                                self.consumer.seek(
+                                    &self.topic,
+                                    *p,
+                                    Offset::Offset(*offset),
+                                    Timeout::Never,
+                                )?;
                             }
                         }
                     };
@@ -1217,27 +1233,34 @@ mod tests {
 
     #[test]
     fn test_starting_offset_deserialization() {
-        let earliest_offsets: StartingOffsets = StartingOffsets::from_string("earliest".to_string()).unwrap();
+        let earliest_offsets: StartingOffsets =
+            StartingOffsets::from_string("earliest".to_string()).unwrap();
         assert_eq!(StartingOffsets::Earliest, earliest_offsets);
 
-        let latest_offsets: StartingOffsets = StartingOffsets::from_string("latest".to_string()).unwrap();
+        let latest_offsets: StartingOffsets =
+            StartingOffsets::from_string("latest".to_string()).unwrap();
         assert_eq!(StartingOffsets::Latest, latest_offsets);
 
-        let explicit_offsets: StartingOffsets = StartingOffsets::from_string(r#"{"0":1,"1":2,"2":42}"#.to_string()).unwrap();
-        assert_eq!(StartingOffsets::Explicit(hashmap! {
-            0 => 1,
-            1 => 2,
-            2 => 42,
-        }), explicit_offsets);
+        let explicit_offsets: StartingOffsets =
+            StartingOffsets::from_string(r#"{"0":1,"1":2,"2":42}"#.to_string()).unwrap();
+        assert_eq!(
+            StartingOffsets::Explicit(hashmap! {
+                0 => 1,
+                1 => 2,
+                2 => 42,
+            }),
+            explicit_offsets
+        );
 
         let invalid = StartingOffsets::from_string(r#"{"not":"valid"}"#.to_string());
 
         match invalid {
-            Err(StartingOffsetsParseError { string_to_parse, ..}) => {
+            Err(StartingOffsetsParseError {
+                string_to_parse, ..
+            }) => {
                 assert_eq!(r#"{"not":"valid"}"#.to_string(), string_to_parse);
             }
-            _ => assert!(false, "StartingOffsets::from_string should return an Err")
+            _ => assert!(false, "StartingOffsets::from_string should return an Err"),
         }
-
     }
 }

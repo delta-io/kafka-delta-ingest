@@ -132,7 +132,10 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
 
             let app_id = ingest_matches.value_of("APP_ID").unwrap().to_string();
 
-            let starting_offsets = ingest_matches.value_of("STARTING_OFFSETS").unwrap().to_string();
+            let starting_offsets = ingest_matches
+                .value_of("STARTING_OFFSETS")
+                .unwrap()
+                .to_string();
             let starting_offsets = StartingOffsets::from_string(starting_offsets)?;
 
             let allowed_latency = ingest_matches.value_of_t::<u64>("ALLOWED_LATENCY").unwrap();
