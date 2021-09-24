@@ -15,7 +15,6 @@ extern crate serde_json;
 use deltalake::{action, DeltaTableError, DeltaTransactionError};
 use futures::stream::StreamExt;
 use log::{debug, error, info, warn};
-use maplit::hashmap;
 use rdkafka::{
     config::ClientConfig,
     consumer::{Consumer, ConsumerContext, Rebalance, StreamConsumer},
@@ -160,32 +159,100 @@ impl From<DeadLetterQueueError> for ProcessingError {
     }
 }
 
+/// Error returned when the string passed to [`StartingOffsets::from_string`] is invalid.
+#[derive(thiserror::Error, Debug)]
+#[error("Error returned when the value")]
+pub struct StartingOffsetsParseError {
+    /// The string that failed to parse.
+    pub string_to_parse: String,
+    /// serde_json error returned when trying to parse the string as explicit offsets.
+    pub error_message: String,
+}
+
+/// HashMap containing a specific offset to start from for each partition.
+pub type StartingPartitionOffsets = HashMap<DataTypePartition, DataTypeOffset>;
+
+/// Enum representing available starting offset options.
+/// When specifying explicit starting offsets, the JSON string passed must have a string key representing the partition
+/// and a u64 value representing the offset to start from.
+///
+/// # Example:
+///
+/// ```
+/// use maplit::hashmap;
+/// use kafka_delta_ingest::StartingOffsets;
+///
+/// let starting_offsets = StartingOffsets::from_string(r#"{"0":21,"1":52,"2":3}"#.to_string());
+///
+/// match starting_offsets {
+///     Ok(StartingOffsets::Explicit(starting_offsets)) => {
+///         assert_eq!(hashmap!{0 => 21, 1 => 52, 2 => 3}, starting_offsets);
+///     }
+///     _ => assert!(false, "This won't happen if you're JSON is formatted correctly.")
+/// }
+/// ```
+#[derive(Debug, serde::Deserialize, Clone, PartialEq)]
+pub enum StartingOffsets {
+    /// Start from earliest available Kafka offsets for partition offsets not stored in the delta log.
+    Earliest,
+    /// Start from latest available Kafka offsets for partition offsets not stored in the delta log.
+    Latest,
+    /// Start from explicit partition offsets when no offsets are stored in the delta log.
+    Explicit(StartingPartitionOffsets),
+}
+
+impl StartingOffsets {
+    /// Parses a string as [`StartingOffsets`].
+    /// Returns [`StartingOffsetsParseError`] if the string is not parseable.
+    pub fn from_string(s: String) -> Result<StartingOffsets, StartingOffsetsParseError> {
+        match s.as_str() {
+            "earliest" => Ok(StartingOffsets::Earliest),
+            "latest" => Ok(StartingOffsets::Latest),
+            maybe_json => {
+                let starting_partition_offsets: StartingPartitionOffsets = serde_json::from_str(maybe_json).map_err(|e| {
+                    StartingOffsetsParseError {
+                        string_to_parse: s.clone(),
+                        error_message: e.to_string(),
+                    }
+                })?;
+
+                Ok(StartingOffsets::Explicit(starting_partition_offsets))
+            }
+        }
+    }
+}
+
 /// Options for [`IngestProcessor`]
 pub struct IngestOptions {
+    /// The Kafka broker string to connect to.
+    pub kafka_brokers: String,
+    /// The Kafka consumer group id to set to allow for multiple consumers per topic.
+    pub consumer_group_id: String,
+    /// Unique per topic per environment. Must be the same for all processes that are part of a single job.
+    pub app_id: String,
+    /// Offsets to start from. This may be `earliest` or `latest` to start from the earliest or latest available offsets in Kafka,
+    /// or a JSON string specifying the explicit offset to start from for each partition.
+    /// This configuration is only applied when offsets are not already stored in delta lake.
+    /// When using explicit starting offsets, `auto.offset.reset` may also be specified in `additional_kafka_settings` to control
+    /// reset behavior in case partitions are added to the topic in the future.
+    pub starting_offsets: StartingOffsets,
+    /// Max desired latency from when a message is received to when it is written and
+    /// committed to the target delta table (in seconds)
+    pub allowed_latency: u64,    /// Number of messages to buffer before writing a record batch.
+    pub max_messages_per_batch: usize,
+    /// Desired minimum number of compressed parquet bytes to buffer in memory
+    /// before writing to storage and committing a transaction.
+    pub min_bytes_per_file: usize,
     /// A list of transforms to apply to the message before writing to delta lake.
     pub transforms: HashMap<String, String>,
     /// An optional dead letter table to write messages that fail deserialization, transformation or schema validation.
     pub dlq_table_uri: Option<String>,
     /// Transforms to apply to dead letters when writing to a delta table.
     pub dlq_transforms: HashMap<String, String>,
-    /// The Kafka broker string to connect to.
-    pub kafka_brokers: String,
-    /// The Kafka consumer group id to set to allow for multiple consumers per topic.
-    pub consumer_group_id: String,
-    /// Additional properties to initialize the Kafka consumer with.
-    pub additional_kafka_settings: Option<HashMap<String, String>>,
-    /// Unique per topic per environment. Must be the same for all processes that are part of a single job.
-    pub app_id: String,
-    /// Max desired latency from when a message is received to when it is written and
-    /// committed to the target delta table (in seconds)
-    pub allowed_latency: u64,
-    /// Number of messages to buffer before writing a record batch.
-    pub max_messages_per_batch: usize,
-    /// Desired minimum number of compressed parquet bytes to buffer in memory
-    /// before writing to storage and committing a transaction.
-    pub min_bytes_per_file: usize,
     /// If `true` then application will write checkpoints on each 10th commit.
     pub write_checkpoints: bool,
+    /// Additional properties to initialize the Kafka consumer with.
+    pub additional_kafka_settings: Option<HashMap<String, String>>,
     /// A statsd endpoint to send statistics to.
     pub statsd_endpoint: String,
 }
@@ -193,18 +260,17 @@ pub struct IngestOptions {
 impl Default for IngestOptions {
     fn default() -> Self {
         IngestOptions {
-            transforms: HashMap::new(),
-            dlq_table_uri: None,
-            dlq_transforms: HashMap::new(),
             kafka_brokers: "localhost:9092".to_string(),
             consumer_group_id: "kafka_delta_ingest".to_string(),
-            additional_kafka_settings: Some(hashmap! {
-                "auto.offset.reset".to_string() => "earliest".to_string()
-            }),
             app_id: "kafka_delta_ingest".to_string(),
+            starting_offsets: StartingOffsets::Earliest,
             allowed_latency: 300,
             max_messages_per_batch: 5000,
             min_bytes_per_file: 134217728,
+            transforms: HashMap::new(),
+            dlq_table_uri: None,
+            dlq_transforms: HashMap::new(),
+            additional_kafka_settings: None,
             write_checkpoints: false,
             statsd_endpoint: "localhost:8125".to_string(),
         }
@@ -235,14 +301,15 @@ impl IngestProcessor {
 
         info!("Kafka topic is {}", topic);
         info!("Delta table location is {}", table_uri);
-        info!("App id is {}", opts.app_id);
-        info!("DLQ table location is {:?}", opts.dlq_table_uri);
         info!("Kafka broker string is {}", opts.kafka_brokers);
         info!("Kafka consumer group id is {}", opts.consumer_group_id);
-        info!("Writing checkpoints? {}", opts.write_checkpoints);
+        info!("App id is {}", opts.app_id);
+        info!("Starting offsets are {:?}", opts.starting_offsets);
         info!("Allowed latency {}", opts.allowed_latency);
         info!("Min bytes per files is {}", opts.min_bytes_per_file);
         info!("Max messages per batch is {}", opts.max_messages_per_batch);
+        info!("DLQ table location is {:?}", opts.dlq_table_uri);
+        info!("Writing checkpoints? {}", opts.write_checkpoints);
 
         if let Ok(cert_pem) = std::env::var("KAFKA_DELTA_INGEST_CERT") {
             kafka_client_config.set("ssl.certificate.pem", cert_pem);
@@ -250,6 +317,14 @@ impl IngestProcessor {
 
         if let Ok(key_pem) = std::env::var("KAFKA_DELTA_INGEST_KEY") {
             kafka_client_config.set("ssl.key.pem", key_pem);
+        }
+
+        if opts.starting_offsets == StartingOffsets::Earliest {
+            kafka_client_config.set("auto.offset.reset", "earliest");
+        }
+
+        if opts.starting_offsets == StartingOffsets::Latest {
+            kafka_client_config.set("auto.offset.reset", "latest");
         }
 
         kafka_client_config
@@ -388,25 +463,35 @@ impl IngestProcessor {
         &self,
         partition_offsets: &HashMap<DataTypePartition, Option<DataTypeOffset>>,
     ) -> Result<(), IngestError> {
-        for (p, v) in partition_offsets.iter() {
-            match v {
-                Some(offset) => {
-                    info!("Seeking consumer to {}:{}", p, offset);
-                    let offset = if *offset == 0 {
-                        Offset::Beginning
-                    } else {
-                        Offset::Offset(*offset)
+        for (p, offset) in partition_offsets.iter() {
+            match offset {
+                Some(o) if *o == 0 => {
+                    info!("Seeking consumer to beginning for partition {}. Delta log offset is 0, but seek to zero is not possible.", p);
+                    self.consumer.seek(&self.topic, *p, Offset::Beginning, Timeout::Never)?;
+                }
+                Some(o) => {
+                    info!("Seeking consumer to offset {} for partition {} found in delta log.", o, p);
+                    self.consumer.seek(&self.topic, *p, Offset::Offset(*o), Timeout::Never)?;
+                }
+                None => {
+                    match &self.opts.starting_offsets {
+                        StartingOffsets::Earliest => {
+                            info!("Seeking consumer to beginning. No offset stored in delta log.");
+                            self.consumer.seek(&self.topic, *p, Offset::Beginning, Timeout::Never)?;
+                        }
+                        StartingOffsets::Latest => {
+                            info!("Seeking consumer to latest. No offset stored in delta log.");
+                            self.consumer.seek(&self.topic, *p, Offset::End, Timeout::Never)?;
+                        }
+                        StartingOffsets::Explicit(starting_offsets) => {
+                            if let Some(offset) = starting_offsets.get(p) {
+                                info!("Seeking consumer to offset {} for partition {}. No offset is stored in delta log but explicit starting offsets are specified.", offset, p);
+                                self.consumer.seek(&self.topic, *p, Offset::Offset(*offset), Timeout::Never)?;
+                            }
+                        }
                     };
-                    self.consumer
-                        .seek(&self.topic, *p, offset, Timeout::Never)?;
                 }
-                _ => {
-                    info!(
-                        "Partition {} has no recorded offset. Not seeking consumer.",
-                        p
-                    );
-                }
-            }
+            };
         }
 
         Ok(())
@@ -1122,5 +1207,37 @@ impl PartitionAssignment {
             .collect();
 
         partition_offsets
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maplit::hashmap;
+
+    #[test]
+    fn test_starting_offset_deserialization() {
+        let earliest_offsets: StartingOffsets = StartingOffsets::from_string("earliest".to_string()).unwrap();
+        assert_eq!(StartingOffsets::Earliest, earliest_offsets);
+
+        let latest_offsets: StartingOffsets = StartingOffsets::from_string("latest".to_string()).unwrap();
+        assert_eq!(StartingOffsets::Latest, latest_offsets);
+
+        let explicit_offsets: StartingOffsets = StartingOffsets::from_string(r#"{"0":1,"1":2,"2":42}"#.to_string()).unwrap();
+        assert_eq!(StartingOffsets::Explicit(hashmap! {
+            0 => 1,
+            1 => 2,
+            2 => 42,
+        }), explicit_offsets);
+
+        let invalid = StartingOffsets::from_string(r#"{"not":"valid"}"#.to_string());
+
+        match invalid {
+            Err(StartingOffsetsParseError { string_to_parse, ..}) => {
+                assert_eq!(r#"{"not":"valid"}"#.to_string(), string_to_parse);
+            }
+            _ => assert!(false, "StartingOffsets::from_string should return an Err")
+        }
+
     }
 }
