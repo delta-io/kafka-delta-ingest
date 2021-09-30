@@ -541,9 +541,12 @@ impl ProcessingState {
             }
         }
 
+        // TODO: The call stack for should_complete_record_batch, complete_record_batch, should_complete_file, complete_file
+        // has a funny smell. The nesting of *complete_file calls bothers me for one thing.
+        // I'd like to do a bit more restructuring and maybe flatten these out.
         if self.should_complete_record_batch() {
-            info!("Finalizing record batch{}", log_suffix);
-            self.finalize_record_batch().await?;
+            info!("Completing record batch{}", log_suffix);
+            self.complete_record_batch().await?;
         }
 
         Ok(())
@@ -629,7 +632,7 @@ impl ProcessingState {
         should
     }
 
-    async fn finalize_record_batch(&mut self) -> Result<(), IngestError> {
+    async fn complete_record_batch(&mut self) -> Result<(), IngestError> {
         info!("Record batch started");
 
         let (values, partition_offsets, partition_counts) = self.consume_value_buffers().await?;
