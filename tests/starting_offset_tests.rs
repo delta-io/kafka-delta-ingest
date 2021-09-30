@@ -1,17 +1,211 @@
 #[allow(dead_code)]
 mod helpers;
 
-#[tokio::test]
-async fn start_from_explicit() {
-    // TODO
+use log::{debug, info};
+use maplit::hashmap;
+use rdkafka::{producer::Producer, util::Timeout};
+use serde::{Deserialize, Serialize};
+
+use kafka_delta_ingest::{IngestOptions, StartingOffsets};
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+struct TestMsg {
+    id: u64,
+    date: String,
 }
 
 #[tokio::test]
-async fn start_from_earliest() {
-    // TODO
+async fn test_start_from_explicit() {
+    helpers::init_logger();
+
+    let table = helpers::create_local_table(
+        hashmap! {
+            "id" => "integer",
+            "date" => "string",
+        },
+        vec!["date"],
+    );
+
+    let topic = format!("starting_offsets_explicit_{}", uuid::Uuid::new_v4());
+    helpers::create_topic(&topic, 1).await;
+
+    let producer = helpers::create_producer();
+
+    // Send messages to Kafka before starting kafka-delta-ingest
+    for m in create_generator(1).take(10) {
+        info!("Writing test message");
+        helpers::send_json(&producer, &topic, &serde_json::to_value(m).unwrap()).await;
+    }
+
+    producer.flush(Timeout::Never);
+
+    debug!("Sent test messages to Kafka");
+
+    // Start ingest
+    let (kdi, token, rt) = helpers::create_kdi(
+        &topic,
+        &table,
+        IngestOptions {
+            app_id: "starting_offsets_explicit".to_string(),
+            allowed_latency: 20,
+            max_messages_per_batch: 10,
+            min_bytes_per_file: 10,
+            starting_offsets: StartingOffsets::Explicit(hashmap! {
+                // starting offset is set at 4
+                0 => 4,
+            }),
+            ..Default::default()
+        },
+    );
+
+    // Wait for the rebalance assignment
+    std::thread::sleep(std::time::Duration::from_secs(5));
+
+    // Send messages to Kafka before starting kafka-delta-ingest
+    for m in create_generator(11).take(5) {
+        info!("Writing test message");
+        helpers::send_json(&producer, &topic, &serde_json::to_value(m).unwrap()).await;
+    }
+
+    info!("Waiting for version 1");
+    helpers::wait_until_version_created(&table, 1);
+
+    token.cancel();
+    kdi.await.unwrap();
+    rt.shutdown_background();
+
+    let written_ids: Vec<u64> = helpers::read_table_content(&table)
+        .await
+        .iter()
+        .map(|v| serde_json::from_value::<TestMsg>(v.clone()).unwrap().id)
+        .collect();
+
+    assert_eq!((5u64..15).collect::<Vec<u64>>(), written_ids);
 }
 
 #[tokio::test]
-async fn start_from_latest() {
-    // TODO
+async fn test_start_from_earliest() {
+    helpers::init_logger();
+
+    let table = helpers::create_local_table(
+        hashmap! {
+            "id" => "integer",
+            "date" => "string",
+        },
+        vec!["date"],
+    );
+
+    let topic = format!("starting_offsets_earliest{}", uuid::Uuid::new_v4());
+    helpers::create_topic(&topic, 3).await;
+
+    let producer = helpers::create_producer();
+
+    let messages: Vec<TestMsg> = create_generator(1).take(10).collect();
+
+    // Send messages to Kafka before starting kafka-delta-ingest
+    for m in messages.iter().take(15) {
+        info!("Writing test message");
+        helpers::send_json(&producer, &topic, &serde_json::to_value(m).unwrap()).await;
+    }
+
+    // Start ingest
+    let (kdi, token, rt) = helpers::create_kdi(
+        &topic,
+        &table,
+        IngestOptions {
+            app_id: "starting_offsets_earliest".to_string(),
+            allowed_latency: 2,
+            max_messages_per_batch: 10,
+            min_bytes_per_file: 10,
+            starting_offsets: StartingOffsets::Earliest,
+            ..Default::default()
+        },
+    );
+
+    info!("Waiting for version 1");
+    helpers::wait_until_version_created(&table, 1);
+
+    token.cancel();
+    kdi.await.unwrap();
+    rt.shutdown_background();
+
+    let mut written_ids: Vec<u64> = helpers::read_table_content(&table)
+        .await
+        .iter()
+        .map(|v| serde_json::from_value::<TestMsg>(v.clone()).unwrap().id)
+        .collect();
+    written_ids.sort();
+
+    assert_eq!((1u64..11).collect::<Vec<u64>>(), written_ids);
+}
+
+#[tokio::test]
+async fn test_start_from_latest() {
+    helpers::init_logger();
+
+    let table = helpers::create_local_table(
+        hashmap! {
+            "id" => "integer",
+            "date" => "string",
+        },
+        vec!["date"],
+    );
+
+    let topic = format!("starting_offsets_latest{}", uuid::Uuid::new_v4());
+    helpers::create_topic(&topic, 3).await;
+
+    let producer = helpers::create_producer();
+
+    // Send messages to Kafka before starting kafka-delta-ingest
+    for m in create_generator(1).take(5) {
+        info!("Writing test message");
+        helpers::send_json(&producer, &topic, &serde_json::to_value(m).unwrap()).await;
+    }
+
+    producer.flush(Timeout::Never);
+
+    // Start ingest
+    let (kdi, token, rt) = helpers::create_kdi(
+        &topic,
+        &table,
+        IngestOptions {
+            app_id: "starting_offsets_latest".to_string(),
+            allowed_latency: 10,
+            max_messages_per_batch: 10,
+            min_bytes_per_file: 10,
+            starting_offsets: StartingOffsets::Latest,
+            ..Default::default()
+        },
+    );
+
+    // Wait for the rebalance assignment so the position of latest is clear.
+    std::thread::sleep(std::time::Duration::from_secs(5));
+
+    for m in create_generator(6).take(10) {
+        info!("Writing test message");
+        helpers::send_json(&producer, &topic, &serde_json::to_value(m).unwrap()).await;
+    }
+
+    info!("Waiting for version 1");
+    helpers::wait_until_version_created(&table, 1);
+
+    token.cancel();
+    kdi.await.unwrap();
+    rt.shutdown_background();
+
+    let mut written_ids: Vec<u64> = helpers::read_table_content(&table)
+        .await
+        .iter()
+        .map(|v| serde_json::from_value::<TestMsg>(v.clone()).unwrap().id)
+        .collect();
+    written_ids.sort();
+
+    assert_eq!((6u64..16).collect::<Vec<u64>>(), written_ids);
+}
+
+fn create_generator(starting_id: u64) -> impl Iterator<Item = TestMsg> {
+    std::iter::successors(Some(starting_id), |n| Some(*n + 1)).map(|n| TestMsg {
+        id: n,
+        date: "2021-09-25".to_string(),
+    })
 }

@@ -1,6 +1,6 @@
 use chrono::Local;
 use deltalake::action::{Action, Add, MetaData, Protocol, Remove, Txn};
-use kafka_delta_ingest::{IngestOptions, IngestProcessor};
+use kafka_delta_ingest::{start_ingest, IngestOptions};
 use parquet::util::cursor::SliceableCursor;
 use parquet::{
     file::reader::{FileReader, SerializedFileReader},
@@ -204,14 +204,18 @@ pub fn create_kdi(
     env::set_var("DYNAMO_LOCK_ADDITIONAL_TIME_TO_WAIT_MILLIS", "100");
     env::set_var("DYNAMO_LOCK_LEASE_DURATION", "2");
 
-    let mut kdi = IngestProcessor::new(topic.to_string(), table.to_string(), options).unwrap();
-
     let rt = create_runtime(app_id.as_str());
     let token = Arc::new(CancellationToken::new());
 
     let run_loop = {
         let token = token.clone();
-        rt.spawn(async move { kdi.start(Some(&token)).await.unwrap() })
+        let topic = topic.to_string();
+        let table = table.to_string();
+        rt.spawn(async move {
+            start_ingest(topic, table, options, token.clone())
+                .await
+                .unwrap()
+        })
     };
 
     (run_loop, token, rt)
@@ -245,7 +249,10 @@ pub fn init_logger() {
                 record.args(),
             )
         })
-        .filter(None, log::LevelFilter::Info)
+        .filter(Some("dipstick::output::statsd"), log::LevelFilter::Info)
+        .filter(Some("rusoto_core"), log::LevelFilter::Info)
+        .filter(Some("deltalake::storage"), log::LevelFilter::Info)
+        .filter(None, log::LevelFilter::Debug)
         .try_init();
 }
 

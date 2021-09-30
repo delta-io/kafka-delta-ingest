@@ -3,7 +3,7 @@ use deltalake::{DeltaDataTypeVersion, DeltaTableError};
 use dipstick::{Input, InputScope, Prefixed, Statsd, StatsdScope};
 use log::{debug, error, info, warn};
 use parquet::errors::ParquetError;
-use rdkafka::message::{BorrowedMessage, Message};
+use rdkafka::message::Message;
 use std::convert::TryInto;
 use std::time::Instant;
 use tokio::{
@@ -40,13 +40,19 @@ pub(crate) trait Instrumentation {
     // messages
 
     /// Records a Kafka message has been deserialized.
-    async fn log_message_deserialized(&self, m: &BorrowedMessage) {
+    async fn log_message_deserialized<M>(&self, m: &M)
+    where
+        M: Message + Send + Sync,
+    {
         debug_message("Message deserialized", m);
         self.record_stat((StatTypes::MessageDeserialized, 1)).await;
     }
 
     /// Records a failure when deserializing a Kafka message.
-    async fn log_message_deserialization_failed(&self, m: &BorrowedMessage, e: &serde_json::Error) {
+    async fn log_message_deserialization_failed<M>(&self, m: &M, e: &serde_json::Error)
+    where
+        M: Message + Send + Sync,
+    {
         error_message(
             "Message deserialization failed",
             m,
@@ -63,13 +69,19 @@ pub(crate) trait Instrumentation {
     }
 
     /// Records that a Kafka message has been transformed.
-    async fn log_message_transformed(&self, m: &BorrowedMessage) {
+    async fn log_message_transformed<M>(&self, m: &M)
+    where
+        M: Message + Send + Sync,
+    {
         debug_message("Message transformed", m);
         self.record_stat((StatTypes::MessageTransformed, 1)).await;
     }
 
     /// Records that transforming a Kafka message failed.
-    async fn log_message_transform_failed(&self, m: &BorrowedMessage, e: &TransformError) {
+    async fn log_message_transform_failed<M>(&self, m: &M, e: &TransformError)
+    where
+        M: Message + Send + Sync,
+    {
         error_message("Message transformed failed", m, e as &dyn std::error::Error);
         self.record_stat((StatTypes::MessageTransformFailed, 1))
             .await;
@@ -162,7 +174,10 @@ pub(crate) trait Instrumentation {
     // control plane
 
     /// Records that the ingest stream has been cancelled and will terminate.
-    async fn log_stream_cancelled(&self, m: &BorrowedMessage) {
+    async fn log_stream_cancelled<M>(&self, m: &M)
+    where
+        M: Message + Send + Sync,
+    {
         info_message("Found cancellation token set. Stopping run loop.", m);
     }
 
@@ -252,7 +267,10 @@ impl StatsHandler {
     }
 }
 
-fn debug_message(description: &str, m: &BorrowedMessage) {
+fn debug_message<M>(description: &str, m: &M)
+where
+    M: Message + Send + Sync,
+{
     debug!(
         "{} - partition {} offset {}",
         description,
@@ -261,7 +279,10 @@ fn debug_message(description: &str, m: &BorrowedMessage) {
     );
 }
 
-fn info_message(description: &str, m: &BorrowedMessage) {
+fn info_message<M>(description: &str, m: &M)
+where
+    M: Message + Send + Sync,
+{
     info!(
         "{} - partition {} offset {}",
         description,
@@ -270,7 +291,10 @@ fn info_message(description: &str, m: &BorrowedMessage) {
     );
 }
 
-fn error_message(description: &str, m: &BorrowedMessage, e: &dyn std::error::Error) {
+fn error_message<M>(description: &str, m: &M, e: &dyn std::error::Error)
+where
+    M: Message + Send + Sync,
+{
     error!(
         "{} - partition {} offset {}, error: {}",
         description,

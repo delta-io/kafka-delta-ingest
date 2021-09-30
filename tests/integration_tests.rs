@@ -4,7 +4,7 @@ extern crate kafka_delta_ingest;
 mod helpers;
 
 use deltalake::action::Action;
-use kafka_delta_ingest::{IngestOptions, IngestProcessor};
+use kafka_delta_ingest::{start_ingest, IngestOptions};
 use log::debug;
 use parquet::{
     file::reader::{FileReader, SerializedFileReader},
@@ -86,17 +86,15 @@ async fn e2e_smoke_test() {
         ..Default::default()
     };
 
-    let mut stream = IngestProcessor::new(
+    let token = std::sync::Arc::new(CancellationToken::new());
+
+    // Start and join a future for produce, consume
+    let consume_future = start_ingest(
         topic.to_string(),
         TEST_DELTA_TABLE_LOCATION.to_string(),
         options,
-    )
-    .unwrap();
-
-    let token = CancellationToken::new();
-
-    // Start and join a future for produce, consume
-    let consume_future = stream.start(Some(&token));
+        token.clone(),
+    );
     let produce_future = produce_example(topic.as_str(), &token);
 
     let _ = tokio::join!(consume_future, produce_future);

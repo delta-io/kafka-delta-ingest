@@ -33,7 +33,7 @@
 extern crate clap;
 
 use clap::{AppSettings, Values};
-use kafka_delta_ingest::{IngestOptions, IngestProcessor, StartingOffsets};
+use kafka_delta_ingest::{start_ingest, IngestOptions, StartingOffsets};
 use log::{error, info};
 use std::collections::HashMap;
 
@@ -201,10 +201,15 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
                 statsd_endpoint,
             };
 
-            let mut ingest_service = IngestProcessor::new(topic, table_location, options)?;
-
             let _ = tokio::spawn(async move {
-                match ingest_service.start(None).await {
+                match start_ingest(
+                    topic,
+                    table_location,
+                    options,
+                    std::sync::Arc::new(tokio_util::sync::CancellationToken::new()),
+                )
+                .await
+                {
                     Ok(_) => info!("Ingest service exited gracefully"),
                     Err(e) => error!("Ingest service exited with error {:?}", e),
                 }
