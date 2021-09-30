@@ -12,7 +12,7 @@ extern crate strum_macros;
 #[cfg(test)]
 extern crate serde_json;
 
-use deltalake::{action, DeltaTableError, DeltaTransactionError};
+use deltalake::{action, DeltaTableError};
 use futures::stream::StreamExt;
 use log::{debug, error, info, warn};
 use rdkafka::{
@@ -49,6 +49,8 @@ use crate::{
     transforms::*,
 };
 use deltalake::action::{Action, Add};
+use deltalake::storage::s3::dynamodb_lock::DynamoError;
+use deltalake::storage::StorageError;
 
 type DataTypePartition = i32;
 type DataTypeOffset = i64;
@@ -83,14 +85,6 @@ pub enum IngestError {
         /// Wrapped [`deltalake::DeltaTableError`]
         #[from]
         source: DeltaTableError,
-    },
-
-    /// Error from [`deltalake::DeltaTransaction`]
-    #[error("DeltaTransaction failed: {source}")]
-    DeltaTransaction {
-        /// Wrapped [`deltalake::DeltaTransactionError`]
-        #[from]
-        source: DeltaTransactionError,
     },
 
     /// Error from [`DeltaWriter`]
@@ -146,6 +140,10 @@ pub enum IngestError {
         /// The underlying DeltaWriterError.
         source: DeltaWriterError,
     },
+
+    /// Error returned when delta table is in inconsistent state.
+    #[error("Delta table is in inconsistent state: {0}")]
+    InconsistentState(String),
 }
 
 /// Error returned when the string passed to [`StartingOffsets::from_string`] is invalid.
@@ -803,18 +801,29 @@ impl ProcessingState {
                     return Ok(());
                 }
                 Err(e) => match e {
-                    DeltaTableError::TransactionError {
-                        source: DeltaTransactionError::VersionAlreadyExists { .. },
-                    } if attempt_number > DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS + 1 => {
+                    DeltaTableError::VersionAlreadyExists(_)
+                        if attempt_number > DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS + 1 =>
+                    {
                         error!("Transaction attempt failed. Attempts exhausted beyond max_retry_commit_attempts of {} so failing.", DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS);
                         // TODO: record stat for DeltaWriteFailed
+
                         return Err(e.into());
                     }
-                    DeltaTableError::TransactionError {
-                        source: DeltaTransactionError::VersionAlreadyExists { .. },
-                    } => {
+                    DeltaTableError::VersionAlreadyExists(_) => {
                         attempt_number += 1;
                         error!("Transaction attempt failed. Incrementing attempt number to {} and retrying.", attempt_number);
+                    }
+                    DeltaTableError::StorageError {
+                        source:
+                            StorageError::DynamoDb {
+                                source: DynamoError::NonAcquirableLock,
+                            },
+                    } => {
+                        error!("Delta write failed {}", e);
+                        // TODO: record stat for DeltaWriteFailed
+                        return Err(IngestError::InconsistentState(
+                            "The remote dynamodb lock is non-acquirable!".to_string(),
+                        ));
                     }
                     _ => {
                         // TODO: record stat for DeltaWriteFailed
