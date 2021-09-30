@@ -148,33 +148,6 @@ pub enum IngestError {
     },
 }
 
-/// This error is used in stream run_loop to indicate whether the stream should
-/// jump straight to the next message with `Continue` or completely fail with `General` error.
-// #[derive(thiserror::Error, Debug)]
-// #[allow(clippy::large_enum_variant)]
-// enum ProcessingError {
-//     #[error("Continue to the next message")]
-//     Continue,
-
-//     #[error("IngestError: {source}")]
-//     General {
-//         #[from]
-//         source: IngestError,
-//     },
-// }
-
-// impl From<DeltaWriterError> for ProcessingError {
-//     fn from(e: DeltaWriterError) -> Self {
-//         ProcessingError::General { source: e.into() }
-//     }
-// }
-
-// impl From<DeadLetterQueueError> for ProcessingError {
-//     fn from(e: DeadLetterQueueError) -> Self {
-//         ProcessingError::General { source: e.into() }
-//     }
-// }
-
 /// Error returned when the string passed to [`StartingOffsets::from_string`] is invalid.
 #[derive(thiserror::Error, Debug)]
 #[error("Error returned when the value")]
