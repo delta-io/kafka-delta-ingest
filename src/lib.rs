@@ -12,26 +12,24 @@ extern crate strum_macros;
 #[cfg(test)]
 extern crate serde_json;
 
-use deltalake::{action, DeltaTableError};
+use deltalake::DeltaTableError;
 use futures::stream::StreamExt;
 use log::{debug, error, info, warn};
 use rdkafka::{
     config::ClientConfig,
-    consumer::{Consumer, ConsumerContext, MessageStream, Rebalance, StreamConsumer},
+    consumer::{Consumer, ConsumerContext, Rebalance, StreamConsumer},
     error::KafkaError,
-    message::{BorrowedMessage, OwnedMessage},
-    util::{Timeout, TokioRuntime},
+    message::OwnedMessage,
+    util::Timeout,
     ClientContext, Message, Offset, TopicPartitionList,
 };
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
-// use tokio::sync::{mpsc::Sender, Mutex};
-use std::sync::Mutex;
 use tokio::{
     sync::mpsc::{self, error::SendError, Receiver, Sender},
-    task::JoinHandle,
+    task::{JoinError, JoinHandle},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -48,7 +46,6 @@ use crate::{
     instrumentation::{Instrumentation, StatTypes, Statistic},
     transforms::*,
 };
-use deltalake::action::{Action, Add};
 use deltalake::storage::s3::dynamodb_lock::DynamoError;
 use deltalake::storage::StorageError;
 
@@ -144,68 +141,13 @@ pub enum IngestError {
     /// Error returned when delta table is in inconsistent state.
     #[error("Delta table is in inconsistent state: {0}")]
     InconsistentState(String),
-}
 
-/// Error returned when the string passed to [`StartingOffsets::from_string`] is invalid.
-#[derive(thiserror::Error, Debug)]
-#[error("Error returned when the value")]
-pub struct StartingOffsetsParseError {
-    /// The string that failed to parse.
-    pub string_to_parse: String,
-    /// serde_json error returned when trying to parse the string as explicit offsets.
-    pub error_message: String,
-}
-
-/// HashMap containing a specific offset to start from for each partition.
-pub type StartingPartitionOffsets = HashMap<DataTypePartition, DataTypeOffset>;
-
-/// Enum representing available starting offset options.
-/// When specifying explicit starting offsets, the JSON string passed must have a string key representing the partition
-/// and a u64 value representing the offset to start from.
-///
-/// # Example:
-///
-/// ```
-/// use maplit::hashmap;
-/// use kafka_delta_ingest::StartingOffsets;
-///
-/// let starting_offsets = StartingOffsets::from_string(r#"{"0":21,"1":52,"2":3}"#.to_string());
-///
-/// match starting_offsets {
-///     Ok(StartingOffsets::Explicit(starting_offsets)) => {
-///         assert_eq!(hashmap!{0 => 21, 1 => 52, 2 => 3}, starting_offsets);
-///     }
-///     _ => assert!(false, "This won't happen if you're JSON is formatted correctly.")
-/// }
-/// ```
-#[derive(Debug, serde::Deserialize, Clone, PartialEq)]
-pub enum StartingOffsets {
-    /// Start from earliest available Kafka offsets for partition offsets not stored in the delta log.
-    Earliest,
-    /// Start from latest available Kafka offsets for partition offsets not stored in the delta log.
-    Latest,
-    /// Start from explicit partition offsets when no offsets are stored in the delta log.
-    Explicit(StartingPartitionOffsets),
-}
-
-impl StartingOffsets {
-    /// Parses a string as [`StartingOffsets`].
-    /// Returns [`StartingOffsetsParseError`] if the string is not parseable.
-    pub fn from_string(s: String) -> Result<StartingOffsets, StartingOffsetsParseError> {
-        match s.as_str() {
-            "earliest" => Ok(StartingOffsets::Earliest),
-            "latest" => Ok(StartingOffsets::Latest),
-            maybe_json => {
-                let starting_partition_offsets: StartingPartitionOffsets =
-                    serde_json::from_str(maybe_json).map_err(|e| StartingOffsetsParseError {
-                        string_to_parse: s.clone(),
-                        error_message: e.to_string(),
-                    })?;
-
-                Ok(StartingOffsets::Explicit(starting_partition_offsets))
-            }
-        }
-    }
+    /// ...
+    #[error("{source}")]
+    TaskJoin {
+        #[from]
+        source: JoinError,
+    },
 }
 
 pub struct IngestOptions {
@@ -263,12 +205,75 @@ impl Default for IngestOptions {
     }
 }
 
+/// HashMap containing a specific offset to start from for each partition.
+pub type StartingPartitionOffsets = HashMap<DataTypePartition, DataTypeOffset>;
+
+/// Error returned when the string passed to [`StartingOffsets::from_string`] is invalid.
+#[derive(thiserror::Error, Debug)]
+#[error("Error returned when the value")]
+pub struct StartingOffsetsParseError {
+    /// The string that failed to parse.
+    pub string_to_parse: String,
+    /// serde_json error returned when trying to parse the string as explicit offsets.
+    pub error_message: String,
+}
+
+/// Enum representing available starting offset options.
+/// When specifying explicit starting offsets, the JSON string passed must have a string key representing the partition
+/// and a u64 value representing the offset to start from.
+///
+/// # Example:
+///
+/// ```
+/// use maplit::hashmap;
+/// use kafka_delta_ingest::StartingOffsets;
+///
+/// let starting_offsets = StartingOffsets::from_string(r#"{"0":21,"1":52,"2":3}"#.to_string());
+///
+/// match starting_offsets {
+///     Ok(StartingOffsets::Explicit(starting_offsets)) => {
+///         assert_eq!(hashmap!{0 => 21, 1 => 52, 2 => 3}, starting_offsets);
+///     }
+///     _ => assert!(false, "This won't happen if you're JSON is formatted correctly.")
+/// }
+/// ```
+#[derive(Debug, serde::Deserialize, Clone, PartialEq)]
+pub enum StartingOffsets {
+    /// Start from earliest available Kafka offsets for partition offsets not stored in the delta log.
+    Earliest,
+    /// Start from latest available Kafka offsets for partition offsets not stored in the delta log.
+    Latest,
+    /// Start from explicit partition offsets when no offsets are stored in the delta log.
+    Explicit(StartingPartitionOffsets),
+}
+
+impl StartingOffsets {
+    /// Parses a string as [`StartingOffsets`].
+    /// Returns [`StartingOffsetsParseError`] if the string is not parseable.
+    pub fn from_string(s: String) -> Result<StartingOffsets, StartingOffsetsParseError> {
+        match s.as_str() {
+            "earliest" => Ok(StartingOffsets::Earliest),
+            "latest" => Ok(StartingOffsets::Latest),
+            maybe_json => {
+                let starting_partition_offsets: StartingPartitionOffsets =
+                    serde_json::from_str(maybe_json).map_err(|e| StartingOffsetsParseError {
+                        string_to_parse: s.clone(),
+                        error_message: e.to_string(),
+                    })?;
+
+                Ok(StartingOffsets::Explicit(starting_partition_offsets))
+            }
+        }
+    }
+}
+
 /// ...
 #[derive(Debug)]
 pub enum KafkaEvent {
     Message(OwnedMessage),
     Rebalance(RebalanceSignal),
-    RebalanceCompleteMarker,
+    StateResetComplete,
+    KillSignal,
 }
 
 enum MessageDeserializationError {
@@ -288,6 +293,7 @@ pub async fn start_ingest(
 
     // Initialize the channel for receiving rebalance and message events
     let (event_sender, event_receiver) = mpsc::channel::<KafkaEvent>(1024);
+    // let (event_sender, event_receiver) = mpsc::channel::<KafkaEvent>(1);
 
     // Configure and create the Kafka consumer
     let kafka_client_config = kafka_client_config_from_options(&opts);
@@ -305,74 +311,31 @@ pub async fn start_ingest(
     );
 
     // Start processing events
-    let processor = ProcessingState::new(topic, table_uri.as_str(), consumer.clone(), opts).await?;
-    let processor_handle = start_processing(
+    let processor = ProcessingState::new(
+        topic,
+        table_uri.as_str(),
+        consumer.clone(),
         event_sender.clone(),
-        event_receiver,
-        processor,
-        cancellation_token.clone(),
-    );
+        opts,
+    )
+    .await?;
 
-    // TODO: handle JoinError
+    let processor_handle = start_processing(event_receiver, processor, cancellation_token.clone());
+
+    // TODO: handle JoinError appropriately
+    // This exit handling appears to be busted at the moment
     tokio::select! {
-        Ok(result) = source_handle => {
-            info!("Source terminated.");
-            result
+        source_result = source_handle => {
+            warn!("Source task terminated: {:?}", source_result);
+            // cancellation_token.cancel();
         }
-        Ok(result) = processor_handle => {
-            info!("Processor terminated.");
-            result
+        processor_result = processor_handle => {
+            warn!("Processor task terminated: {:?}", processor_result);
+            // cancellation_token.cancel();
         }
     }
-}
 
-fn start_processing(
-    mut event_sender: Sender<KafkaEvent>,
-    mut event_receiver: Receiver<KafkaEvent>,
-    mut processor: ProcessingState,
-    cancellation_token: Arc<CancellationToken>,
-) -> JoinHandle<Result<(), IngestError>> {
-    tokio::spawn(async move {
-        while let Some(event) = event_receiver.recv().await {
-            match event {
-                KafkaEvent::Message(m) => {
-                    if !processor.rebalancing {
-                        processor.process_message(m).await?;
-                    } else {
-                        warn!(
-                            "Skipping message at partition {} offset {} received during rebalance",
-                            m.partition(),
-                            m.offset()
-                        );
-                    }
-                }
-                KafkaEvent::Rebalance(r) => {
-                    processor.process_rebalance(r, &event_sender).await?;
-                }
-                KafkaEvent::RebalanceCompleteMarker => {
-                    warn!("Received RebalanceCompleteMarker - messages received after the marker will be processed.");
-                    processor.rebalancing = false;
-                }
-            }
-            if cancellation_token.is_cancelled() {
-                info!("Cancellation token is set. Stopping ingest process.");
-                return Ok(());
-            }
-        }
-
-        Ok(())
-    })
-}
-
-async fn dead_letter_queue_from_options(
-    opts: &IngestOptions,
-) -> Result<Box<dyn DeadLetterQueue>, DeadLetterQueueError> {
-    Ok(dead_letters::dlq_from_opts(DeadLetterQueueOptions {
-        delta_table_uri: opts.dlq_table_uri.clone(),
-        dead_letter_transforms: opts.dlq_transforms.clone(),
-        write_checkpoints: opts.write_checkpoints,
-    })
-    .await?)
+    Ok(())
 }
 
 fn start_source(
@@ -383,11 +346,12 @@ fn start_source(
     tokio::spawn(async move {
         while let Some(message) = consumer.stream().next().await {
             event_sender
-                .send(KafkaEvent::Message(message.unwrap().detach()))
+                .send(KafkaEvent::Message(message?.detach()))
                 .await?;
 
             if cancellation_token.is_cancelled() {
                 info!("Cancellation token is set. Stopping source.");
+                event_sender.send(KafkaEvent::KillSignal).await?;
                 return Ok(());
             }
         }
@@ -434,6 +398,47 @@ fn kafka_client_config_from_options(opts: &IngestOptions) -> ClientConfig {
     kafka_client_config
 }
 
+fn start_processing(
+    mut event_receiver: Receiver<KafkaEvent>,
+    mut processor: ProcessingState,
+    cancellation_token: Arc<CancellationToken>,
+) -> JoinHandle<Result<(), IngestError>> {
+    tokio::spawn(async move {
+        while let Some(event) = event_receiver.recv().await {
+            match event {
+                KafkaEvent::Message(m) => {
+                    if !processor.resetting_state {
+                        processor.process_message(m).await?;
+                    } else {
+                        warn!(
+                            "Skipping message at partition {} offset {} received during rebalance",
+                            m.partition(),
+                            m.offset()
+                        );
+                    }
+                    // processor.process_message(m).await?;
+                }
+                KafkaEvent::Rebalance(r) => {
+                    processor.process_rebalance(r).await?;
+                }
+                KafkaEvent::StateResetComplete => {
+                    warn!("Received RebalanceComplete - messages received after the marker will be processed.");
+                    processor.resetting_state = false;
+                }
+                KafkaEvent::KillSignal => {
+                    return Ok(());
+                }
+            }
+            // if cancellation_token.is_cancelled() {
+            //     info!("Cancellation token is set. Stopping ingest process.");
+            //     return Ok(());
+            // }
+        }
+
+        Ok(())
+    })
+}
+
 struct ProcessingState {
     topic: String,
     consumer: Arc<StreamConsumer<Context>>,
@@ -445,8 +450,9 @@ struct ProcessingState {
     latency_timer: Instant,
     last_buffer_lag_report: Option<Instant>,
     dlq: Box<dyn DeadLetterQueue>,
+    event_sender: Sender<KafkaEvent>,
     opts: IngestOptions,
-    rebalancing: bool,
+    resetting_state: bool,
 }
 
 impl ProcessingState {
@@ -454,6 +460,7 @@ impl ProcessingState {
         topic: String,
         table_uri: &str,
         consumer: Arc<StreamConsumer<Context>>,
+        event_sender: Sender<KafkaEvent>,
         opts: IngestOptions,
     ) -> Result<ProcessingState, IngestError> {
         let dlq = dead_letter_queue_from_options(&opts).await?;
@@ -469,8 +476,9 @@ impl ProcessingState {
             delta_partition_offsets: HashMap::new(),
             last_buffer_lag_report: None,
             dlq,
+            event_sender,
             opts,
-            rebalancing: false,
+            resetting_state: false,
         })
     }
 
@@ -581,7 +589,6 @@ impl ProcessingState {
     async fn process_rebalance(
         &mut self,
         rebalance_signal: RebalanceSignal,
-        event_sender: &Sender<KafkaEvent>,
     ) -> Result<(), IngestError> {
         info!("Processing rebalance signal - {:?}", rebalance_signal);
         match rebalance_signal {
@@ -595,18 +602,19 @@ impl ProcessingState {
                 //
             }
             RebalanceSignal::PostRebalanceAssign(partitions) => {
-                self.rebalancing = true;
-                let tpl = topic_partition_list_from_partitions(self.topic.as_str(), &partitions);
-                info!("Pausing consumer");
-                self.consumer.pause(&tpl)?;
-                self.partition_assignment.reset_with(partitions.as_slice());
-                self.reset_state().await?;
-                info!("Sending rebalance complete marker");
-                event_sender
-                    .send(KafkaEvent::RebalanceCompleteMarker)
-                    .await?;
-                info!("Resuming consumer");
-                self.consumer.resume(&tpl)?;
+                // self.rebalancing = true;
+                // let tpl = topic_partition_list_from_partitions(self.topic.as_str(), &partitions);
+                // info!("Pausing consumer");
+                // self.consumer.pause(&tpl)?;
+                // self.partition_assignment.reset_with(partitions.as_slice());
+                // self.reset_state().await?;
+                // info!("Sending rebalance complete marker");
+                // event_sender
+                //     .send(KafkaEvent::RebalanceCompleteMarker)
+                //     .await?;
+                // info!("Resuming consumer");
+                // self.consumer.resume(&tpl)?;
+                self.pause_reset_resume(Some(partitions)).await?;
             }
         }
         Ok(())
@@ -761,6 +769,7 @@ impl ProcessingState {
             if !self.are_partition_offsets_match() {
                 warn!("Transaction attempt failed. Delta log contains conflicting offsets. Resetting state.");
                 self.reset_state().await?;
+                // self.pause_reset_resume(None).await?;
 
                 // TODO: delete parquet file
                 return Ok(());
@@ -769,6 +778,7 @@ impl ProcessingState {
             if self.delta_writer.update_schema()? {
                 warn!("Transaction attempt failed. Delta log contains conflicting offsets. Resetting state.");
                 self.reset_state().await?;
+                // self.pause_reset_resume(None).await?;
 
                 // TODO: delete parquet file
                 return Ok(());
@@ -795,8 +805,8 @@ impl ProcessingState {
 
                     let elapsed_millis = delta_write_timer.elapsed().as_millis() as i64;
                     info!(
-                        "Delta write for version {} has completed in {} millis",
-                        version, elapsed_millis
+                        "Delta write for version {} has completed in {} millis for table uri {}",
+                        version, elapsed_millis, self.delta_writer.table.table_uri
                     );
 
                     // TODO: record stat for DeltaWriteCompleted and DeltaWriteDuration
@@ -858,6 +868,42 @@ impl ProcessingState {
         let partition_offsets = self.partition_assignment.partition_offsets();
 
         Ok((values, partition_offsets, partition_counts))
+    }
+
+    async fn pause_reset_resume(
+        &mut self,
+        partitions: Option<Vec<i32>>,
+    ) -> Result<(), IngestError> {
+        self.resetting_state = true;
+        let partitions = if let Some(partitions) = partitions {
+            partitions
+        } else {
+            self.partition_assignment
+                .assignment
+                .keys()
+                .copied()
+                .collect()
+        };
+
+        // let tpl = topic_partition_list_from_partitions(self.topic.as_str(), &partitions);
+        // info!("Pausing consumer");
+        // self.consumer.pause(&tpl)?;
+        info!("Resetting partition assignment");
+        self.partition_assignment.reset_with(partitions.as_slice());
+        info!("Resetting state");
+        self.reset_state().await?;
+        info!("Sending rebalance complete marker");
+        self.event_sender
+            .send(KafkaEvent::StateResetComplete)
+            .await?;
+
+        // TODO: Hrrrm.. https://github.com/confluentinc/confluent-kafka-dotnet/issues/1061
+        // std::thread::sleep(std::time::Duration::from_secs(5));
+
+        // info!("Resuming consumer");
+        // self.consumer.resume(&tpl)?;
+
+        Ok(())
     }
 
     async fn reset_state(&mut self) -> Result<(), IngestError> {
@@ -1193,6 +1239,19 @@ impl ConsumerContext for Context {
             }
         }
     }
+}
+
+// Factory functions
+
+async fn dead_letter_queue_from_options(
+    opts: &IngestOptions,
+) -> Result<Box<dyn DeadLetterQueue>, DeadLetterQueueError> {
+    Ok(dead_letters::dlq_from_opts(DeadLetterQueueOptions {
+        delta_table_uri: opts.dlq_table_uri.clone(),
+        dead_letter_transforms: opts.dlq_transforms.clone(),
+        write_checkpoints: opts.write_checkpoints,
+    })
+    .await?)
 }
 
 // Utility functions

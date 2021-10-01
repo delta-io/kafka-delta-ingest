@@ -84,7 +84,9 @@ async fn test_dlq() {
 
     info!("Sent {} records from structs", batch_to_send.len());
 
+    info!("Waiting for version 1 of dlq table");
     helpers::wait_until_version_created(&dlq_table, 1);
+    info!("Waiting for version 2 of data table");
     helpers::wait_until_version_created(&table, 1);
 
     // 1 message with bad bytes
@@ -96,7 +98,9 @@ async fn test_dlq() {
 
     info!("Sent {} records from bytes", batch_to_send.len());
 
+    info!("Waiting for version 2 of dlq table - {}", dlq_table);
     helpers::wait_until_version_created(&dlq_table, 2);
+    info!("Wait completed for dlq table - {}", dlq_table);
 
     // 6 more good messages just to make sure the stream keep working after hitting some bad
     let good_bytes_generator = good_generator.clone().map(|g| {
@@ -108,9 +112,16 @@ async fn test_dlq() {
         helpers::send_bytes(&producer, &data_topic, &m).await;
     }
 
+    info!("Waiting for version 2 of data table - {}", table);
     helpers::wait_until_version_created(&table, 2);
+    info!("Wait completed for data table - {}", table);
 
     token.cancel();
+
+    for m in bad_bytes_generator.clone().take(1) {
+        helpers::send_bytes(&producer, &data_topic, &m).await;
+    }
+
     kdi.await.unwrap();
     rt.shutdown_background();
 

@@ -10,7 +10,6 @@ use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::util::Timeout;
 use rdkafka::ClientConfig;
-use rusoto_core::Region;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -190,25 +189,6 @@ pub fn create_local_table_in(schema: HashMap<&str, &str>, partitions: Vec<&str>,
     .unwrap();
 }
 
-pub fn region() -> Region {
-    Region::Custom {
-        name: "custom".to_string(),
-        endpoint: LOCALSTACK_ENDPOINT.to_string(),
-    }
-}
-
-pub fn setup_envs() {
-    env::set_var("AWS_ENDPOINT_URL", LOCALSTACK_ENDPOINT);
-    env::set_var("AWS_ACCESS_KEY_ID", "test");
-    env::set_var("AWS_SECRET_ACCESS_KEY", "test");
-    env::set_var("AWS_S3_LOCKING_PROVIDER", "dynamodb");
-    env::set_var("DYNAMO_LOCK_TABLE_NAME", "locks");
-    env::set_var("DYNAMO_LOCK_OWNER_NAME", Uuid::new_v4().to_string());
-    env::set_var("DYNAMO_LOCK_REFRESH_PERIOD_MILLIS", "100");
-    env::set_var("DYNAMO_LOCK_ADDITIONAL_TIME_TO_WAIT_MILLIS", "100");
-    env::set_var("DYNAMO_LOCK_LEASE_DURATION", "2");
-}
-
 pub fn create_kdi(
     topic: &str,
     table: &str,
@@ -216,8 +196,13 @@ pub fn create_kdi(
 ) -> (JoinHandle<()>, Arc<CancellationToken>, Runtime) {
     let app_id = options.app_id.to_string();
 
-    setup_envs();
+    env::set_var("AWS_S3_LOCKING_PROVIDER", "dynamodb");
+    env::set_var("DYNAMO_LOCK_TABLE_NAME", "locks");
+    env::set_var("DYNAMO_LOCK_OWNER_NAME", Uuid::new_v4().to_string());
     env::set_var("DYNAMO_LOCK_PARTITION_KEY_VALUE", app_id.clone());
+    env::set_var("DYNAMO_LOCK_REFRESH_PERIOD_MILLIS", "100");
+    env::set_var("DYNAMO_LOCK_ADDITIONAL_TIME_TO_WAIT_MILLIS", "100");
+    env::set_var("DYNAMO_LOCK_LEASE_DURATION", "2");
 
     let rt = create_runtime(app_id.as_str());
     let token = Arc::new(CancellationToken::new());
@@ -244,7 +229,7 @@ pub fn create_runtime(name: &str) -> Runtime {
         .enable_io()
         .enable_time()
         .build()
-        .unwrap()
+        .expect("Tokio runtime error")
 }
 
 pub fn init_logger() {
@@ -264,9 +249,9 @@ pub fn init_logger() {
                 record.args(),
             )
         })
-        .filter(Some("dipstick::output::statsd"), log::LevelFilter::Info)
+        .filter(Some("dipstick"), log::LevelFilter::Info)
         .filter(Some("rusoto_core"), log::LevelFilter::Info)
-        .filter(Some("deltalake::storage"), log::LevelFilter::Info)
+        .filter(Some("deltalake"), log::LevelFilter::Info)
         .filter(None, log::LevelFilter::Debug)
         .try_init();
 }

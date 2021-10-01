@@ -138,7 +138,13 @@ impl TestScope {
         let table = self.table.clone();
         let options = self.create_options(name);
         let token = self.workers_token.clone();
-        rt.spawn(async move { start_ingest(topic, table, options, token).await.unwrap() })
+        rt.spawn(async move {
+            let _ = start_ingest(topic, table, options, token.clone()).await;
+
+            println!("Ingest process exited");
+
+            // token.cancel();
+        })
     }
 
     fn create_options(&self, name: &str) -> IngestOptions {
