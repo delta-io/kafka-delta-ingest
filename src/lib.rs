@@ -25,7 +25,7 @@ use rdkafka::{
 };
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 use tokio::{
     sync::mpsc::{self, error::SendError, Receiver, Sender},
@@ -69,13 +69,12 @@ pub enum IngestError {
         source: KafkaError,
     },
 
-    #[error("Kafka source error: {source}")]
-    KafkaSource {
-        ///
-        #[from]
-        source: SendError<KafkaEvent>,
-    },
-
+    // #[error("Kafka source error: {source}")]
+    // KafkaSource {
+    //     ///
+    //     #[from]
+    //     source: SendError<KafkaEvent>,
+    // },
     /// Error from [`deltalake::DeltaTable`]
     #[error("DeltaTable interaction failed: {source}")]
     DeltaTable {
@@ -268,13 +267,13 @@ impl StartingOffsets {
 }
 
 /// ...
-#[derive(Debug)]
-pub enum KafkaEvent {
-    Message(OwnedMessage),
-    Rebalance(RebalanceSignal),
-    StateResetComplete,
-    KillSignal,
-}
+// #[derive(Debug)]
+// pub enum KafkaEvent {
+//     Message(OwnedMessage),
+//     Rebalance(RebalanceSignal),
+//     StateResetComplete,
+//     KillSignal,
+// }
 
 enum MessageDeserializationError {
     EmptyPayload,
@@ -287,78 +286,124 @@ pub async fn start_ingest(
     opts: IngestOptions,
     cancellation_token: Arc<CancellationToken>,
 ) -> Result<(), IngestError> {
+    let partition_assignment = Arc::new(Mutex::new(PartitionAssignment::default()));
+
     // Start stats listener and get a sender
     // let stats_sender =
     // instrumentation::init_stats(opts.statsd_endpoint.as_str(), opts.app_id.as_str())?;
 
     // Initialize the channel for receiving rebalance and message events
-    let (event_sender, event_receiver) = mpsc::channel::<KafkaEvent>(1024);
+    // let (event_sender, event_receiver) = mpsc::channel::<KafkaEvent>(1024);
     // let (event_sender, event_receiver) = mpsc::channel::<KafkaEvent>(1);
+
+    // let kafka_consumer_context = Context::new(event_sender.clone());
+    let kafka_consumer_context = Context {
+        partition_assignment: partition_assignment.clone(),
+    };
 
     // Configure and create the Kafka consumer
     let kafka_client_config = kafka_client_config_from_options(&opts);
-    let kafka_consumer_context = Context::new(event_sender.clone());
     let consumer: StreamConsumer<Context> =
         kafka_client_config.create_with_context(kafka_consumer_context)?;
     let consumer = Arc::new(consumer);
     consumer.subscribe(&[topic.as_str()])?;
 
-    // Start the message source
-    let source_handle = start_source(
-        consumer.clone(),
-        event_sender.clone(),
-        cancellation_token.clone(),
-    );
+    // // Start the message source
+    // let source_handle = start_source(
+    //     consumer.clone(),
+    //     event_sender.clone(),
+    //     cancellation_token.clone(),
+    // );
 
     // Start processing events
-    let processor = ProcessingState::new(
+    let mut processor = ProcessingState::new(
         topic,
         table_uri.as_str(),
         consumer.clone(),
-        event_sender.clone(),
+        // event_sender.clone(),
+        partition_assignment.clone(),
         opts,
     )
     .await?;
 
-    let processor_handle = start_processing(event_receiver, processor, cancellation_token.clone());
+    while let Some(event) = consumer.stream().next().await {
+        let message = event?;
 
-    // TODO: handle JoinError appropriately
-    // This exit handling appears to be busted at the moment
-    tokio::select! {
-        source_result = source_handle => {
-            warn!("Source task terminated: {:?}", source_result);
-            // cancellation_token.cancel();
+        processor.process_message(message).await?;
+
+        if cancellation_token.is_cancelled() {
+            return Ok(());
         }
-        processor_result = processor_handle => {
-            warn!("Processor task terminated: {:?}", processor_result);
-            // cancellation_token.cancel();
-        }
+
+        // match event {
+        //     KafkaEvent::Message(m) => {
+        //         if !processor.resetting_state {
+        //             processor.process_message(m).await?;
+        //         } else {
+        //             warn!(
+        //                 "Skipping message at partition {} offset {} received during rebalance",
+        //                 m.partition(),
+        //                 m.offset()
+        //             );
+        //         }
+        //         // processor.process_message(m).await?;
+        //     }
+        //     KafkaEvent::Rebalance(r) => {
+        //         processor.process_rebalance(r).await?;
+        //     }
+        //     KafkaEvent::StateResetComplete => {
+        //         warn!("Received RebalanceComplete - messages received after the marker will be processed.");
+        //         processor.resetting_state = false;
+        //     }
+        //     KafkaEvent::KillSignal => {
+        //         return Ok(());
+        //     }
+        // }
+        // if cancellation_token.is_cancelled() {
+        //     info!("Cancellation token is set. Stopping ingest process.");
+        //     return Ok(());
+        // }
     }
 
     Ok(())
+
+    // let processor_handle = start_processing(event_receiver, processor, cancellation_token.clone());
+
+    // TODO: handle JoinError appropriately
+    // This exit handling appears to be busted at the moment
+    // tokio::select! {
+    //     source_result = source_handle => {
+    //         warn!("Source task terminated: {:?}", source_result);
+    //         // cancellation_token.cancel();
+    //     }
+    //     processor_result = processor_handle => {
+    //         warn!("Processor task terminated: {:?}", processor_result);
+    //         // cancellation_token.cancel();
+    //     }
+    // }
 }
 
-fn start_source(
-    consumer: Arc<StreamConsumer<Context>>,
-    event_sender: Sender<KafkaEvent>,
-    cancellation_token: Arc<CancellationToken>,
-) -> JoinHandle<Result<(), IngestError>> {
-    tokio::spawn(async move {
-        while let Some(message) = consumer.stream().next().await {
-            event_sender
-                .send(KafkaEvent::Message(message?.detach()))
-                .await?;
+// fn start_source(
+//     consumer: Arc<StreamConsumer<Context>>,
+//     event_sender: Sender<KafkaEvent>,
+//     cancellation_token: Arc<CancellationToken>,
+// ) -> JoinHandle<Result<(), IngestError>> {
+//     tokio::spawn(async move {
+//         while let Some(message) = consumer.stream().next().await {
+//             event_sender
+//                 .send(KafkaEvent::Message(message?.detach()))
+//                 .await?;
 
-            if cancellation_token.is_cancelled() {
-                info!("Cancellation token is set. Stopping source.");
-                event_sender.send(KafkaEvent::KillSignal).await?;
-                return Ok(());
-            }
-        }
+//             if cancellation_token.is_cancelled() {
+//                 info!("Cancellation token is set. Stopping source.");
+//                 event_sender.send(KafkaEvent::KillSignal).await?;
+//                 return Ok(());
+//             }
+//         }
 
-        Ok(())
-    })
-}
+//         Ok(())
+//     })
+// }
 
 fn kafka_client_config_from_options(opts: &IngestOptions) -> ClientConfig {
     let mut kafka_client_config = ClientConfig::new();
@@ -398,59 +443,59 @@ fn kafka_client_config_from_options(opts: &IngestOptions) -> ClientConfig {
     kafka_client_config
 }
 
-fn start_processing(
-    mut event_receiver: Receiver<KafkaEvent>,
-    mut processor: ProcessingState,
-    cancellation_token: Arc<CancellationToken>,
-) -> JoinHandle<Result<(), IngestError>> {
-    tokio::spawn(async move {
-        while let Some(event) = event_receiver.recv().await {
-            match event {
-                KafkaEvent::Message(m) => {
-                    if !processor.resetting_state {
-                        processor.process_message(m).await?;
-                    } else {
-                        warn!(
-                            "Skipping message at partition {} offset {} received during rebalance",
-                            m.partition(),
-                            m.offset()
-                        );
-                    }
-                    // processor.process_message(m).await?;
-                }
-                KafkaEvent::Rebalance(r) => {
-                    processor.process_rebalance(r).await?;
-                }
-                KafkaEvent::StateResetComplete => {
-                    warn!("Received RebalanceComplete - messages received after the marker will be processed.");
-                    processor.resetting_state = false;
-                }
-                KafkaEvent::KillSignal => {
-                    return Ok(());
-                }
-            }
-            // if cancellation_token.is_cancelled() {
-            //     info!("Cancellation token is set. Stopping ingest process.");
-            //     return Ok(());
-            // }
-        }
+// fn start_processing(
+//     mut event_receiver: Receiver<KafkaEvent>,
+//     mut processor: ProcessingState,
+//     cancellation_token: Arc<CancellationToken>,
+// ) -> JoinHandle<Result<(), IngestError>> {
+//     tokio::spawn(async move {
+//         while let Some(event) = event_receiver.recv().await {
+//             match event {
+//                 KafkaEvent::Message(m) => {
+//                     if !processor.resetting_state {
+//                         processor.process_message(m).await?;
+//                     } else {
+//                         warn!(
+//                             "Skipping message at partition {} offset {} received during rebalance",
+//                             m.partition(),
+//                             m.offset()
+//                         );
+//                     }
+//                     // processor.process_message(m).await?;
+//                 }
+//                 KafkaEvent::Rebalance(r) => {
+//                     processor.process_rebalance(r).await?;
+//                 }
+//                 KafkaEvent::StateResetComplete => {
+//                     warn!("Received RebalanceComplete - messages received after the marker will be processed.");
+//                     processor.resetting_state = false;
+//                 }
+//                 KafkaEvent::KillSignal => {
+//                     return Ok(());
+//                 }
+//             }
+//             // if cancellation_token.is_cancelled() {
+//             //     info!("Cancellation token is set. Stopping ingest process.");
+//             //     return Ok(());
+//             // }
+//         }
 
-        Ok(())
-    })
-}
+//         Ok(())
+//     })
+// }
 
 struct ProcessingState {
     topic: String,
     consumer: Arc<StreamConsumer<Context>>,
     transformer: Transformer,
     delta_writer: DeltaWriter,
-    partition_assignment: PartitionAssignment,
+    partition_assignment: Arc<Mutex<PartitionAssignment>>,
     value_buffers: ValueBuffers,
     delta_partition_offsets: HashMap<DataTypePartition, Option<DataTypeOffset>>,
     latency_timer: Instant,
     last_buffer_lag_report: Option<Instant>,
     dlq: Box<dyn DeadLetterQueue>,
-    event_sender: Sender<KafkaEvent>,
+    // event_sender: Sender<KafkaEvent>,
     opts: IngestOptions,
     resetting_state: bool,
 }
@@ -460,7 +505,8 @@ impl ProcessingState {
         topic: String,
         table_uri: &str,
         consumer: Arc<StreamConsumer<Context>>,
-        event_sender: Sender<KafkaEvent>,
+        partition_assignment: Arc<Mutex<PartitionAssignment>>,
+        // event_sender: Sender<KafkaEvent>,
         opts: IngestOptions,
     ) -> Result<ProcessingState, IngestError> {
         let dlq = dead_letter_queue_from_options(&opts).await?;
@@ -471,12 +517,13 @@ impl ProcessingState {
             transformer,
             delta_writer: DeltaWriter::for_table_uri(table_uri).await?,
             value_buffers: ValueBuffers::default(),
-            partition_assignment: PartitionAssignment::default(),
+            // partition_assignment: PartitionAssignment::default(),
+            partition_assignment,
             latency_timer: Instant::now(),
             delta_partition_offsets: HashMap::new(),
             last_buffer_lag_report: None,
             dlq,
-            event_sender,
+            // event_sender,
             opts,
             resetting_state: false,
         })
@@ -557,6 +604,11 @@ impl ProcessingState {
             self.complete_record_batch().await?;
         }
 
+        if self.should_complete_file() {
+            info!("");
+            self.complete_file().await?;
+        }
+
         Ok(())
     }
 
@@ -586,39 +638,39 @@ impl ProcessingState {
         Ok(value)
     }
 
-    async fn process_rebalance(
-        &mut self,
-        rebalance_signal: RebalanceSignal,
-    ) -> Result<(), IngestError> {
-        info!("Processing rebalance signal - {:?}", rebalance_signal);
-        match rebalance_signal {
-            RebalanceSignal::PreRebalanceRevoke => {
-                //
-            }
-            RebalanceSignal::PreRebalanceAssign(_partitions) => {
-                //
-            }
-            RebalanceSignal::PostRebalanceRevoke => {
-                //
-            }
-            RebalanceSignal::PostRebalanceAssign(partitions) => {
-                // self.rebalancing = true;
-                // let tpl = topic_partition_list_from_partitions(self.topic.as_str(), &partitions);
-                // info!("Pausing consumer");
-                // self.consumer.pause(&tpl)?;
-                // self.partition_assignment.reset_with(partitions.as_slice());
-                // self.reset_state().await?;
-                // info!("Sending rebalance complete marker");
-                // event_sender
-                //     .send(KafkaEvent::RebalanceCompleteMarker)
-                //     .await?;
-                // info!("Resuming consumer");
-                // self.consumer.resume(&tpl)?;
-                self.pause_reset_resume(Some(partitions)).await?;
-            }
-        }
-        Ok(())
-    }
+    // async fn process_rebalance(
+    //     &mut self,
+    //     rebalance_signal: RebalanceSignal,
+    // ) -> Result<(), IngestError> {
+    //     info!("Processing rebalance signal - {:?}", rebalance_signal);
+    //     match rebalance_signal {
+    //         RebalanceSignal::PreRebalanceRevoke => {
+    //             //
+    //         }
+    //         RebalanceSignal::PreRebalanceAssign(_partitions) => {
+    //             //
+    //         }
+    //         RebalanceSignal::PostRebalanceRevoke => {
+    //             //
+    //         }
+    //         RebalanceSignal::PostRebalanceAssign(partitions) => {
+    //             // self.rebalancing = true;
+    //             // let tpl = topic_partition_list_from_partitions(self.topic.as_str(), &partitions);
+    //             // info!("Pausing consumer");
+    //             // self.consumer.pause(&tpl)?;
+    //             // self.partition_assignment.reset_with(partitions.as_slice());
+    //             // self.reset_state().await?;
+    //             // info!("Sending rebalance complete marker");
+    //             // event_sender
+    //             //     .send(KafkaEvent::RebalanceCompleteMarker)
+    //             //     .await?;
+    //             // info!("Resuming consumer");
+    //             // self.consumer.resume(&tpl)?;
+    //             self.pause_reset_resume(Some(partitions)).await?;
+    //         }
+    //     }
+    //     Ok(())
+    // }
 
     fn should_complete_record_batch(&self) -> bool {
         let elapsed_millis = self.latency_timer.elapsed().as_millis();
@@ -732,12 +784,18 @@ impl ProcessingState {
 
     async fn complete_file(
         &mut self,
-        partition_offsets: &HashMap<DataTypePartition, DataTypeOffset>,
+        // partition_offsets: &HashMap<DataTypePartition, DataTypeOffset>,
     ) -> Result<(), IngestError> {
         // Reset the latency timer to track allowed latency for the next file
         self.latency_timer = Instant::now();
 
         info!("Completing file");
+
+        let partition_offsets = {
+            let partition_assignment = self.partition_assignment.lock().unwrap();
+
+            let partition_offsets = partition_assignment.partition_offsets();
+        };
 
         // TODO: use for recording DeltaWriteDuration
         let delta_write_timer = Instant::now();
@@ -878,11 +936,10 @@ impl ProcessingState {
         let partitions = if let Some(partitions) = partitions {
             partitions
         } else {
-            self.partition_assignment
-                .assignment
-                .keys()
-                .copied()
-                .collect()
+            {
+                let partition_assignment = self.partition_assignment.lock()?;
+                partition_assignment.assignment.keys().copied().collect()
+            }
         };
 
         // let tpl = topic_partition_list_from_partitions(self.topic.as_str(), &partitions);
@@ -892,10 +949,10 @@ impl ProcessingState {
         self.partition_assignment.reset_with(partitions.as_slice());
         info!("Resetting state");
         self.reset_state().await?;
-        info!("Sending rebalance complete marker");
-        self.event_sender
-            .send(KafkaEvent::StateResetComplete)
-            .await?;
+        // info!("Sending rebalance complete marker");
+        // self.event_sender
+        //     .send(KafkaEvent::StateResetComplete)
+        //     .await?;
 
         // TODO: Hrrrm.. https://github.com/confluentinc/confluent-kafka-dotnet/issues/1061
         // std::thread::sleep(std::time::Duration::from_secs(5));
@@ -1122,12 +1179,14 @@ pub enum RebalanceSignal {
 /// Contains the partition to offset assignment for a consumer.
 struct PartitionAssignment {
     assignment: HashMap<DataTypePartition, Option<DataTypeOffset>>,
+    rebalance_signal: Option<RebalanceSignal>,
 }
 
 impl Default for PartitionAssignment {
     fn default() -> Self {
         Self {
             assignment: HashMap::new(),
+            rebalance_signal: None,
         }
     }
 }
@@ -1167,16 +1226,16 @@ impl PartitionAssignment {
 }
 
 /// Custom rdkafka [`Context`] associated with the rdkafka [`Consumer`].
-/// Holds a sender to a channel of [`KafkaEvent`].
 struct Context {
-    sender: Sender<KafkaEvent>,
+    // sender: Sender<KafkaEvent>,
+    partition_assignment: Arc<Mutex<PartitionAssignment>>,
 }
 
-impl Context {
-    fn new(sender: Sender<KafkaEvent>) -> Self {
-        Self { sender }
-    }
-}
+// impl Context {
+// fn new(sender: Sender<KafkaEvent>) -> Self {
+//     Self { sender }
+// }
+// }
 
 impl ClientContext for Context {}
 
@@ -1185,25 +1244,25 @@ impl ConsumerContext for Context {
         match rebalance {
             Rebalance::Revoke => {
                 debug!("PRE_REBALANCE - Revoke");
-                let sender = self.sender.clone();
+                // let sender = self.sender.clone();
 
-                tokio::spawn(async move {
-                    let _ = sender
-                        .send(KafkaEvent::Rebalance(RebalanceSignal::PreRebalanceRevoke))
-                        .await;
-                });
+                // tokio::spawn(async move {
+                //     let _ = sender
+                //         .send(KafkaEvent::Rebalance(RebalanceSignal::PreRebalanceRevoke))
+                //         .await;
+                // });
             }
             Rebalance::Assign(tpl) => {
                 debug!("PRE_REBALANCE - Assign {:?}", tpl);
-                let partitions = partition_vec_from_topic_partition_list(tpl);
-                let sender = self.sender.clone();
-                tokio::spawn(async move {
-                    let _ = sender
-                        .send(KafkaEvent::Rebalance(RebalanceSignal::PreRebalanceAssign(
-                            partitions,
-                        )))
-                        .await;
-                });
+                // let partitions = partition_vec_from_topic_partition_list(tpl);
+                // let sender = self.sender.clone();
+                // tokio::spawn(async move {
+                //     let _ = sender
+                //         .send(KafkaEvent::Rebalance(RebalanceSignal::PreRebalanceAssign(
+                //             partitions,
+                //         )))
+                //         .await;
+                // });
             }
             Rebalance::Error(e) => {
                 panic!("PRE_REBALANCE - Unexpected Kafka error {:?}", e);
@@ -1215,24 +1274,29 @@ impl ConsumerContext for Context {
         match rebalance {
             Rebalance::Revoke => {
                 debug!("POST_REBALANCE - Revoke");
-                let sender = self.sender.clone();
-                tokio::spawn(async move {
-                    let _ = sender
-                        .send(KafkaEvent::Rebalance(RebalanceSignal::PostRebalanceRevoke))
-                        .await;
-                });
+                // let sender = self.sender.clone();
+                // tokio::spawn(async move {
+                //     let _ = sender
+                //         .send(KafkaEvent::Rebalance(RebalanceSignal::PostRebalanceRevoke))
+                //         .await;
+                // });
+                let mut pa = self.partition_assignment.lock().unwrap();
+                pa.rebalance_signal = Some(RebalanceSignal::PostRebalanceRevoke);
             }
             Rebalance::Assign(tpl) => {
                 debug!("POST_REBALANCE - Assign {:?}", tpl);
+                // let partitions = partition_vec_from_topic_partition_list(tpl);
+                // let sender = self.sender.clone();
+                // tokio::spawn(async move {
+                //     let _ = sender
+                //         .send(KafkaEvent::Rebalance(RebalanceSignal::PostRebalanceAssign(
+                //             partitions,
+                //         )))
+                //         .await;
+                // });
+                let mut pa = self.partition_assignment.lock().unwrap();
                 let partitions = partition_vec_from_topic_partition_list(tpl);
-                let sender = self.sender.clone();
-                tokio::spawn(async move {
-                    let _ = sender
-                        .send(KafkaEvent::Rebalance(RebalanceSignal::PostRebalanceAssign(
-                            partitions,
-                        )))
-                        .await;
-                });
+                pa.rebalance_signal = Some(RebalanceSignal::PostRebalanceAssign(partitions));
             }
             Rebalance::Error(e) => {
                 panic!("POST_REBALANCE - Unexpected Kafka error {:?}", e);
@@ -1267,20 +1331,20 @@ fn partition_vec_from_topic_partition_list(
         .collect()
 }
 
-/// Creates an [`rdkafka`] [`TopicPartitionList`] from a topic and vec of partitions.
-fn topic_partition_list_from_partitions(
-    topic: &str,
-    partitions: &Vec<DataTypePartition>,
-) -> TopicPartitionList {
-    let mut tpl = TopicPartitionList::new();
+// /// Creates an [`rdkafka`] [`TopicPartitionList`] from a topic and vec of partitions.
+// fn topic_partition_list_from_partitions(
+//     topic: &str,
+//     partitions: &Vec<DataTypePartition>,
+// ) -> TopicPartitionList {
+//     let mut tpl = TopicPartitionList::new();
 
-    tpl.add_topic_unassigned(topic);
-    for p in partitions {
-        tpl.add_partition(topic, *p);
-    }
+//     tpl.add_topic_unassigned(topic);
+//     for p in partitions {
+//         tpl.add_partition(topic, *p);
+//     }
 
-    tpl
-}
+//     tpl
+// }
 
 #[cfg(test)]
 mod tests {
