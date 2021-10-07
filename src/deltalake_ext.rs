@@ -21,7 +21,7 @@ use deltalake::{
     DeltaDataTypeLong, DeltaDataTypeVersion, DeltaTable, DeltaTableError, Schema, StorageBackend,
     StorageError, UriError,
 };
-use log::{debug, warn};
+use log::{debug, info, warn};
 use parquet::{
     arrow::ArrowWriter,
     basic::{Compression, LogicalType, TimestampType},
@@ -601,14 +601,22 @@ impl DeltaWriter {
         version: DeltaDataTypeVersion,
     ) -> Result<(), DeltaWriterError> {
         if version % 10 == 0 {
+            let table_version = self.table.version;
             // if there's new version right after current commit, then we need to reset
             // the table right back to version to create the checkpoint
-            let version_updated = self.table.version != version;
+            let version_updated = table_version != version;
             if version_updated {
                 self.table.load_version(version).await?;
             }
 
+            info!(
+                "Creating checkpoint at version {}. Table version {}.",
+                version, table_version
+            );
+
             checkpoints::create_checkpoint_from_table(&self.table).await?;
+
+            info!("Checkpoint for version {} is created.", version);
 
             if version_updated {
                 self.table.update().await?;
