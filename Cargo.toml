@@ -35,7 +35,7 @@ uuid = { version = "0.8", features = ["serde", "v4"] }
 arrow  = { git = "https://github.com/apache/arrow-rs", rev = "615d7830fdaf994ebd32ca1e349daf68b18c99b0" }
 parquet = {  git = "https://github.com/apache/arrow-rs", rev = "615d7830fdaf994ebd32ca1e349daf68b18c99b0" }
 
-deltalake = { git = "https://github.com/delta-io/delta-rs.git", rev = "4be507d00d4b695aa83589f241954bde932970ba", features = ["s3"] }
+deltalake = { git = "https://github.com/delta-io/delta-rs.git", rev = "773864d69568466047d555b013d8e0c46b4826c4", features = ["s3"] }
 
 [dev-dependencies]
 utime = "0.3"
