@@ -323,6 +323,9 @@ impl DeltaWriter {
         let mut table = DeltaTable::new(
             table_uri,
             get_backend_for_uri_with_options(table_uri, options.clone())?,
+            deltalake::DeltaTableConfig {
+                require_tombstones: true,
+            },
         )?;
         table.load().await?;
         let storage = get_backend_for_uri_with_options(table_uri, options)?;
