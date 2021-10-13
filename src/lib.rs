@@ -1,7 +1,7 @@
 //! Implementations supporting the kafka-delta-ingest daemon
 
-// #![deny(warnings)]
-// #![deny(missing_docs)]
+//#![deny(warnings)]
+#![deny(missing_docs)]
 
 #[macro_use]
 extern crate lazy_static;
@@ -19,12 +19,8 @@ use rdkafka::{
     config::ClientConfig,
     consumer::{Consumer, ConsumerContext, Rebalance, StreamConsumer},
     error::KafkaError,
-    // message::OwnedMessage,
     util::Timeout,
-    ClientContext,
-    Message,
-    Offset,
-    TopicPartitionList,
+    ClientContext, Message, Offset, TopicPartitionList,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -42,7 +38,6 @@ pub mod deltalake_ext;
 mod instrumentation;
 mod transforms;
 
-#[allow(unused_imports)]
 use crate::{
     dead_letters::*,
     deltalake_ext::{DeltaWriter, DeltaWriterError},
@@ -62,8 +57,7 @@ const AUTO_OFFSET_RESET_CONFIG_KEY: &str = "auto.offset.reset";
 const AUTO_OFFSET_RESET_CONFIG_VALUE_EARLIEST: &str = "earliest";
 const AUTO_OFFSET_RESET_CONFIG_VALUE_LATEST: &str = "latest";
 
-const ERR_MSG_PARTITION_ASSIGNMENT_MUTEX_POISONED: &str = "PartitionAssignment Mutex is poisoned";
-
+/// Errors returned by [`start_ingest`] function.
 #[derive(thiserror::Error, Debug)]
 pub enum IngestError {
     /// Error from [`rdkafka`]
@@ -140,24 +134,20 @@ pub enum IngestError {
     #[error("Delta table is in an inconsistent state: {0}")]
     InconsistentState(String),
 
-    /// ...
-    #[error("Delta transaction log contains conflicting offsets for handled partitions.")]
+    /// Error returned when a rebalance event is noticed while writing a delta transaction.
+    #[error("Delta transaction interrupted by rebalance.")]
+    RebalanceInterrupt,
+
+    /// Error returned when the the offsets in delta log txn actions for assigned partitions have changed.
+    #[error("Delta transaction log contains conflicting offsets for assigned partitions.")]
     ConflictingOffsets,
 
-    /// ...
-    #[error("Delta schema has changed.")]
+    /// Error returned when the delta schema has changed since the version used to write messages to the parquet buffer.
+    #[error("Delta schema has changed and must be updated.")]
     DeltaSchemaChanged,
 }
 
-#[derive(thiserror::Error, Debug)]
-enum MessageDeserializationError {
-    #[error("Kafka message contained empty payload")]
-    EmptyPayload,
-    #[error("Kafka message dserialization failed")]
-    JsonDeserialization { dead_letter: DeadLetter },
-}
-
-/// Error returned when the string passed to [`StartingOffsets::from_string`] is invalid.
+/// Error returned when the string passed to [`StartingOffsets`] `from_string` method is invalid.
 #[derive(thiserror::Error, Debug)]
 pub struct StartingOffsetsParseError {
     /// The string that failed to parse.
@@ -176,6 +166,59 @@ impl std::fmt::Display for StartingOffsetsParseError {
     }
 }
 
+/// HashMap containing a specific offset to start from for each partition.
+pub type StartingPartitionOffsets = HashMap<DataTypePartition, DataTypeOffset>;
+
+/// Enum representing available starting offset options.
+/// When specifying explicit starting offsets, the JSON string passed must have a string key representing the partition
+/// and a u64 value representing the offset to start from.
+///
+/// # Example:
+///
+/// ```
+/// use maplit::hashmap;
+/// use kafka_delta_ingest::StartingOffsets;
+///
+/// let starting_offsets = StartingOffsets::from_string(r#"{"0":21,"1":52,"2":3}"#.to_string());
+///
+/// match starting_offsets {
+///     Ok(StartingOffsets::Explicit(starting_offsets)) => {
+///         assert_eq!(hashmap!{0 => 21, 1 => 52, 2 => 3}, starting_offsets);
+///     }
+///     _ => assert!(false, "This won't happen if you're JSON is formatted correctly.")
+/// }
+/// ```
+#[derive(Debug, serde::Deserialize, Clone, PartialEq)]
+pub enum StartingOffsets {
+    /// Start from earliest available Kafka offsets for partition offsets not stored in the delta log.
+    Earliest,
+    /// Start from latest available Kafka offsets for partition offsets not stored in the delta log.
+    Latest,
+    /// Start from explicit partition offsets when no offsets are stored in the delta log.
+    Explicit(StartingPartitionOffsets),
+}
+
+impl StartingOffsets {
+    /// Parses a string as [`StartingOffsets`].
+    /// Returns [`StartingOffsetsParseError`] if the string is not parseable.
+    pub fn from_string(s: String) -> Result<StartingOffsets, StartingOffsetsParseError> {
+        match s.as_str() {
+            "earliest" => Ok(StartingOffsets::Earliest),
+            "latest" => Ok(StartingOffsets::Latest),
+            maybe_json => {
+                let starting_partition_offsets: StartingPartitionOffsets =
+                    serde_json::from_str(maybe_json).map_err(|e| StartingOffsetsParseError {
+                        string_to_parse: s.clone(),
+                        error_message: e.to_string(),
+                    })?;
+
+                Ok(StartingOffsets::Explicit(starting_partition_offsets))
+            }
+        }
+    }
+}
+
+/// Options for configuring the behavior of the run loop executed by the [`start_ingest`] function.
 pub struct IngestOptions {
     /// The Kafka broker string to connect to.
     pub kafka_brokers: String,
@@ -230,97 +273,109 @@ impl Default for IngestOptions {
         }
     }
 }
-
-/// HashMap containing a specific offset to start from for each partition.
-pub type StartingPartitionOffsets = HashMap<DataTypePartition, DataTypeOffset>;
-
-impl StartingOffsets {
-    /// Parses a string as [`StartingOffsets`].
-    /// Returns [`StartingOffsetsParseError`] if the string is not parseable.
-    pub fn from_string(s: String) -> Result<StartingOffsets, StartingOffsetsParseError> {
-        match s.as_str() {
-            "earliest" => Ok(StartingOffsets::Earliest),
-            "latest" => Ok(StartingOffsets::Latest),
-            maybe_json => {
-                let starting_partition_offsets: StartingPartitionOffsets =
-                    serde_json::from_str(maybe_json).map_err(|e| StartingOffsetsParseError {
-                        string_to_parse: s.clone(),
-                        error_message: e.to_string(),
-                    })?;
-
-                Ok(StartingOffsets::Explicit(starting_partition_offsets))
-            }
-        }
-    }
-}
-
+/// Executes a run loop to consume from a Kafka topic and write to a Delta table.
 pub async fn start_ingest(
     topic: String,
     table_uri: String,
     opts: IngestOptions,
     cancellation_token: Arc<CancellationToken>,
 ) -> Result<(), IngestError> {
-    let partition_assignment = Arc::new(Mutex::new(PartitionAssignment::default()));
-
-    let kafka_consumer_context = KafkaContext {
-        partition_assignment: partition_assignment.clone(),
-    };
+    // Initialize a RebalanceSignal to share between threads so it can be set when rebalance events are sent from Kafka and checked in the run loop.
+    let rebalance_signal = Arc::new(RwLock::new(None));
 
     // Configure and create the Kafka consumer
+    let kafka_consumer_context = KafkaContext {
+        rebalance_signal: rebalance_signal.clone(),
+    };
     let kafka_client_config = kafka_client_config_from_options(&opts);
     let consumer: StreamConsumer<KafkaContext> =
         kafka_client_config.create_with_context(kafka_consumer_context)?;
     let consumer = Arc::new(consumer);
     consumer.subscribe(&[topic.as_str()])?;
 
+    let mut partition_assignment = PartitionAssignment::default();
+
     // Start processing events
     let mut processor = IngestProcessor::new(
         topic,
         table_uri.as_str(),
         consumer.clone(),
-        partition_assignment.clone(),
+        rebalance_signal.clone(),
         opts,
     )
     .await?;
 
     while let Some(message) = consumer.stream().next().await {
         // Check for rebalance
-        {
-            debug!("Checking for rebalance signal");
-            let mut pa = partition_assignment
-                .lock()
-                .expect(ERR_MSG_PARTITION_ASSIGNMENT_MUTEX_POISONED);
 
-            if pa.rebalance_signal.is_some() {
-                debug!(
-                    "Rebalance signal exists. Processing rebalance signal {:?}",
-                    pa.rebalance_signal
-                );
-                processor.process_rebalance_signal(
-                    pa.rebalance_signal.as_ref().unwrap().clone(),
-                    &mut pa,
-                )?;
+        // step 1 - use a read lock so we don't starve the write lock from `KafkaContext`.
+        // if we don't need to handle post assign, we can move ahead.
+        // if there is a post assign - in step 2, we grab a write lock.
+        let rebalance_action = {
+            debug!("Checking for rebalance signal");
+            let rebalance_signal = rebalance_signal.read().await;
+
+            if let Some(rb) = rebalance_signal.as_ref() {
+                debug!("Rebalance signal exists {:?}.", rebalance_signal);
+                match rb {
+                    RebalanceSignal::PostRebalanceAssign(_) => {
+                        Some(RebalanceAction::ClearStateAndSkipMessage)
+                    }
+                    _ => Some(RebalanceAction::SkipMessage),
+                }
+            } else {
+                None
+            }
+        };
+
+        // step 2 - if there is a post assign - we need to acquire the write lock so we can clear it after resetting state
+        // otherwise, no need for a write lock
+        match rebalance_action {
+            Some(RebalanceAction::ClearStateAndSkipMessage) => {
+                let mut rebalance_signal = rebalance_signal.write().await;
+                match rebalance_signal.as_mut() {
+                    Some(RebalanceSignal::PostRebalanceAssign(partitions)) => {
+                        debug!("Resetting state and clearing rebalance signal. Current partitions are {:?}", partitions);
+                        processor.delta_writer.update_table().await?;
+                        partition_assignment.reset_with(partitions.as_slice());
+                        processor.reset_state(&mut partition_assignment)?;
+                        *rebalance_signal = None;
+                        continue;
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            None => {
+                debug!("No rebalance signal exists - will process message");
+            }
+            _ => {
+                debug!("Skipping message while awaiting rebalance");
                 continue;
             }
         }
 
-        // As long as there is no rebalance signal, process the message
+        // As long as there is no rebalance signal, process the message.
         let message = message?;
 
-        if let Err(e) = processor.process_message(message).await {
+        if let Err(e) = processor
+            .process_message(message, &mut partition_assignment)
+            .await
+        {
             match e {
                 IngestError::ConflictingOffsets | IngestError::DeltaSchemaChanged => {
-                    let mut pa = partition_assignment
-                        .lock()
-                        .expect(ERR_MSG_PARTITION_ASSIGNMENT_MUTEX_POISONED);
-
                     warn!("{}", e);
-                    processor.reset_state(&mut pa)?;
+                    processor.delta_writer.update_table().await?;
+                    processor.reset_state(&mut partition_assignment)?;
+                }
+                IngestError::RebalanceInterrupt => {
+                    warn!("Rebalance encountered while writing to delta.");
+                    continue;
                 }
                 _ => return Err(e),
             }
         }
 
+        // Exit if the cancellation token is set.
         if cancellation_token.is_cancelled() {
             return Ok(());
         }
@@ -329,50 +384,27 @@ pub async fn start_ingest(
     Ok(())
 }
 
-fn kafka_client_config_from_options(opts: &IngestOptions) -> ClientConfig {
-    let mut kafka_client_config = ClientConfig::new();
-
-    if let Ok(cert_pem) = std::env::var("KAFKA_DELTA_INGEST_CERT") {
-        kafka_client_config.set("ssl.certificate.pem", cert_pem);
-    }
-
-    if let Ok(key_pem) = std::env::var("KAFKA_DELTA_INGEST_KEY") {
-        kafka_client_config.set("ssl.key.pem", key_pem);
-    }
-
-    if opts.starting_offsets == StartingOffsets::Latest {
-        kafka_client_config.set(
-            AUTO_OFFSET_RESET_CONFIG_KEY,
-            AUTO_OFFSET_RESET_CONFIG_VALUE_LATEST,
-        );
-    } else if opts.starting_offsets == StartingOffsets::Earliest {
-        kafka_client_config.set(
-            AUTO_OFFSET_RESET_CONFIG_KEY,
-            AUTO_OFFSET_RESET_CONFIG_VALUE_EARLIEST,
-        );
-    }
-
-    if let Some(additional) = &opts.additional_kafka_settings {
-        for (k, v) in additional.iter() {
-            info!("Applying additional kafka setting {} = {}", k, v);
-            kafka_client_config.set(k, v);
-        }
-    }
-
-    kafka_client_config
-        .set("bootstrap.servers", opts.kafka_brokers.clone())
-        .set("group.id", opts.consumer_group_id.clone())
-        .set("enable.auto.commit", "false");
-
-    kafka_client_config
+/// Error returned when message deserialization fails.
+/// This is handled by the run loop, and the message is treated as a dead letter.
+#[derive(thiserror::Error, Debug)]
+enum MessageDeserializationError {
+    #[error("Kafka message contained empty payload")]
+    EmptyPayload,
+    #[error("Kafka message dserialization failed")]
+    JsonDeserialization { dead_letter: DeadLetter },
+}
+/// Indicates whether a rebalance signal should simply skip the currently consumed message, or clear state and skip.
+enum RebalanceAction {
+    SkipMessage,
+    ClearStateAndSkipMessage,
 }
 
 struct IngestProcessor {
     topic: String,
     consumer: Arc<StreamConsumer<KafkaContext>>,
+    rebalance_signal: Arc<RwLock<Option<RebalanceSignal>>>,
     transformer: Transformer,
     delta_writer: DeltaWriter,
-    partition_assignment: Arc<Mutex<PartitionAssignment>>,
     value_buffers: ValueBuffers,
     delta_partition_offsets: HashMap<DataTypePartition, Option<DataTypeOffset>>,
     latency_timer: Instant,
@@ -386,7 +418,7 @@ impl IngestProcessor {
         topic: String,
         table_uri: &str,
         consumer: Arc<StreamConsumer<KafkaContext>>,
-        partition_assignment: Arc<Mutex<PartitionAssignment>>,
+        rebalance_signal: Arc<RwLock<Option<RebalanceSignal>>>,
         opts: IngestOptions,
     ) -> Result<IngestProcessor, IngestError> {
         let dlq = dead_letter_queue_from_options(&opts).await?;
@@ -394,11 +426,10 @@ impl IngestProcessor {
         Ok(IngestProcessor {
             topic,
             consumer,
+            rebalance_signal,
             transformer,
             delta_writer: DeltaWriter::for_table_uri(table_uri).await?,
             value_buffers: ValueBuffers::default(),
-            // partition_assignment: PartitionAssignment::default(),
-            partition_assignment,
             latency_timer: Instant::now(),
             delta_partition_offsets: HashMap::new(),
             last_buffer_lag_report: None,
@@ -407,35 +438,11 @@ impl IngestProcessor {
         })
     }
 
-    fn process_rebalance_signal(
+    async fn process_message<M>(
         &mut self,
-        rebalance_signal: RebalanceSignal,
+        message: M,
         partition_assignment: &mut PartitionAssignment,
-    ) -> Result<(), IngestError> {
-        debug!("process_rebalance_signal");
-        match rebalance_signal {
-            RebalanceSignal::PreRebalanceRevoke
-            | RebalanceSignal::PreRebalanceAssign(_)
-            | RebalanceSignal::PostRebalanceRevoke => {
-                debug!(
-                    "Skipping message for rebalance_signal: {:?}",
-                    rebalance_signal
-                );
-                return Ok(());
-            }
-            RebalanceSignal::PostRebalanceAssign(partitions) => {
-                debug!("Handling PostRebalanceAssign");
-                partition_assignment.reset_with(partitions.as_slice());
-                partition_assignment.rebalance_signal = None;
-                // self.reset_state(&mut partition_assignment)?;
-                self.reset_state(partition_assignment)?;
-                debug!("Handled PostRebalanceAssign");
-            }
-        }
-        Ok(())
-    }
-
-    async fn process_message<M>(&mut self, message: M) -> Result<(), IngestError>
+    ) -> Result<(), IngestError>
     where
         M: Message + Send + Sync,
     {
@@ -477,12 +484,12 @@ impl IngestProcessor {
 
         if self.should_complete_record_batch() {
             info!("Completing record batch{}", log_suffix);
-            self.complete_record_batch().await?;
+            self.complete_record_batch(partition_assignment).await?;
         }
 
         if self.should_complete_file() {
             info!("Completing file{}", log_suffix);
-            self.complete_file().await?;
+            self.complete_file(partition_assignment).await?;
         }
 
         Ok(())
@@ -514,10 +521,14 @@ impl IngestProcessor {
         Ok(value)
     }
 
-    async fn complete_record_batch(&mut self) -> Result<(), IngestError> {
+    async fn complete_record_batch(
+        &mut self,
+        partition_assignment: &mut PartitionAssignment,
+    ) -> Result<(), IngestError> {
         info!("Record batch started");
 
-        let (values, partition_offsets, partition_counts) = self.consume_value_buffers()?;
+        let (values, partition_offsets, partition_counts) =
+            self.consume_value_buffers(partition_assignment)?;
 
         if values.is_empty() {
             return Ok(());
@@ -559,35 +570,21 @@ impl IngestProcessor {
 
     async fn complete_file(
         &mut self,
-        // partition_offsets: &HashMap<DataTypePartition, DataTypeOffset>,
+        partition_assignment: &PartitionAssignment,
     ) -> Result<(), IngestError> {
         // Reset the latency timer to track allowed latency for the next file
         self.latency_timer = Instant::now();
-
         info!("Completing file");
-
-        let partition_offsets = {
-            let partition_assignment = self
-                .partition_assignment
-                .lock()
-                .expect(ERR_MSG_PARTITION_ASSIGNMENT_MUTEX_POISONED);
-            partition_assignment.partition_offsets()
-        };
-
+        let partition_offsets = partition_assignment.partition_offsets();
         // TODO: use for recording DeltaWriteDuration
         let delta_write_timer = Instant::now();
-
         // upload pending parquet file to delta store
         // TODO remove it if we got conflict error? or it'll be considered as tombstone
-
         let add = self.delta_writer.write_parquet_files().await?;
-
         for a in add.iter() {
             // TODO: record DeltaAddFileSize for each file
         }
-
         let mut attempt_number: u32 = 0;
-
         let prepared_commit = {
             let mut tx = self.delta_writer.table.create_transaction(None);
             tx.add_actions(delta_helpers::build_actions(
@@ -600,42 +597,40 @@ impl IngestProcessor {
 
         loop {
             self.delta_writer.update_table().await?;
-
             if !self.are_partition_offsets_match() {
                 return Err(IngestError::ConflictingOffsets);
             }
-
             if self.delta_writer.update_schema()? {
                 return Err(IngestError::DeltaSchemaChanged);
             }
-
             let version = self.delta_writer.table_version() + 1;
-            let commit_result = self
-                .delta_writer
-                .table
-                .try_commit_transaction(&prepared_commit, version)
-                .await;
-
+            // Check for a rebalance signal and complete the transaction
+            let commit_result = {
+                let rebalance_signal = self.rebalance_signal.read().await;
+                if rebalance_signal.is_some() {
+                    return Err(IngestError::RebalanceInterrupt);
+                }
+                self.delta_writer
+                    .table
+                    .try_commit_transaction(&prepared_commit, version)
+                    .await
+            };
             match commit_result {
                 Ok(v) => {
+                    // TODO: This should probably be an IngestError return instead of an assert
                     assert_eq!(v, version);
-
                     for (p, o) in partition_offsets {
                         self.delta_partition_offsets.insert(p, Some(o));
                     }
-
                     if self.opts.write_checkpoints {
                         self.delta_writer.try_create_checkpoint(version).await?;
                     }
-
                     let elapsed_millis = delta_write_timer.elapsed().as_millis() as i64;
                     info!(
                         "Delta write for version {} has completed in {} millis for table uri {}",
                         version, elapsed_millis, self.delta_writer.table.table_uri
                     );
-
                     // TODO: record stat for DeltaWriteCompleted and DeltaWriteDuration
-
                     return Ok(());
                 }
                 Err(e) => match e {
@@ -644,7 +639,6 @@ impl IngestProcessor {
                     {
                         error!("Transaction attempt failed. Attempts exhausted beyond max_retry_commit_attempts of {} so failing.", DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS);
                         // TODO: record stat for DeltaWriteFailed
-
                         return Err(e.into());
                     }
                     DeltaTableError::VersionAlreadyExists(_) => {
@@ -674,6 +668,7 @@ impl IngestProcessor {
 
     fn consume_value_buffers(
         &mut self,
+        partition_assignment: &mut PartitionAssignment,
     ) -> Result<
         (
             Vec<Value>,
@@ -689,12 +684,8 @@ impl IngestProcessor {
         } = self.value_buffers.consume();
 
         let partition_offsets = {
-            let mut pa = self
-                .partition_assignment
-                .lock()
-                .expect("PartitionAssignment Mutex is poisoned");
-            pa.update_offsets(&partition_offsets);
-            pa.partition_offsets()
+            partition_assignment.update_offsets(&partition_offsets);
+            partition_assignment.partition_offsets()
         };
 
         Ok((values, partition_offsets, partition_counts))
@@ -704,39 +695,29 @@ impl IngestProcessor {
         &mut self,
         partition_assignment: &mut PartitionAssignment,
     ) -> Result<(), IngestError> {
-        debug!("Resetting state");
+        debug!("Clearing processor state");
         self.delta_writer.reset();
-        debug!("delta_writer reset");
         self.value_buffers.reset();
-        debug!("value_buffers reset");
         self.delta_partition_offsets.clear();
-        debug!("delta_partition_offsets reset");
-
-        info!("State cleared.");
-
-        let partitions: Vec<DataTypePartition> = partition_assignment
-            .partition_offsets()
-            .keys()
-            .copied()
-            .collect();
-
-        // update offsets to the latest from the delta log
+        debug!("Applying offsets to state from delta log");
+        let partitions: Vec<DataTypePartition> =
+            partition_assignment.assignment.keys().copied().collect();
+        // update offsets stored in PartitionAssignment to the latest from the delta log
         for partition in partitions.iter() {
             let txn_app_id =
                 delta_helpers::txn_app_id_for_partition(self.opts.app_id.as_str(), *partition);
             let version = self
                 .delta_writer
                 .last_transaction_version(txn_app_id.as_str());
-
+            debug!(
+                "Partition {} (txn_app_id: {}) should seek to {:?}",
+                partition, txn_app_id, version
+            );
             partition_assignment.assignment.insert(*partition, version);
             self.delta_partition_offsets.insert(*partition, version);
         }
-
-        info!("Offsets from delta log applied to state.");
-
-        info!("Seeking consumer");
+        debug!("Seeking consumer");
         self.seek_consumer(&partition_assignment)?;
-
         Ok(())
     }
 
@@ -776,6 +757,7 @@ impl IngestProcessor {
                         }
                         StartingOffsets::Explicit(starting_offsets) => {
                             if let Some(offset) = starting_offsets.get(p) {
+                                debug!("Explicit offsets are configured for partition {}", p);
                                 debug!("Seeking consumer to offset {} for partition {}. No offset is stored in delta log but explicit starting offsets are specified.", offset, p);
                                 self.consumer.seek(
                                     &self.topic,
@@ -785,7 +767,6 @@ impl IngestProcessor {
                                 )?;
                             } else {
                                 debug!("Not seeking consumer. Offsets are explicit, but an entry is not provided for partition {}. `auto.offset.reset` from additional kafka settings will be used.", p);
-
                                 // TODO: may need to lookup auto.offset.reset and force seek instead
                             }
                         }
@@ -799,23 +780,6 @@ impl IngestProcessor {
     fn should_process_offset(&self, partition: DataTypePartition, offset: DataTypeOffset) -> bool {
         if let Some(Some(written_offset)) = self.delta_partition_offsets.get(&partition) {
             if offset <= *written_offset {
-                return false;
-            }
-        }
-
-        if let Some(Some(buffered_offset)) = self
-            .value_buffers
-            .buffers
-            .get(&partition)
-            .map(|b| b.last_offset)
-        {
-            if offset <= buffered_offset {
-                return false;
-            }
-        }
-
-        if let StartingOffsets::Explicit(starting_offsets) = &self.opts.starting_offsets {
-            if starting_offsets.get(&partition).map(|o| *o >= offset) == Some(true) {
                 return false;
             }
         }
@@ -886,39 +850,10 @@ impl IngestProcessor {
     }
 }
 
-/// Enum representing available starting offset options.
-/// When specifying explicit starting offsets, the JSON string passed must have a string key representing the partition
-/// and a u64 value representing the offset to start from.
-///
-/// # Example:
-///
-/// ```
-/// use maplit::hashmap;
-/// use kafka_delta_ingest::StartingOffsets;
-///
-/// let starting_offsets = StartingOffsets::from_string(r#"{"0":21,"1":52,"2":3}"#.to_string());
-///
-/// match starting_offsets {
-///     Ok(StartingOffsets::Explicit(starting_offsets)) => {
-///         assert_eq!(hashmap!{0 => 21, 1 => 52, 2 => 3}, starting_offsets);
-///     }
-///     _ => assert!(false, "This won't happen if you're JSON is formatted correctly.")
-/// }
-/// ```
-#[derive(Debug, serde::Deserialize, Clone, PartialEq)]
-pub enum StartingOffsets {
-    /// Start from earliest available Kafka offsets for partition offsets not stored in the delta log.
-    Earliest,
-    /// Start from latest available Kafka offsets for partition offsets not stored in the delta log.
-    Latest,
-    /// Start from explicit partition offsets when no offsets are stored in the delta log.
-    Explicit(StartingPartitionOffsets),
-}
-
 /// Enum that represents a signal of an asynchronously received rebalance event that must be handled in the run loop.
 /// Used to preserve correctness of messages stored in buffer after handling a rebalance event.
 #[derive(Debug, PartialEq, Clone)]
-pub enum RebalanceSignal {
+enum RebalanceSignal {
     // None,
     PreRebalanceRevoke,
     PreRebalanceAssign(Vec<DataTypePartition>),
@@ -931,14 +866,12 @@ pub enum RebalanceSignal {
 /// This struct should be used within an `Arc<Mutex<>>` to allow sharing the `RebalanceSignal` state.
 struct PartitionAssignment {
     assignment: HashMap<DataTypePartition, Option<DataTypeOffset>>,
-    rebalance_signal: Option<RebalanceSignal>,
 }
 
 impl Default for PartitionAssignment {
     fn default() -> Self {
         Self {
             assignment: HashMap::new(),
-            rebalance_signal: None,
         }
     }
 }
@@ -1083,62 +1016,106 @@ struct ConsumedBuffers {
     partition_counts: HashMap<DataTypePartition, usize>,
 }
 
-/// Custom rdkafka [`ClientContext`] associated with the rdkafka [`Consumer`].
+/// Implements rdkafka [`ClientContext`] to handle rebalance events associated with the rdkafka [`Consumer`].
 struct KafkaContext {
-    partition_assignment: Arc<Mutex<PartitionAssignment>>,
+    rebalance_signal: Arc<RwLock<Option<RebalanceSignal>>>,
 }
 
 impl ClientContext for KafkaContext {}
 
 impl ConsumerContext for KafkaContext {
     fn pre_rebalance(&self, rebalance: &Rebalance) {
-        let mut partition_assignment = self
-            .partition_assignment
-            .lock()
-            .expect(ERR_MSG_PARTITION_ASSIGNMENT_MUTEX_POISONED);
+        // debug!("PRE_REBALANCE received - {:?}", rebalance);
+        let rebalance_signal = self.rebalance_signal.clone();
         match rebalance {
             Rebalance::Revoke => {
                 debug!("PRE_REBALANCE - Revoke");
-                partition_assignment.rebalance_signal = Some(RebalanceSignal::PreRebalanceRevoke);
+                let _ = tokio::spawn(async move {
+                    rebalance_signal
+                        .write()
+                        .await
+                        .replace(RebalanceSignal::PreRebalanceRevoke);
+                });
             }
             Rebalance::Assign(tpl) => {
                 debug!("PRE_REBALANCE - Assign {:?}", tpl);
-                let partitions = partition_vec_from_topic_partition_list(tpl);
-                partition_assignment.rebalance_signal =
-                    Some(RebalanceSignal::PreRebalanceAssign(partitions));
+                // TODO: Sending this signal seems to break everything
+                // let partitions = partition_vec_from_topic_partition_list(tpl);
+                // let _ = tokio::spawn(async move {
+                //     rebalance_signal
+                //         .write()
+                //         .await
+                //         .replace(RebalanceSignal::PreRebalanceAssign(partitions));
+                // });
             }
             Rebalance::Error(e) => {
                 panic!("PRE_REBALANCE - Unexpected Kafka error {:?}", e);
             }
         }
-        debug!("PRE_REBALANCE handled");
     }
 
     fn post_rebalance(&self, rebalance: &Rebalance) {
-        let mut partition_assignment = self
-            .partition_assignment
-            .lock()
-            .expect(ERR_MSG_PARTITION_ASSIGNMENT_MUTEX_POISONED);
+        let rebalance_signal = self.rebalance_signal.clone();
         match rebalance {
             Rebalance::Revoke => {
+                // TODO: Probably don't need to send this signal
                 debug!("POST_REBALANCE - Revoke");
-                partition_assignment.rebalance_signal = Some(RebalanceSignal::PostRebalanceRevoke);
+                // let _ = tokio::spawn(async move {
+                //     rebalance_signal
+                //         .write()
+                //         .await
+                //         .replace(RebalanceSignal::PostRebalanceRevoke);
+                // });
             }
             Rebalance::Assign(tpl) => {
                 debug!("POST_REBALANCE - Assign {:?}", tpl);
                 let partitions = partition_vec_from_topic_partition_list(tpl);
-                partition_assignment.rebalance_signal =
-                    Some(RebalanceSignal::PostRebalanceAssign(partitions));
+                let _ = tokio::spawn(async move {
+                    rebalance_signal
+                        .write()
+                        .await
+                        .replace(RebalanceSignal::PostRebalanceAssign(partitions));
+                });
             }
             Rebalance::Error(e) => {
                 panic!("POST_REBALANCE - Unexpected Kafka error {:?}", e);
             }
         }
-        debug!("POST_REBALANCE handled");
     }
 }
 
-// Factory functions
+fn kafka_client_config_from_options(opts: &IngestOptions) -> ClientConfig {
+    let mut kafka_client_config = ClientConfig::new();
+    if let Ok(cert_pem) = std::env::var("KAFKA_DELTA_INGEST_CERT") {
+        kafka_client_config.set("ssl.certificate.pem", cert_pem);
+    }
+    if let Ok(key_pem) = std::env::var("KAFKA_DELTA_INGEST_KEY") {
+        kafka_client_config.set("ssl.key.pem", key_pem);
+    }
+    if opts.starting_offsets == StartingOffsets::Latest {
+        kafka_client_config.set(
+            AUTO_OFFSET_RESET_CONFIG_KEY,
+            AUTO_OFFSET_RESET_CONFIG_VALUE_LATEST,
+        );
+    } else if opts.starting_offsets == StartingOffsets::Earliest {
+        kafka_client_config.set(
+            AUTO_OFFSET_RESET_CONFIG_KEY,
+            AUTO_OFFSET_RESET_CONFIG_VALUE_EARLIEST,
+        );
+    }
+    if let Some(additional) = &opts.additional_kafka_settings {
+        for (k, v) in additional.iter() {
+            info!("Applying additional kafka setting {} = {}", k, v);
+            kafka_client_config.set(k, v);
+        }
+    }
+    kafka_client_config
+        .set("bootstrap.servers", opts.kafka_brokers.clone())
+        .set("group.id", opts.consumer_group_id.clone())
+        .set("enable.auto.commit", "false");
+
+    kafka_client_config
+}
 
 async fn dead_letter_queue_from_options(
     opts: &IngestOptions,

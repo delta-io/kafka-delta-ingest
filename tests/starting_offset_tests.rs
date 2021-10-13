@@ -6,6 +6,11 @@ use maplit::hashmap;
 use rdkafka::{producer::Producer, util::Timeout};
 use serde::{Deserialize, Serialize};
 
+// These tests are executed serially to allow for predictable rebalance waits.
+// Rebalance times vary too much to produce predictable test outputs
+// when the local kafka container is receiving concurrent requests from other tasks.
+use serial_test::serial;
+
 use kafka_delta_ingest::{IngestOptions, StartingOffsets};
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -15,6 +20,7 @@ struct TestMsg {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_start_from_explicit() {
     helpers::init_logger();
 
@@ -59,7 +65,7 @@ async fn test_start_from_explicit() {
     );
 
     // Wait for the rebalance assignment
-    std::thread::sleep(std::time::Duration::from_secs(5));
+    std::thread::sleep(std::time::Duration::from_secs(3));
 
     // Send messages to Kafka before starting kafka-delta-ingest
     for m in create_generator(11).take(5) {
@@ -84,6 +90,7 @@ async fn test_start_from_explicit() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_start_from_earliest() {
     helpers::init_logger();
 
@@ -140,6 +147,7 @@ async fn test_start_from_earliest() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_start_from_latest() {
     helpers::init_logger();
 
@@ -152,11 +160,12 @@ async fn test_start_from_latest() {
     );
 
     let topic = format!("starting_offsets_latest{}", uuid::Uuid::new_v4());
-    helpers::create_topic(&topic, 3).await;
+    helpers::create_topic(&topic, 1).await;
 
     let producer = helpers::create_producer();
 
     // Send messages to Kafka before starting kafka-delta-ingest
+    // offsets for this first set should be 0...4
     for m in create_generator(1).take(5) {
         info!("Writing test message");
         helpers::send_json(&producer, &topic, &serde_json::to_value(m).unwrap()).await;
@@ -179,9 +188,21 @@ async fn test_start_from_latest() {
     );
 
     // Wait for the rebalance assignment so the position of latest is clear.
-    std::thread::sleep(std::time::Duration::from_secs(5));
+    // Precise starting offset in a production environment will depend on message rate, but, "latest is what latest is".
+    std::thread::sleep(std::time::Duration::from_secs(3));
 
-    for m in create_generator(6).take(10) {
+    // Send on message to trigger seek to latest
+    // This skips a message to account for the seek
+    for m in create_generator(6).take(1) {
+        info!("Writing test message");
+        helpers::send_json(&producer, &topic, &serde_json::to_value(m).unwrap()).await;
+    }
+
+    // Wait for the rebalance assignment so the position of latest is clear.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+
+    // These 10 messages should be in the delta log
+    for m in create_generator(7).take(10) {
         info!("Writing test message");
         helpers::send_json(&producer, &topic, &serde_json::to_value(m).unwrap()).await;
     }
@@ -200,7 +221,8 @@ async fn test_start_from_latest() {
         .collect();
     written_ids.sort();
 
-    assert_eq!((6u64..16).collect::<Vec<u64>>(), written_ids);
+    // ids should be 7 -16 (offsets 6-15)
+    assert_eq!((7u64..17).collect::<Vec<u64>>(), written_ids);
 }
 
 fn create_generator(starting_id: u64) -> impl Iterator<Item = TestMsg> {
