@@ -257,8 +257,11 @@ pub fn init_logger() {
 }
 
 pub fn wait_until_file_created(path: &Path) {
+    let start_time = Local::now();
     loop {
-        if path.exists() {
+        let now = Local::now();
+        let poll_time = now - start_time;
+        if path.exists() || poll_time > chrono::Duration::seconds(60) {
             return;
         }
     }

@@ -7,7 +7,7 @@ use rdkafka::{producer::Producer, util::Timeout};
 use serde::{Deserialize, Serialize};
 
 // These tests are executed serially to allow for predictable rebalance waits.
-// Rebalance times vary too much to produce predictable test outputs
+// Rebalance times vary too much to produce predictable earliest/latest seek positions
 // when the local kafka container is receiving concurrent requests from other tasks.
 use serial_test::serial;
 
