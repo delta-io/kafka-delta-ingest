@@ -40,6 +40,19 @@ use std::collections::HashMap;
 async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
+    #[cfg(feature = "sentry-ext")]
+    {
+        let _guard = std::env::var("SENTRY_DSN").ok().map(|dsn| {
+            sentry::init((
+                dsn,
+                sentry::ClientOptions {
+                    release: sentry::release_name!(),
+                    ..Default::default()
+                },
+            ))
+        });
+    }
+
     let matches = clap_app!(kafka_delta_ingest =>
         (version: env!("CARGO_PKG_VERSION"))
         (about: "Service for ingesting messages from a Kafka topic and writing them to a Delta table")
@@ -193,13 +206,17 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
 
             let mut ingest_service = IngestProcessor::new(topic, table_location, options)?;
 
-            let _ = tokio::spawn(async move {
-                match ingest_service.start(None).await {
+            tokio::spawn(async move {
+                let run = ingest_service.start(None).await;
+                match &run {
                     Ok(_) => info!("Ingest service exited gracefully"),
                     Err(e) => error!("Ingest service exited with error {:?}", e),
                 }
+                run
             })
-            .await;
+            .await
+            .unwrap()
+            .unwrap();
         }
         _ => unreachable!(),
     }
