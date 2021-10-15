@@ -428,7 +428,7 @@ async fn handle_rebalance(
 
         if let Some(rb) = rebalance_signal.as_ref() {
             match rb {
-                RebalanceSignal::PostRebalanceAssign(_) => {
+                RebalanceSignal::RebalanceAssign(_) => {
                     Some(RebalanceAction::ClearStateAndSkipMessage)
                 }
                 _ => Some(RebalanceAction::SkipMessage),
@@ -445,7 +445,7 @@ async fn handle_rebalance(
             info!("Handling rebalance assign signal in run loop");
             let mut rebalance_signal = rebalance_signal.write().await;
             match rebalance_signal.as_mut() {
-                Some(RebalanceSignal::PostRebalanceAssign(partitions)) => {
+                Some(RebalanceSignal::RebalanceAssign(partitions)) => {
                     processor.delta_writer.update_table().await?;
                     partition_assignment.reset_with(partitions.as_slice());
                     processor.reset_state(partition_assignment)?;
@@ -977,11 +977,8 @@ impl IngestProcessor {
 /// Used to preserve correctness of messages stored in buffer after handling a rebalance event.
 #[derive(Debug, PartialEq, Clone)]
 enum RebalanceSignal {
-    // None,
-    PreRebalanceRevoke,
-    // PreRebalanceAssign(Vec<DataTypePartition>),
-    // PostRebalanceRevoke,
-    PostRebalanceAssign(Vec<DataTypePartition>),
+    RebalanceRevoke,
+    RebalanceAssign(Vec<DataTypePartition>),
 }
 
 /// Contains the partition to offset assignment for a consumer.
@@ -1136,6 +1133,7 @@ impl ValueBuffer {
     }
 }
 
+/// A struct that wraps the data consumed from [`ValueBuffers`] before writing to a [`arrow::record_batch::RecordBatch`].
 struct ConsumedBuffers {
     values: Vec<Value>,
     partition_offsets: HashMap<DataTypePartition, DataTypeOffset>,
@@ -1159,7 +1157,7 @@ impl ConsumerContext for KafkaContext {
                     rebalance_signal
                         .write()
                         .await
-                        .replace(RebalanceSignal::PreRebalanceRevoke);
+                        .replace(RebalanceSignal::RebalanceRevoke);
                 });
             }
             Rebalance::Assign(tpl) => {
@@ -1184,7 +1182,7 @@ impl ConsumerContext for KafkaContext {
                     rebalance_signal
                         .write()
                         .await
-                        .replace(RebalanceSignal::PostRebalanceAssign(partitions));
+                        .replace(RebalanceSignal::RebalanceAssign(partitions));
                 });
             }
             Rebalance::Error(e) => {
@@ -1227,6 +1225,7 @@ fn kafka_client_config_from_options(opts: &IngestOptions) -> ClientConfig {
     kafka_client_config
 }
 
+/// Creates a dead letter queue to send broken messages to based on options.
 async fn dead_letter_queue_from_options(
     opts: &IngestOptions,
 ) -> Result<Box<dyn DeadLetterQueue>, DeadLetterQueueError> {
@@ -1249,6 +1248,7 @@ fn partition_vec_from_topic_partition_list(
         .collect()
 }
 
+/// Fetches high watermarks (latest offsets) from Kafka from the iterator of partitions.
 fn get_high_watermarks<I>(
     topic: &str,
     consumer: Arc<StreamConsumer<KafkaContext>>,
