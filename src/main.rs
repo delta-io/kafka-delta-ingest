@@ -201,20 +201,23 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
                 statsd_endpoint,
             };
 
-            let _ = tokio::spawn(async move {
-                match start_ingest(
+            tokio::spawn(async move {
+                let run = start_ingest(
                     topic,
                     table_location,
                     options,
                     std::sync::Arc::new(tokio_util::sync::CancellationToken::new()),
                 )
-                .await
-                {
+                .await;
+                match &run {
                     Ok(_) => info!("Ingest service exited gracefully"),
                     Err(e) => error!("Ingest service exited with error {:?}", e),
                 }
+                run
             })
-            .await;
+            .await
+            .unwrap()
+            .unwrap();
         }
         _ => unreachable!(),
     }
