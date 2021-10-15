@@ -41,6 +41,19 @@ use std::collections::HashMap;
 async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
+    #[cfg(feature = "sentry-ext")]
+    {
+        let _guard = std::env::var("SENTRY_DSN").ok().map(|dsn| {
+            sentry::init((
+                dsn,
+                sentry::ClientOptions {
+                    release: sentry::release_name!(),
+                    ..Default::default()
+                },
+            ))
+        });
+    }
+
     let matches = clap_app!(kafka_delta_ingest =>
         (version: env!("CARGO_PKG_VERSION"))
         (about: "Service for ingesting messages from a Kafka topic and writing them to a Delta table")
