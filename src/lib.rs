@@ -403,10 +403,7 @@ pub async fn start_ingest(
         if ingest_processor.should_complete_file() {
             ingest_metrics.delta_write_started();
             let timer = Instant::now();
-            match ingest_processor
-                .complete_file(&mut partition_assignment)
-                .await
-            {
+            match ingest_processor.complete_file(&partition_assignment).await {
                 Err(IngestError::ConflictingOffsets) | Err(IngestError::DeltaSchemaChanged) => {
                     ingest_processor.reset_state(&mut partition_assignment)?;
                     continue;
@@ -527,8 +524,7 @@ fn calculate_lag(
     consumer: Arc<StreamConsumer<KafkaContext>>,
     partition_offsets: &HashMap<DataTypePartition, DataTypeOffset>,
 ) -> Result<Vec<DataTypeOffset>, KafkaError> {
-    let high_watermarks =
-        get_high_watermarks(topic, consumer, partition_offsets.keys().map(|p| *p))?;
+    let high_watermarks = get_high_watermarks(topic, consumer, partition_offsets.keys().copied())?;
     let lags = partition_offsets
         .iter()
         .zip(high_watermarks.iter())
@@ -679,8 +675,12 @@ impl IngestProcessor {
     ) -> Result<(), IngestError> {
         info!("Record batch started");
 
-        let (values, partition_offsets, partition_counts) =
-            self.consume_value_buffers(partition_assignment)?;
+        let ConsumedBuffers {
+            values,
+            partition_offsets,
+            partition_counts,
+        } = self.value_buffers.consume();
+        partition_assignment.update_offsets(&partition_offsets);
 
         if values.is_empty() {
             return Ok(());
@@ -814,32 +814,6 @@ impl IngestProcessor {
         }
     }
 
-    /// Consumes all current value buffers and returns the results required for further processing.
-    fn consume_value_buffers(
-        &mut self,
-        partition_assignment: &mut PartitionAssignment,
-    ) -> Result<
-        (
-            Vec<Value>,
-            HashMap<DataTypePartition, DataTypeOffset>,
-            HashMap<DataTypePartition, usize>,
-        ),
-        IngestError,
-    > {
-        let ConsumedBuffers {
-            values,
-            partition_offsets,
-            partition_counts,
-        } = self.value_buffers.consume();
-
-        let partition_offsets = {
-            partition_assignment.update_offsets(&partition_offsets);
-            partition_assignment.nonempty_partition_offsets()
-        };
-
-        Ok((values, partition_offsets, partition_counts))
-    }
-
     /// Resets all current state to the correct starting points represented by the current partition assignment.
     fn reset_state(
         &mut self,
@@ -861,7 +835,7 @@ impl IngestProcessor {
             self.delta_partition_offsets.insert(*partition, version);
         }
         // Seek the consumer to the correct offset for each partition
-        self.seek_consumer(&partition_assignment)?;
+        self.seek_consumer(partition_assignment)?;
         Ok(())
     }
 
@@ -929,7 +903,7 @@ impl IngestProcessor {
             }
         }
 
-        return true;
+        true
     }
 
     /// Returns a boolean indicating whether a record batch should be written based on current state.

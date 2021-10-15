@@ -137,8 +137,8 @@ impl IngestMetrics {
     /// Calculates total, max, min and num_partitions from the vector of lags.
     fn calculate_lag_metrics(&self, lags: Vec<i64>) -> LagMetrics {
         let total: i64 = lags.iter().sum();
-        let max = lags.iter().max().map(|n| *n);
-        let min = lags.iter().min().map(|n| *n);
+        let max = lags.iter().max().copied();
+        let min = lags.iter().min().copied();
         let num_partitions = lags.len() as i64;
 
         LagMetrics {
