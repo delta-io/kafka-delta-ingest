@@ -1,6 +1,6 @@
 //! Implementations supporting the kafka-delta-ingest daemon
 
-//#![deny(warnings)]
+#![deny(warnings)]
 #![deny(missing_docs)]
 
 #[macro_use]
@@ -47,12 +47,17 @@ use deltalake::storage::StorageError;
 type DataTypePartition = i32;
 type DataTypeOffset = i64;
 
+/// The default number of times to retry a delta commit when optimistic concurrency fails.
 const DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS: u32 = 10_000_000;
 
+/// The librdkafka config key used to specify an `auto.offset.reset` policy.
 const AUTO_OFFSET_RESET_CONFIG_KEY: &str = "auto.offset.reset";
+/// The librdkafka config value used to specify consumption should start from the earliest offset available for partitions.
 const AUTO_OFFSET_RESET_CONFIG_VALUE_EARLIEST: &str = "earliest";
+/// The librdkafka config value used to specify consumption should start from the earliest offset available for partitions.
 const AUTO_OFFSET_RESET_CONFIG_VALUE_LATEST: &str = "latest";
 
+/// Number of seconds to wait between sending buffer lag metrics to statsd.
 const BUFFER_LAG_REPORT_SECONDS: u64 = 60;
 
 /// Errors returned by [`start_ingest`] function.
@@ -416,6 +421,11 @@ pub async fn start_ingest(
     Ok(())
 }
 
+/// Handles a [`RebalanceSignal`] if one exists.
+/// The [`RebalanceSignal`] is wrapped in a tokio [`RwLock`] so that it can be written to from the thread that receives rebalance events from [`rdkafka`].
+/// Writing a new rebalance signal is implemented in [`KafkaContext`].
+/// When handling a signal, we take out a read lock first to avoid starving the write lock.
+/// If a signal exists and indicates a new partition assignment, we take out a write lock so we can clear it after resetting state.
 async fn handle_rebalance(
     rebalance_signal: Arc<RwLock<Option<RebalanceSignal>>>,
     partition_assignment: &mut PartitionAssignment,
@@ -463,6 +473,7 @@ async fn handle_rebalance(
     }
 }
 
+/// Returns a boolean indicating whether buffer lag should be reported based on the time of the last buffer lag report.
 fn should_record_buffer_lag(last_buffer_lag_report: &Option<Instant>) -> bool {
     match last_buffer_lag_report {
         None => true,
@@ -475,6 +486,7 @@ fn should_record_buffer_lag(last_buffer_lag_report: &Option<Instant>) -> bool {
     }
 }
 
+/// Sends buffer lag to statsd.
 fn record_buffer_lag(
     topic: &str,
     consumer: Arc<StreamConsumer<KafkaContext>>,
@@ -489,6 +501,7 @@ fn record_buffer_lag(
     Ok(())
 }
 
+/// Sends delta write lag to statsd.
 fn record_write_lag(
     topic: &str,
     consumer: Arc<StreamConsumer<KafkaContext>>,
@@ -500,6 +513,7 @@ fn record_write_lag(
     Ok(())
 }
 
+/// Calculates lag for all partitions in the given list of partition offsets.
 fn calculate_lag(
     topic: &str,
     consumer: Arc<StreamConsumer<KafkaContext>>,
@@ -532,6 +546,7 @@ enum RebalanceAction {
     ClearStateAndSkipMessage,
 }
 
+/// Holds state and encapsulates functionality required to process messages and write to delta.
 struct IngestProcessor {
     topic: String,
     consumer: Arc<StreamConsumer<KafkaContext>>,
@@ -546,6 +561,7 @@ struct IngestProcessor {
 }
 
 impl IngestProcessor {
+    /// Creates a new ingest [`IngestProcessor`].
     async fn new(
         topic: String,
         table_uri: &str,
@@ -569,6 +585,8 @@ impl IngestProcessor {
         })
     }
 
+    /// Processes a single message received from Kafka.
+    /// This method deserializes, transforms and writes the message to buffers.
     async fn process_message<M>(&mut self, message: M) -> Result<(), IngestError>
     where
         M: Message + Send + Sync,
@@ -618,6 +636,7 @@ impl IngestProcessor {
         Ok(())
     }
 
+    /// Deserializes a message received from Kafka
     fn deserialize_message<M>(&mut self, msg: &M) -> Result<Value, MessageDeserializationError>
     where
         M: Message + Send + Sync,
@@ -633,8 +652,6 @@ impl IngestProcessor {
         self.ingest_metrics
             .message_deserialized_size(message_bytes.len());
 
-        // TODO: record stat for MessageSize
-
         let value: Value = match serde_json::from_slice(message_bytes) {
             Ok(v) => v,
             Err(e) => {
@@ -647,6 +664,7 @@ impl IngestProcessor {
         Ok(value)
     }
 
+    /// Writes the transformed messages currently held in buffer to parquet byte buffers.
     async fn complete_record_batch(
         &mut self,
         partition_assignment: &mut PartitionAssignment,
@@ -659,9 +677,6 @@ impl IngestProcessor {
         if values.is_empty() {
             return Ok(());
         }
-
-        // TODO: Use for recording record batch write duration
-        let record_batch_timer = Instant::now();
 
         match self.delta_writer.write(values).await {
             Err(DeltaWriterError::PartialParquetWrite {
@@ -687,13 +702,12 @@ impl IngestProcessor {
             _ => { /* ok - noop */ }
         };
 
-        let elapsed_millis = record_batch_timer.elapsed().as_millis();
-        info!("Record batch completed in {} millis", elapsed_millis);
-        // TODO: record stats - RecordBatchCompleted, RecordBatchWriteDuration
+        info!("Record batch completed");
 
         Ok(())
     }
 
+    /// Writes parquet buffers to a file in the destination delta table.
     async fn complete_file(
         &mut self,
         partition_assignment: &PartitionAssignment,
@@ -792,6 +806,7 @@ impl IngestProcessor {
         }
     }
 
+    /// Consumes all current value buffers and returns the results required for further processing.
     fn consume_value_buffers(
         &mut self,
         partition_assignment: &mut PartitionAssignment,
@@ -817,6 +832,7 @@ impl IngestProcessor {
         Ok((values, partition_offsets, partition_counts))
     }
 
+    /// Resets all current state to the correct starting points represented by the current partition assignment.
     fn reset_state(
         &mut self,
         partition_assignment: &mut PartitionAssignment,
@@ -841,6 +857,7 @@ impl IngestProcessor {
         Ok(())
     }
 
+    /// Seeks the Kafka consumer to the appropriate offsets based on the [`PartitionAssignment`].
     fn seek_consumer(&self, partition_assignment: &PartitionAssignment) -> Result<(), IngestError> {
         info!("Seeking consumer for all assigned partitions");
         for (p, offset) in partition_assignment.assignment.iter() {
@@ -896,6 +913,7 @@ impl IngestProcessor {
         Ok(())
     }
 
+    /// Returns a boolean indicating whether a message with `partition` and `offset` should be processed given current state.
     fn should_process_offset(&self, partition: DataTypePartition, offset: DataTypeOffset) -> bool {
         if let Some(Some(written_offset)) = self.delta_partition_offsets.get(&partition) {
             if offset <= *written_offset {
@@ -906,6 +924,7 @@ impl IngestProcessor {
         return true;
     }
 
+    /// Returns a boolean indicating whether a record batch should be written based on current state.
     fn should_complete_record_batch(&self) -> bool {
         let elapsed_millis = self.latency_timer.elapsed().as_millis();
 
@@ -926,6 +945,7 @@ impl IngestProcessor {
         should
     }
 
+    /// Returns a boolean indicating whether a delta file should be completed based on current state.
     fn should_complete_file(&self) -> bool {
         let elapsed_secs = self.latency_timer.elapsed().as_secs();
 
@@ -945,6 +965,7 @@ impl IngestProcessor {
         should
     }
 
+    /// Returns a boolean indicating whether the partition offsets currently held in memory match those stored in the delta log.
     fn are_partition_offsets_match(&self) -> bool {
         let mut result = true;
         for (partition, offset) in &self.delta_partition_offsets {
@@ -1050,6 +1071,7 @@ impl Default for ValueBuffers {
 }
 
 impl ValueBuffers {
+    /// Adds a value to in-memory buffers and tracks the partition and offset.
     fn add(&mut self, partition: DataTypePartition, offset: DataTypeOffset, value: Value) {
         let buffer = self
             .buffers
@@ -1063,6 +1085,7 @@ impl ValueBuffers {
         self.len
     }
 
+    /// Returns values, partition offsets and partition counts currently held in buffer and resets buffers to empty.
     fn consume(&mut self) -> ConsumedBuffers {
         let mut partition_offsets = HashMap::new();
         let mut partition_counts = HashMap::new();
@@ -1090,7 +1113,8 @@ impl ValueBuffers {
         }
     }
 
-    pub fn reset(&mut self) {
+    /// Clears all value buffers currently held in memory.
+    fn reset(&mut self) {
         self.len = 0;
         self.buffers.clear();
     }
@@ -1135,8 +1159,11 @@ impl ValueBuffer {
 
 /// A struct that wraps the data consumed from [`ValueBuffers`] before writing to a [`arrow::record_batch::RecordBatch`].
 struct ConsumedBuffers {
+    /// The vector of [`Value`] instances consumed.
     values: Vec<Value>,
+    /// A [`HashMap`] from partition to last offset represented by the consumed buffers.
     partition_offsets: HashMap<DataTypePartition, DataTypeOffset>,
+    /// A [`HashMap`] from partition to number of messages consumed for each partition.
     partition_counts: HashMap<DataTypePartition, usize>,
 }
 
@@ -1192,6 +1219,7 @@ impl ConsumerContext for KafkaContext {
     }
 }
 
+/// Creates an rdkafka [`ClientConfig`] from the provided [`IngestOptions`].
 fn kafka_client_config_from_options(opts: &IngestOptions) -> ClientConfig {
     let mut kafka_client_config = ClientConfig::new();
     if let Ok(cert_pem) = std::env::var("KAFKA_DELTA_INGEST_CERT") {
@@ -1225,7 +1253,7 @@ fn kafka_client_config_from_options(opts: &IngestOptions) -> ClientConfig {
     kafka_client_config
 }
 
-/// Creates a dead letter queue to send broken messages to based on options.
+/// Creates a [`DeadLetterQueue`] to send broken messages to based on options.
 async fn dead_letter_queue_from_options(
     opts: &IngestOptions,
 ) -> Result<Box<dyn DeadLetterQueue>, DeadLetterQueueError> {

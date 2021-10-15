@@ -8,7 +8,7 @@ const INPUT_QUEUE_SIZE: usize = 100;
 
 /// Stat types for the various metrics reported by the application
 #[derive(Debug, Display, Hash, PartialEq, Eq)]
-pub(crate) enum StatTypes {
+pub(crate) enum StatType {
     //
     // counters
     //
@@ -103,31 +103,32 @@ impl IngestMetrics {
 
     /// increments a counter for message deserialized
     pub fn message_deserialized(&self) {
-        self.record_one(StatTypes::MessageDeserialized);
+        self.record_one(StatType::MessageDeserialized);
     }
 
     /// increments a counter for message deserialization failed
     pub fn message_deserialization_failed(&self) {
-        self.record_one(StatTypes::MessageDeserializationFailed);
+        self.record_one(StatType::MessageDeserializationFailed);
     }
 
+    /// records a guage stat for message size
     pub fn message_deserialized_size(&self, size: usize) {
-        self.record_stat(StatTypes::MessageSize, size as i64);
+        self.record_stat(StatType::MessageSize, size as i64);
     }
 
     /// increments a counter for message transformed
     pub fn message_transformed(&self) {
-        self.record_one(StatTypes::MessageTransformed);
+        self.record_one(StatType::MessageTransformed);
     }
 
     /// increments a counter for message transform failed
     pub fn message_transform_failed(&self) {
-        self.record_one(StatTypes::MessageTransformFailed);
+        self.record_one(StatType::MessageTransformFailed);
     }
 
     /// increments a counter for record batch started
     pub fn batch_started(&self) {
-        self.record_one(StatTypes::RecordBatchStarted);
+        self.record_one(StatType::RecordBatchStarted);
     }
 
     /// increments a counter for record batch completed.
@@ -135,70 +136,75 @@ impl IngestMetrics {
     /// records a timer stat for record batch write duration.
     pub fn batch_completed(&self, buffered_record_batch_count: usize, timer: &Instant) {
         let duration = timer.elapsed().as_millis() as i64;
-        self.record_one(StatTypes::RecordBatchCompleted);
+        self.record_one(StatType::RecordBatchCompleted);
         self.record_stat(
-            StatTypes::BufferedRecordBatches,
+            StatType::BufferedRecordBatches,
             buffered_record_batch_count as i64,
         );
-        self.record_stat(StatTypes::RecordBatchWriteDuration, duration);
+        self.record_stat(StatType::RecordBatchWriteDuration, duration);
     }
 
     /// increments a counter for delta write started
     pub fn delta_write_started(&self) {
-        self.record_one(StatTypes::DeltaWriteStarted);
+        self.record_one(StatType::DeltaWriteStarted);
     }
 
     /// increments a counter for delta write started.
     /// records a timer stat for delta write duration.
     pub fn delta_write_completed(&self, timer: &Instant) {
         let duration = timer.elapsed().as_millis() as i64;
-        self.record_one(StatTypes::DeltaWriteCompleted);
-        self.record_stat(StatTypes::DeltaWriteDuration, duration);
+        self.record_one(StatType::DeltaWriteCompleted);
+        self.record_stat(StatType::DeltaWriteDuration, duration);
     }
 
     /// increments a counter for delta write failed.
     pub fn delta_write_failed(&self) {
-        self.record_one(StatTypes::DeltaWriteFailed);
+        self.record_one(StatType::DeltaWriteFailed);
     }
 
     /// records a guage for delta file size.
     pub fn delta_file_size(&self, size: i64) {
-        self.record_stat(StatTypes::DeltaAddFileSize, size as i64);
+        self.record_stat(StatType::DeltaAddFileSize, size as i64);
     }
 
+    /// records total, max, and min consumer lag for offsets held in buffer.
+    /// also records the number of partitions represented by the buffer lag vector.
     pub fn buffer_lag(&self, buffer_lags: Vec<i64>) {
         let lag_metrics = self.calculate_lag_metrics(buffer_lags);
 
-        self.record_stat(StatTypes::BufferNumPartitions, lag_metrics.num_partitions);
-        self.record_stat(StatTypes::BufferLagTotal, lag_metrics.total);
+        self.record_stat(StatType::BufferNumPartitions, lag_metrics.num_partitions);
+        self.record_stat(StatType::BufferLagTotal, lag_metrics.total);
 
         if let Some(max) = lag_metrics.max {
-            self.record_stat(StatTypes::BufferLagMax, max);
+            self.record_stat(StatType::BufferLagMax, max);
         }
 
         if let Some(min) = lag_metrics.min {
-            self.record_stat(StatTypes::BufferLagMin, min);
+            self.record_stat(StatType::BufferLagMin, min);
         }
     }
 
+    /// records total, max, and min consumer lag for offsets written to delta.
+    /// also records the number of partitions represented by the write lag vector.
     pub fn delta_lag(&self, write_lags: Vec<i64>) {
         let lag_metrics = self.calculate_lag_metrics(write_lags);
 
         self.record_stat(
-            StatTypes::DeltaWriteNumPartitions,
+            StatType::DeltaWriteNumPartitions,
             lag_metrics.num_partitions,
         );
-        self.record_stat(StatTypes::DeltaWriteLagTotal, lag_metrics.total);
+        self.record_stat(StatType::DeltaWriteLagTotal, lag_metrics.total);
 
         if let Some(max) = lag_metrics.max {
-            self.record_stat(StatTypes::DeltaWriteLagMax, max);
+            self.record_stat(StatType::DeltaWriteLagMax, max);
         }
 
         if let Some(min) = lag_metrics.min {
-            self.record_stat(StatTypes::DeltaWriteLagMin, min);
+            self.record_stat(StatType::DeltaWriteLagMin, min);
         }
     }
 
+    /// Calculates total, max, min and num_partitions from the vector of lags.
     fn calculate_lag_metrics(&self, lags: Vec<i64>) -> LagMetrics {
         let total: i64 = lags.iter().sum();
         let max = lags.iter().max().map(|n| *n);
@@ -213,29 +219,31 @@ impl IngestMetrics {
         }
     }
 
-    fn record_one(&self, stat_type: StatTypes) {
+    /// Records a count of 1 for the metric.
+    fn record_one(&self, stat_type: StatType) {
         self.record_stat(stat_type, 1);
     }
 
-    fn record_stat(&self, stat_type: StatTypes, val: i64) {
+    /// Records a metric for the given [`StatType`] with the given value.
+    fn record_stat(&self, stat_type: StatType, val: i64) {
         match stat_type {
             // timers
-            StatTypes::RecordBatchWriteDuration | StatTypes::DeltaWriteDuration => {
+            StatType::RecordBatchWriteDuration | StatType::DeltaWriteDuration => {
                 self.handle_timer(stat_type, val);
             }
 
             // gauges
-            StatTypes::BufferedRecordBatches
-            | StatTypes::MessageSize
-            | StatTypes::DeltaAddFileSize
-            | StatTypes::BufferNumPartitions
-            | StatTypes::BufferLagTotal
-            | StatTypes::BufferLagMax
-            | StatTypes::BufferLagMin
-            | StatTypes::DeltaWriteNumPartitions
-            | StatTypes::DeltaWriteLagTotal
-            | StatTypes::DeltaWriteLagMax
-            | StatTypes::DeltaWriteLagMin => {
+            StatType::BufferedRecordBatches
+            | StatType::MessageSize
+            | StatType::DeltaAddFileSize
+            | StatType::BufferNumPartitions
+            | StatType::BufferLagTotal
+            | StatType::BufferLagMax
+            | StatType::BufferLagMin
+            | StatType::DeltaWriteNumPartitions
+            | StatType::DeltaWriteLagTotal
+            | StatType::DeltaWriteLagMax
+            | StatType::DeltaWriteLagMin => {
                 self.handle_gauge(stat_type, val);
             }
 
@@ -246,7 +254,8 @@ impl IngestMetrics {
         }
     }
 
-    fn handle_timer(&self, stat_type: StatTypes, duration_us: i64) {
+    /// Records a timer metric for the given [`StatType`].
+    fn handle_timer(&self, stat_type: StatType, duration_us: i64) {
         let stat_string = stat_type.to_string();
 
         if let Ok(duration) = duration_us.try_into() {
@@ -258,14 +267,16 @@ impl IngestMetrics {
         }
     }
 
-    fn handle_gauge(&self, stat_type: StatTypes, count: i64) {
+    /// Records a gauge metric for the given [`StatType`].
+    fn handle_gauge(&self, stat_type: StatType, count: i64) {
         let stat_string = stat_type.to_string();
         let key = stat_string.as_str();
 
         self.metrics.gauge(key).value(count);
     }
 
-    fn handle_counter(&self, stat_type: StatTypes, count: i64) {
+    /// Records a counter metric for the given [`StatType`].
+    fn handle_counter(&self, stat_type: StatType, count: i64) {
         let stat_string = stat_type.to_string();
         let key = stat_string.as_str();
 
@@ -275,6 +286,7 @@ impl IngestMetrics {
     }
 }
 
+/// Struct representing aggregate lag metrics calculated from a vector of partition lags.
 struct LagMetrics {
     total: i64,
     max: Option<i64>,
@@ -282,6 +294,7 @@ struct LagMetrics {
     num_partitions: i64,
 }
 
+/// Creates a statsd metric scope to send metrics to.
 fn create_queue(endpoint: &str, app_id: &str) -> InputQueueScope {
     let scope = Statsd::send_to(endpoint)
         .unwrap()
