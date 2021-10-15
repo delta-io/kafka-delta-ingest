@@ -3,89 +3,18 @@ use log::error;
 use std::convert::TryInto;
 use std::time::Instant;
 
-// TODO: This should be a command line parameter so we can adjust the queue size based on expected message rate.
-const INPUT_QUEUE_SIZE: usize = 100;
+/// The environment variable used to specify how many metrics should be written to the metrics queue before flushing to statsd.
+const METRICS_INPUT_QUEUE_SIZE_VAR_NAME: &str = "METRICS_INPUT_QUEUE_SIZE";
 
-/// Stat types for the various metrics reported by the application
-#[derive(Debug, Display, Hash, PartialEq, Eq)]
-pub(crate) enum StatType {
-    //
-    // counters
-    //
-    /// Counter for a deserialized message.
-    #[strum(serialize = "messages.deserialization.completed")]
-    MessageDeserialized,
-    /// Counter for a message that failed deserialization.
-    #[strum(serialize = "messages.deserialization.failed")]
-    MessageDeserializationFailed,
-    /// Counter for a transformed message.
-    #[strum(serialize = "messages.transform.completed")]
-    MessageTransformed,
-    /// Counter for a message that failed transformation.
-    #[strum(serialize = "messages.transform.failed")]
-    MessageTransformFailed,
-    /// Counter for when a record batch is started.
-    #[strum(serialize = "recordbatch.started")]
-    RecordBatchStarted,
-    /// Counter for when a record batch is completed.
-    #[strum(serialize = "recordbatch.completed")]
-    RecordBatchCompleted,
-    /// Counter for when a delta write is started.
-    #[strum(serialize = "delta.write.started")]
-    DeltaWriteStarted,
-    /// Counter for when a delta write is completed.
-    #[strum(serialize = "delta.write.completed")]
-    DeltaWriteCompleted,
-    /// Counter for failed delta writes.
-    #[strum(serialize = "delta.write.failed")]
-    DeltaWriteFailed,
+/// The default input queue size for sending metrics to statsd.
+const DEFAULT_INPUT_QUEUE_SIZE: usize = 100;
 
-    //
-    // timers
-    //
-    /// Timer for record batch write duration.
-    #[strum(serialize = "recordbatch.write_duration")]
-    RecordBatchWriteDuration,
-    /// Timer for delta write duration.
-    #[strum(serialize = "delta.write.duration")]
-    DeltaWriteDuration,
-
-    //
-    // gauges
-    //
-    /// Gauge for number of Arrow record batches in buffer.
-    #[strum(serialize = "buffered.record_batches")]
-    BufferedRecordBatches,
-    /// Gauge for message size.
-    #[strum(serialize = "messages.size")]
-    MessageSize,
-    /// Gauge for Delta add file size.
-    #[strum(serialize = "delta.add.size")]
-    DeltaAddFileSize,
-    /// Gauge for the number of partitions in buffer.
-    #[strum(serialize = "buffer.lag.num_partitions")]
-    BufferNumPartitions,
-    /// Gauge for total buffer lag across all partitions.
-    #[strum(serialize = "buffer.lag.total")]
-    BufferLagTotal,
-    /// Gauge for max buffer lag across all partitions.
-    #[strum(serialize = "buffer.lag.max")]
-    BufferLagMax,
-    /// Gauge for min buffer lag across all partitions.
-    #[strum(serialize = "buffer.lag.min")]
-    BufferLagMin,
-    /// Gauge for the number of partitions in the last delta write.
-    #[strum(serialize = "delta.write.lag.num_partitions")]
-    DeltaWriteNumPartitions,
-    /// Gauge for total delta write lag across all partitions.
-    #[strum(serialize = "delta.write.lag.total")]
-    DeltaWriteLagTotal,
-    /// Gauge for max delta write lag across all partitions.
-    #[strum(serialize = "delta.write.lag.max")]
-    DeltaWriteLagMax,
-    /// Gauge for min delta write lag across all partitions.
-    #[strum(serialize = "delta.write.lag.min")]
-    DeltaWriteLagMin,
+/// Error returned when there is a failure in [`IngestMetrics`].
+#[derive(thiserror::Error, Debug)]
+pub enum IngestMetricsError {
+    /// Error returned when the environment variable provided for METRICS_INPUT_QUEUE_SIZE could not be parsed
+    #[error("Could not parse {0} provided in METRICS_INPUT_QUEUE_SIZE env variable")]
+    InvalidMetricsInputQueueSize(String),
 }
 
 /// Wraps a [`dipstick::queue::InputQueueScope`] to provide a higher level API for recording metrics.
@@ -95,10 +24,11 @@ pub(crate) struct IngestMetrics {
 }
 
 impl IngestMetrics {
-    pub(crate) fn new(endpoint: &str, app_id: &str) -> Self {
-        let metrics = create_queue(endpoint, app_id);
+    /// Creates an instance of [`IngestMetrics`] for sending metrics to statsd.
+    pub(crate) fn new(endpoint: &str, app_id: &str) -> Result<Self, IngestMetricsError> {
+        let metrics = create_queue(endpoint, app_id)?;
 
-        Self { metrics }
+        Ok(Self { metrics })
     }
 
     /// increments a counter for message deserialized
@@ -286,6 +216,88 @@ impl IngestMetrics {
     }
 }
 
+/// Stat types for the various metrics reported by the application
+#[derive(Debug, Display, Hash, PartialEq, Eq)]
+enum StatType {
+    //
+    // counters
+    //
+    /// Counter for a deserialized message.
+    #[strum(serialize = "messages.deserialization.completed")]
+    MessageDeserialized,
+    /// Counter for a message that failed deserialization.
+    #[strum(serialize = "messages.deserialization.failed")]
+    MessageDeserializationFailed,
+    /// Counter for a transformed message.
+    #[strum(serialize = "messages.transform.completed")]
+    MessageTransformed,
+    /// Counter for a message that failed transformation.
+    #[strum(serialize = "messages.transform.failed")]
+    MessageTransformFailed,
+    /// Counter for when a record batch is started.
+    #[strum(serialize = "recordbatch.started")]
+    RecordBatchStarted,
+    /// Counter for when a record batch is completed.
+    #[strum(serialize = "recordbatch.completed")]
+    RecordBatchCompleted,
+    /// Counter for when a delta write is started.
+    #[strum(serialize = "delta.write.started")]
+    DeltaWriteStarted,
+    /// Counter for when a delta write is completed.
+    #[strum(serialize = "delta.write.completed")]
+    DeltaWriteCompleted,
+    /// Counter for failed delta writes.
+    #[strum(serialize = "delta.write.failed")]
+    DeltaWriteFailed,
+
+    //
+    // timers
+    //
+    /// Timer for record batch write duration.
+    #[strum(serialize = "recordbatch.write_duration")]
+    RecordBatchWriteDuration,
+    /// Timer for delta write duration.
+    #[strum(serialize = "delta.write.duration")]
+    DeltaWriteDuration,
+
+    //
+    // gauges
+    //
+    /// Gauge for number of Arrow record batches in buffer.
+    #[strum(serialize = "buffered.record_batches")]
+    BufferedRecordBatches,
+    /// Gauge for message size.
+    #[strum(serialize = "messages.size")]
+    MessageSize,
+    /// Gauge for Delta add file size.
+    #[strum(serialize = "delta.add.size")]
+    DeltaAddFileSize,
+    /// Gauge for the number of partitions in buffer.
+    #[strum(serialize = "buffer.lag.num_partitions")]
+    BufferNumPartitions,
+    /// Gauge for total buffer lag across all partitions.
+    #[strum(serialize = "buffer.lag.total")]
+    BufferLagTotal,
+    /// Gauge for max buffer lag across all partitions.
+    #[strum(serialize = "buffer.lag.max")]
+    BufferLagMax,
+    /// Gauge for min buffer lag across all partitions.
+    #[strum(serialize = "buffer.lag.min")]
+    BufferLagMin,
+    /// Gauge for the number of partitions in the last delta write.
+    #[strum(serialize = "delta.write.lag.num_partitions")]
+    DeltaWriteNumPartitions,
+    /// Gauge for total delta write lag across all partitions.
+    #[strum(serialize = "delta.write.lag.total")]
+    DeltaWriteLagTotal,
+    /// Gauge for max delta write lag across all partitions.
+    #[strum(serialize = "delta.write.lag.max")]
+    DeltaWriteLagMax,
+    /// Gauge for min delta write lag across all partitions.
+    #[strum(serialize = "delta.write.lag.min")]
+    DeltaWriteLagMin,
+}
+
 /// Struct representing aggregate lag metrics calculated from a vector of partition lags.
 struct LagMetrics {
     total: i64,
@@ -295,14 +307,21 @@ struct LagMetrics {
 }
 
 /// Creates a statsd metric scope to send metrics to.
-fn create_queue(endpoint: &str, app_id: &str) -> InputQueueScope {
+fn create_queue(endpoint: &str, app_id: &str) -> Result<InputQueueScope, IngestMetricsError> {
+    let input_queue_size = if let Ok(val) = std::env::var(METRICS_INPUT_QUEUE_SIZE_VAR_NAME) {
+        val.parse::<usize>()
+            .map_err(|_| IngestMetricsError::InvalidMetricsInputQueueSize(val))?
+    } else {
+        DEFAULT_INPUT_QUEUE_SIZE
+    };
+
     let scope = Statsd::send_to(endpoint)
         .unwrap()
         // don't send stats immediately -
         // wait to trigger on input queue size
-        .queued(INPUT_QUEUE_SIZE)
+        .queued(input_queue_size)
         .named(app_id)
         .metrics();
 
-    scope
+    Ok(scope)
 }

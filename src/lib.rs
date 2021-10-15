@@ -119,6 +119,14 @@ pub enum IngestError {
         source: std::io::Error,
     },
 
+    /// Error returned when [`IngestMetrics`] fails.
+    #[error("IngestMetrics failed {source}")]
+    IngestMetrics {
+        /// Wrapped [`IngestMetricsError`]
+        #[from]
+        source: IngestMetricsError,
+    },
+
     /// Error returned when a delta write fails.
     /// Ending Kafka offsets and counts for each partition are included to help identify the Kafka buffer that caused the write to fail.
     #[error(
@@ -320,7 +328,7 @@ pub async fn start_ingest(
     consumer.subscribe(&[topic.as_str()])?;
 
     // Initialize metrics
-    let ingest_metrics = IngestMetrics::new(opts.statsd_endpoint.as_str(), opts.app_id.as_str());
+    let ingest_metrics = IngestMetrics::new(opts.statsd_endpoint.as_str(), opts.app_id.as_str())?;
     // Initialize partition assignment tracking
     let mut partition_assignment = PartitionAssignment::default();
     // Initialize the processor
