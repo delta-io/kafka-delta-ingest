@@ -1063,6 +1063,7 @@ impl ValueBuffers {
         self.len += 1;
     }
 
+    /// Returns the total number of items stored across each partition specific [`ValueBuffer`].
     fn len(&self) -> usize {
         self.len
     }
