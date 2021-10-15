@@ -24,24 +24,21 @@ use rdkafka::{
 };
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::mpsc::channel;
-use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 mod dead_letters;
 mod delta_helpers;
 pub mod deltalake_ext;
-mod instrumentation;
+mod metrics;
 mod transforms;
 
 use crate::{
     dead_letters::*,
     deltalake_ext::{DeltaWriter, DeltaWriterError},
-    instrumentation::{Instrumentation, StatTypes, Statistic},
+    metrics::*,
     transforms::*,
 };
 use deltalake::storage::s3::dynamodb_lock::DynamoError;
@@ -51,11 +48,12 @@ type DataTypePartition = i32;
 type DataTypeOffset = i64;
 
 const DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS: u32 = 10_000_000;
-const BUFFER_LAG_REPORT_SECONDS: u64 = 60;
 
 const AUTO_OFFSET_RESET_CONFIG_KEY: &str = "auto.offset.reset";
 const AUTO_OFFSET_RESET_CONFIG_VALUE_EARLIEST: &str = "earliest";
 const AUTO_OFFSET_RESET_CONFIG_VALUE_LATEST: &str = "latest";
+
+const BUFFER_LAG_REPORT_SECONDS: u64 = 60;
 
 /// Errors returned by [`start_ingest`] function.
 #[derive(thiserror::Error, Debug)]
@@ -158,7 +156,7 @@ pub enum IngestError {
     DeltaSchemaChanged,
 
     /// Error returned if the committed Delta table version does not match the version specified by the commit attempt.
-    #[error("")]
+    #[error("Committed delta version {actual_version} does not match the version specified in the commit attempt {expected_version}")]
     UnexpectedVersionMismatch {
         /// The version specified in the commit attempt
         expected_version: DeltaDataTypeVersion,
@@ -316,16 +314,27 @@ pub async fn start_ingest(
     let consumer = Arc::new(consumer);
     consumer.subscribe(&[topic.as_str()])?;
 
-    // Start processing events
+    // Initialize metrics
+    let ingest_metrics = IngestMetrics::new(opts.statsd_endpoint.as_str(), opts.app_id.as_str());
+    // Initialize partition assignment tracking
     let mut partition_assignment = PartitionAssignment::default();
-    let mut ingest_processor =
-        IngestProcessor::new(topic, table_uri.as_str(), consumer.clone(), opts).await?;
+    // Initialize the processor
+    let mut ingest_processor = IngestProcessor::new(
+        topic.clone(),
+        table_uri.as_str(),
+        consumer.clone(),
+        opts,
+        ingest_metrics.clone(),
+    )
+    .await?;
+    // Initialize a timer for reporting buffer lag periodically
+    let mut last_buffer_lag_report: Option<Instant> = None;
 
     // The run loop
     while let Some(message) = consumer.stream().next().await {
         // Check for rebalance signal - skip the message if there is one.
-        // After seek - we will reconsume the message and see it again.
-        // See also `handle_rebalance`.
+        // After seek - we will re-consume the message and see it again.
+        // See also `handle_rebalance` function.
         if let Err(e) = handle_rebalance(
             rebalance_signal.clone(),
             &mut partition_assignment,
@@ -340,6 +349,7 @@ pub async fn start_ingest(
                 }
             }
         }
+
         // Process the message if there wasn't a rebalance signal
         let message = message?;
         if let Err(e) = ingest_processor.process_message(message).await {
@@ -351,17 +361,35 @@ pub async fn start_ingest(
                 _ => return Err(e),
             }
         }
+
+        // Record buffer lag periodically
+        if should_record_buffer_lag(&last_buffer_lag_report) {
+            record_buffer_lag(
+                topic.as_str(),
+                consumer.clone(),
+                &partition_assignment,
+                &ingest_metrics,
+            )?;
+            last_buffer_lag_report = Some(Instant::now());
+        }
+
         // Complete the record batch if we should
         if ingest_processor.should_complete_record_batch() {
+            ingest_metrics.batch_started();
+            let timer = Instant::now();
             ingest_processor
                 .complete_record_batch(&mut partition_assignment)
                 .await?;
+            ingest_metrics.batch_completed(ingest_processor.buffered_record_batch_count(), &timer);
         }
+
         // Complete the file if we should.
         // We may see conflicting offsets in the Delta log if a rebalance has happened prior to the write.
         // We may also observe a schema change created by an external writer.
         // In either case - the corrective action is to reset state and skip the current message.
         if ingest_processor.should_complete_file() {
+            ingest_metrics.delta_write_started();
+            let timer = Instant::now();
             match ingest_processor
                 .complete_file(&mut partition_assignment)
                 .await
@@ -370,10 +398,15 @@ pub async fn start_ingest(
                     ingest_processor.reset_state(&mut partition_assignment)?;
                     continue;
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    ingest_metrics.delta_write_failed();
+                    return Err(e);
+                }
                 _ => { /* noop */ }
             }
+            ingest_metrics.delta_write_completed(&timer);
         }
+
         // Exit if the cancellation token is set.
         if cancellation_token.is_cancelled() {
             return Ok(());
@@ -430,6 +463,59 @@ async fn handle_rebalance(
     }
 }
 
+fn should_record_buffer_lag(last_buffer_lag_report: &Option<Instant>) -> bool {
+    match last_buffer_lag_report {
+        None => true,
+        Some(last_buffer_lag_report)
+            if last_buffer_lag_report.elapsed().as_secs() >= BUFFER_LAG_REPORT_SECONDS =>
+        {
+            true
+        }
+        _ => false,
+    }
+}
+
+fn record_buffer_lag(
+    topic: &str,
+    consumer: Arc<StreamConsumer<KafkaContext>>,
+    partition_assignment: &PartitionAssignment,
+    ingest_metrics: &IngestMetrics,
+) -> Result<(), KafkaError> {
+    let partition_offsets = partition_assignment.nonempty_partition_offsets();
+    let buffer_lags = calculate_lag(topic, consumer, &partition_offsets)?;
+
+    ingest_metrics.buffer_lag(buffer_lags);
+
+    Ok(())
+}
+
+fn record_write_lag(
+    topic: &str,
+    consumer: Arc<StreamConsumer<KafkaContext>>,
+    partition_offsets: &HashMap<DataTypePartition, DataTypeOffset>,
+    ingest_metrics: &IngestMetrics,
+) -> Result<(), KafkaError> {
+    let write_lags = calculate_lag(topic, consumer, partition_offsets)?;
+    ingest_metrics.delta_lag(write_lags);
+    Ok(())
+}
+
+fn calculate_lag(
+    topic: &str,
+    consumer: Arc<StreamConsumer<KafkaContext>>,
+    partition_offsets: &HashMap<DataTypePartition, DataTypeOffset>,
+) -> Result<Vec<DataTypeOffset>, KafkaError> {
+    let high_watermarks =
+        get_high_watermarks(topic, consumer, partition_offsets.keys().map(|p| *p))?;
+    let lags = partition_offsets
+        .iter()
+        .zip(high_watermarks.iter())
+        .map(|((_, o), w)| w - o)
+        .collect();
+
+    Ok(lags)
+}
+
 /// Error returned when message deserialization fails.
 /// This is handled by the run loop, and the message is treated as a dead letter.
 #[derive(thiserror::Error, Debug)]
@@ -454,9 +540,9 @@ struct IngestProcessor {
     value_buffers: ValueBuffers,
     delta_partition_offsets: HashMap<DataTypePartition, Option<DataTypeOffset>>,
     latency_timer: Instant,
-    last_buffer_lag_report: Option<Instant>,
     dlq: Box<dyn DeadLetterQueue>,
     opts: IngestOptions,
+    ingest_metrics: IngestMetrics,
 }
 
 impl IngestProcessor {
@@ -465,6 +551,7 @@ impl IngestProcessor {
         table_uri: &str,
         consumer: Arc<StreamConsumer<KafkaContext>>,
         opts: IngestOptions,
+        ingest_metrics: IngestMetrics,
     ) -> Result<IngestProcessor, IngestError> {
         let dlq = dead_letter_queue_from_options(&opts).await?;
         let transformer = Transformer::from_transforms(&opts.transforms)?;
@@ -476,9 +563,9 @@ impl IngestProcessor {
             value_buffers: ValueBuffers::default(),
             latency_timer: Instant::now(),
             delta_partition_offsets: HashMap::new(),
-            last_buffer_lag_report: None,
             dlq,
             opts,
+            ingest_metrics,
         })
     }
 
@@ -498,23 +585,32 @@ impl IngestProcessor {
             return Err(IngestError::AlreadyProcessedPartitionOffset { partition, offset });
         }
 
+        // Deserialize
         match self.deserialize_message(&message) {
-            Ok(mut value) => match self.transformer.transform(&mut value, Some(&message)) {
-                Ok(()) => {
-                    self.value_buffers.add(partition, offset, value);
+            Ok(mut value) => {
+                self.ingest_metrics.message_deserialized();
+                // Transform
+                match self.transformer.transform(&mut value, Some(&message)) {
+                    Ok(()) => {
+                        self.ingest_metrics.message_transformed();
+                        // Buffer
+                        self.value_buffers.add(partition, offset, value);
+                    }
+                    Err(e) => {
+                        warn!("Transform failed{}", log_suffix);
+                        self.ingest_metrics.message_transform_failed();
+                        self.dlq
+                            .write_dead_letter(DeadLetter::from_failed_transform(&value, e))
+                            .await?;
+                    }
                 }
-                Err(e) => {
-                    warn!("Transform failed{}", log_suffix);
-                    self.dlq
-                        .write_dead_letter(DeadLetter::from_failed_transform(&value, e))
-                        .await?;
-                }
-            },
+            }
             Err(MessageDeserializationError::EmptyPayload) => {
                 warn!("Empty payload for message{}", log_suffix);
             }
             Err(MessageDeserializationError::JsonDeserialization { dead_letter }) => {
                 warn!("Deserialization failed{}", log_suffix);
+                self.ingest_metrics.message_deserialization_failed();
                 self.dlq.write_dead_letter(dead_letter).await?;
             }
         }
@@ -533,6 +629,9 @@ impl IngestProcessor {
                 return Err(MessageDeserializationError::EmptyPayload);
             }
         };
+
+        self.ingest_metrics
+            .message_deserialized_size(message_bytes.len());
 
         // TODO: record stat for MessageSize
 
@@ -599,18 +698,18 @@ impl IngestProcessor {
         &mut self,
         partition_assignment: &PartitionAssignment,
     ) -> Result<(), IngestError> {
+        info!("Completing file");
         // Reset the latency timer to track allowed latency for the next file
         self.latency_timer = Instant::now();
-        info!("Completing file");
-        let partition_offsets = partition_assignment.partition_offsets();
-        // TODO: use for recording DeltaWriteDuration
-        let delta_write_timer = Instant::now();
-        // upload pending parquet file to delta store
+        let partition_offsets = partition_assignment.nonempty_partition_offsets();
+        // Upload pending parquet file to delta store
         // TODO: remove it if we got conflict error? or it'll be considered as tombstone
         let add = self.delta_writer.write_parquet_files().await?;
+        // Record file sizes
         for a in add.iter() {
-            // TODO: record DeltaAddFileSize for each file
+            self.ingest_metrics.delta_file_size(a.size);
         }
+        // Try to commit
         let mut attempt_number: u32 = 0;
         let prepared_commit = {
             let mut tx = self.delta_writer.table.create_transaction(None);
@@ -645,18 +744,22 @@ impl IngestProcessor {
                         });
                     }
                     assert_eq!(v, version);
-                    for (p, o) in partition_offsets {
-                        self.delta_partition_offsets.insert(p, Some(o));
+                    for (p, o) in &partition_offsets {
+                        self.delta_partition_offsets.insert(*p, Some(*o));
                     }
                     if self.opts.write_checkpoints {
                         self.delta_writer.try_create_checkpoint(version).await?;
                     }
-                    let elapsed_millis = delta_write_timer.elapsed().as_millis() as i64;
                     info!(
-                        "Delta write for version {} has completed in {} millis for table uri {}",
-                        version, elapsed_millis, self.delta_writer.table.table_uri
+                        "Delta write for version {} has completed for table uri {}",
+                        version, self.delta_writer.table.table_uri
                     );
-                    // TODO: record stat for DeltaWriteCompleted and DeltaWriteDuration
+                    record_write_lag(
+                        self.topic.as_str(),
+                        self.consumer.clone(),
+                        &partition_offsets,
+                        &self.ingest_metrics,
+                    )?;
                     return Ok(());
                 }
                 Err(e) => match e {
@@ -664,12 +767,11 @@ impl IngestProcessor {
                         if attempt_number > DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS + 1 =>
                     {
                         error!("Transaction attempt failed. Attempts exhausted beyond max_retry_commit_attempts of {} so failing.", DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS);
-                        // TODO: record stat for DeltaWriteFailed
                         return Err(e.into());
                     }
                     DeltaTableError::VersionAlreadyExists(_) => {
                         attempt_number += 1;
-                        error!("Transaction attempt failed. Incrementing attempt number to {} and retrying.", attempt_number);
+                        warn!("Transaction attempt failed. Incrementing attempt number to {} and retrying.", attempt_number);
                     }
                     DeltaTableError::StorageError {
                         source:
@@ -678,13 +780,11 @@ impl IngestProcessor {
                             },
                     } => {
                         error!("Delta write failed {}", e);
-                        // TODO: record stat for DeltaWriteFailed
                         return Err(IngestError::InconsistentState(
                             "The remote dynamodb lock is non-acquirable!".to_string(),
                         ));
                     }
                     _ => {
-                        // TODO: record stat for DeltaWriteFailed
                         return Err(e.into());
                     }
                 },
@@ -711,7 +811,7 @@ impl IngestProcessor {
 
         let partition_offsets = {
             partition_assignment.update_offsets(&partition_offsets);
-            partition_assignment.partition_offsets()
+            partition_assignment.nonempty_partition_offsets()
         };
 
         Ok((values, partition_offsets, partition_counts))
@@ -725,8 +825,7 @@ impl IngestProcessor {
         self.delta_writer.reset();
         self.value_buffers.reset();
         self.delta_partition_offsets.clear();
-        let partitions: Vec<DataTypePartition> =
-            partition_assignment.assignment.keys().copied().collect();
+        let partitions: Vec<DataTypePartition> = partition_assignment.assigned_partitions();
         // Update offsets stored in PartitionAssignment to the latest from the delta log
         for partition in partitions.iter() {
             let txn_app_id =
@@ -868,6 +967,10 @@ impl IngestProcessor {
         }
         result
     }
+
+    fn buffered_record_batch_count(&self) -> usize {
+        self.delta_writer.buffered_record_batch_count()
+    }
 }
 
 /// Enum that represents a signal of an asynchronously received rebalance event that must be handled in the run loop.
@@ -915,9 +1018,14 @@ impl PartitionAssignment {
         }
     }
 
+    /// Returns the full list of assigned partitions as a [`Vec`] whether offsets are recorded for them in-memory or not.
+    fn assigned_partitions(&self) -> Vec<DataTypePartition> {
+        self.assignment.keys().copied().collect()
+    }
+
     /// Returns a copy of the current partition offsets as a [`HashMap`] for all partitions that have an offset stored in memory.
     /// Partitions that do not have an offset stored in memory (offset is [`None`]) are **not** included in the returned HashMap.
-    fn partition_offsets(&self) -> HashMap<DataTypePartition, DataTypeOffset> {
+    fn nonempty_partition_offsets(&self) -> HashMap<DataTypePartition, DataTypeOffset> {
         let partition_offsets = self
             .assignment
             .iter()
@@ -1130,8 +1238,6 @@ async fn dead_letter_queue_from_options(
     .await?)
 }
 
-// Utility functions
-
 /// Creates a vec of partition numbers from a topic partition list.
 fn partition_vec_from_topic_partition_list(
     topic_partition_list: &TopicPartitionList,
@@ -1140,6 +1246,23 @@ fn partition_vec_from_topic_partition_list(
         .to_topic_map()
         .iter()
         .map(|((_, p), _)| *p)
+        .collect()
+}
+
+fn get_high_watermarks<I>(
+    topic: &str,
+    consumer: Arc<StreamConsumer<KafkaContext>>,
+    partitions: I,
+) -> Result<Vec<i64>, KafkaError>
+where
+    I: Iterator<Item = DataTypePartition>,
+{
+    partitions
+        .map(|partition| {
+            consumer
+                .fetch_watermarks(topic, partition, Timeout::Never)
+                .map(|(_, latest_offset)| latest_offset)
+        })
         .collect()
 }
 
