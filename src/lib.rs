@@ -368,7 +368,7 @@ pub async fn start_ingest(
         if let Err(e) = ingest_processor.process_message(message).await {
             match e {
                 IngestError::AlreadyProcessedPartitionOffset { partition, offset } => {
-                    info!("Skipping message with partition {} offset {} because it was already processed", partition, offset);
+                    debug!("Skipping message with partition {}, offset {} on topic {} because it was already processed", partition, offset, topic);
                     continue;
                 }
                 _ => return Err(e),
@@ -412,7 +412,14 @@ pub async fn start_ingest(
                     ingest_metrics.delta_write_failed();
                     return Err(e);
                 }
-                _ => { /* noop */ }
+                Ok(v) => {
+                    info!(
+                        "Delta version {} completed for table uri {} in {} milliseconds.",
+                        v,
+                        table_uri,
+                        timer.elapsed().as_millis()
+                    );
+                }
             }
             ingest_metrics.delta_write_completed(&timer);
         }
@@ -457,10 +464,13 @@ async fn handle_rebalance(
     // if there is a revoke signal - we should skip the message, but not bother altering state yet.
     match rebalance_action {
         Some(RebalanceAction::ClearStateAndSkipMessage) => {
-            info!("Handling rebalance assign signal in run loop");
             let mut rebalance_signal = rebalance_signal.write().await;
             match rebalance_signal.as_mut() {
                 Some(RebalanceSignal::RebalanceAssign(partitions)) => {
+                    info!(
+                        "Handling rebalance assign. New assigned partitions are {:?} on topic {}",
+                        partitions, processor.topic
+                    );
                     processor.delta_writer.update_table().await?;
                     partition_assignment.reset_with(partitions.as_slice());
                     processor.reset_state(partition_assignment)?;
@@ -471,7 +481,7 @@ async fn handle_rebalance(
             }
         }
         Some(RebalanceAction::SkipMessage) => {
-            info!("Skipping message while awaiting rebalance");
+            debug!("Skipping message while awaiting rebalance");
             Err(IngestError::RebalanceInterrupt)
         }
         None => Ok(()),
@@ -598,11 +608,6 @@ impl IngestProcessor {
         let partition = message.partition();
         let offset = message.offset();
 
-        let log_suffix = format!(
-            " - partition {}, offset {}, topic - {}",
-            partition, offset, self.topic,
-        );
-
         if !self.should_process_offset(partition, offset) {
             return Err(IngestError::AlreadyProcessedPartitionOffset { partition, offset });
         }
@@ -619,7 +624,10 @@ impl IngestProcessor {
                         self.value_buffers.add(partition, offset, value);
                     }
                     Err(e) => {
-                        warn!("Transform failed{}", log_suffix);
+                        warn!(
+                            "Transform failed - topic {}, partition {}, offset {}",
+                            self.topic, partition, offset
+                        );
                         self.ingest_metrics.message_transform_failed();
                         self.dlq
                             .write_dead_letter(DeadLetter::from_failed_transform(&value, e))
@@ -628,10 +636,16 @@ impl IngestProcessor {
                 }
             }
             Err(MessageDeserializationError::EmptyPayload) => {
-                warn!("Empty payload for message{}", log_suffix);
+                warn!(
+                    "Empty payload for message - topic {}, partition {}, offset {}",
+                    self.topic, partition, offset
+                );
             }
             Err(MessageDeserializationError::JsonDeserialization { dead_letter }) => {
-                warn!("Deserialization failed{}", log_suffix);
+                warn!(
+                    "Deserialization failed - topic {}, partition {}, offset {}",
+                    self.topic, partition, offset
+                );
                 self.ingest_metrics.message_deserialization_failed();
                 self.dlq.write_dead_letter(dead_letter).await?;
             }
@@ -673,8 +687,6 @@ impl IngestProcessor {
         &mut self,
         partition_assignment: &mut PartitionAssignment,
     ) -> Result<(), IngestError> {
-        info!("Record batch started");
-
         let ConsumedBuffers {
             values,
             partition_offsets,
@@ -692,7 +704,8 @@ impl IngestProcessor {
                 sample_error,
             }) => {
                 warn!(
-                    "Partial parquet write, skipped {}, ParquetError {:?}",
+                    "Partial parquet write, skipped {} values for table uri {}, sample ParquetError {:?}",
+                    self.delta_writer.table.table_uri,
                     skipped_values.len(),
                     sample_error
                 );
@@ -710,8 +723,6 @@ impl IngestProcessor {
             _ => { /* ok - noop */ }
         };
 
-        info!("Record batch completed");
-
         Ok(())
     }
 
@@ -719,8 +730,7 @@ impl IngestProcessor {
     async fn complete_file(
         &mut self,
         partition_assignment: &PartitionAssignment,
-    ) -> Result<(), IngestError> {
-        info!("Completing file");
+    ) -> Result<i64, IngestError> {
         // Reset the latency timer to track allowed latency for the next file
         self.latency_timer = Instant::now();
         let partition_offsets = partition_assignment.nonempty_partition_offsets();
@@ -772,28 +782,24 @@ impl IngestProcessor {
                     if self.opts.write_checkpoints {
                         self.delta_writer.try_create_checkpoint(version).await?;
                     }
-                    info!(
-                        "Delta write for version {} has completed for table uri {}",
-                        version, self.delta_writer.table.table_uri
-                    );
                     record_write_lag(
                         self.topic.as_str(),
                         self.consumer.clone(),
                         &partition_offsets,
                         &self.ingest_metrics,
                     )?;
-                    return Ok(());
+                    return Ok(version);
                 }
                 Err(e) => match e {
                     DeltaTableError::VersionAlreadyExists(_)
                         if attempt_number > DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS + 1 =>
                     {
-                        error!("Transaction attempt failed. Attempts exhausted beyond max_retry_commit_attempts of {} so failing.", DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS);
+                        error!("Transaction attempt failed. Attempts exhausted beyond max_retry_commit_attempts of {} so failing - table uri: {}", DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS, self.delta_writer.table.table_uri);
                         return Err(e.into());
                     }
                     DeltaTableError::VersionAlreadyExists(_) => {
                         attempt_number += 1;
-                        warn!("Transaction attempt failed. Incrementing attempt number to {} and retrying.", attempt_number);
+                        warn!("Transaction attempt failed. Incrementing attempt number to {} and retrying - table uri: {}", attempt_number, self.delta_writer.table.table_uri);
                     }
                     DeltaTableError::StorageError {
                         source:
@@ -801,7 +807,10 @@ impl IngestProcessor {
                                 source: DynamoError::NonAcquirableLock,
                             },
                     } => {
-                        error!("Delta write failed {}", e);
+                        error!(
+                            "Delta write failed for table uri: {}. DeltaTableError: {}",
+                            self.delta_writer.table.table_uri, e
+                        );
                         return Err(IngestError::InconsistentState(
                             "The remote dynamodb lock is non-acquirable!".to_string(),
                         ));
@@ -841,19 +850,19 @@ impl IngestProcessor {
 
     /// Seeks the Kafka consumer to the appropriate offsets based on the [`PartitionAssignment`].
     fn seek_consumer(&self, partition_assignment: &PartitionAssignment) -> Result<(), IngestError> {
-        info!("Seeking consumer for all assigned partitions");
         for (p, offset) in partition_assignment.assignment.iter() {
             match offset {
                 Some(o) if *o == 0 => {
                     // MARK: workaround for rdkafka error when attempting seek to offset 0
-                    info!("Seeking consumer to beginning for partition {}. Delta log offset is 0, but seek to zero is not possible.", p);
+                    debug!("Seeking consumer to beginning for partition {} of topic {}. Delta log offset is 0, but seek to zero is not possible.", p, self.topic);
                     self.consumer
                         .seek(&self.topic, *p, Offset::Beginning, Timeout::Never)?;
                 }
                 Some(o) => {
-                    info!(
-                        "Seeking consumer to offset {} for partition {} found in delta log.",
-                        o, p
+                    debug!(
+                        "Seeking consumer to offset {} for partition {} of topic {} found in delta log.",
+                        o, p,
+                        self.topic,
                     );
                     self.consumer
                         .seek(&self.topic, *p, Offset::Offset(*o), Timeout::Never)?;
@@ -861,7 +870,10 @@ impl IngestProcessor {
                 None => {
                     match &self.opts.starting_offsets {
                         StartingOffsets::Earliest => {
-                            info!("Seeking consumer to earliest offsets for partition {}", p);
+                            debug!(
+                                "Seeking consumer to earliest offsets for partition {} of topic {}",
+                                p, self.topic
+                            );
                             self.consumer.seek(
                                 &self.topic,
                                 *p,
@@ -870,13 +882,16 @@ impl IngestProcessor {
                             )?;
                         }
                         StartingOffsets::Latest => {
-                            info!("Seeking consumer to latest offsets for partition {}", p);
+                            debug!(
+                                "Seeking consumer to latest offsets for partition {} of topic {}",
+                                p, self.topic
+                            );
                             self.consumer
                                 .seek(&self.topic, *p, Offset::End, Timeout::Never)?;
                         }
                         StartingOffsets::Explicit(starting_offsets) => {
                             if let Some(offset) = starting_offsets.get(p) {
-                                info!("Seeking consumer to offset {} for partition {}. No offset is stored in delta log but explicit starting offsets are specified.", offset, p);
+                                debug!("Seeking consumer to offset {} for partition {} of topic {}. No offset is stored in delta log but explicit starting offsets are specified.", offset, p, self.topic);
                                 self.consumer.seek(
                                     &self.topic,
                                     *p,
@@ -884,7 +899,7 @@ impl IngestProcessor {
                                     Timeout::Never,
                                 )?;
                             } else {
-                                info!("Not seeking consumer. Offsets are explicit, but an entry is not provided for partition {}. `auto.offset.reset` from additional kafka settings will be used.", p);
+                                debug!("Not seeking consumer. Offsets are explicit, but an entry is not provided for partition {} of topic {}. `auto.offset.reset` from additional kafka settings will be used.", p, self.topic);
                                 // TODO: may need to lookup auto.offset.reset and force seek instead
                             }
                         }
@@ -899,6 +914,10 @@ impl IngestProcessor {
     fn should_process_offset(&self, partition: DataTypePartition, offset: DataTypeOffset) -> bool {
         if let Some(Some(written_offset)) = self.delta_partition_offsets.get(&partition) {
             if offset <= *written_offset {
+                debug!(
+                    "Message with partition {} offset {} on topic {} is already in delta log so skipping.",
+                    partition, offset, self.topic
+                );
                 return false;
             }
         }
@@ -960,8 +979,8 @@ impl IngestProcessor {
                     Some(offset) if *offset == version => (),
                     _ => {
                         info!(
-                            "Conflicting offset for partition {}: state={:?}, delta={:?}",
-                            partition, offset, version
+                            "Conflicting offset for partition {}: offset={:?}, delta={}. Table uri: {}",
+                            partition, offset, version, self.delta_writer.table.table_uri
                         );
                         result = false;
                     }
@@ -1012,8 +1031,6 @@ impl PartitionAssignment {
         for (k, v) in updated_offsets {
             if let Some(entry) = self.assignment.get_mut(k) {
                 *entry = Some(*v);
-            } else {
-                warn!("Partition {} is not part of the assignment.", k);
             }
         }
     }
@@ -1036,7 +1053,7 @@ impl PartitionAssignment {
     }
 }
 
-/// Provides a single interface into the multiple [`ValueBuffer`] instances used to handle each partition
+/// Provides a single interface into the multiple [`ValueBuffer`] instances used to buffer data for each assigned partition.
 #[derive(Debug)]
 struct ValueBuffers {
     buffers: HashMap<DataTypePartition, ValueBuffer>,
@@ -1150,7 +1167,7 @@ struct ConsumedBuffers {
     partition_counts: HashMap<DataTypePartition, usize>,
 }
 
-/// Implements rdkafka [`ClientContext`] to handle rebalance events associated with the rdkafka [`Consumer`].
+/// Implements rdkafka [`ClientContext`] to handle rebalance events sent to the rdkafka [`Consumer`].
 struct KafkaContext {
     rebalance_signal: Arc<RwLock<Option<RebalanceSignal>>>,
 }
@@ -1224,7 +1241,6 @@ fn kafka_client_config_from_options(opts: &IngestOptions) -> ClientConfig {
     }
     if let Some(additional) = &opts.additional_kafka_settings {
         for (k, v) in additional.iter() {
-            info!("Applying additional kafka setting {} = {}", k, v);
             kafka_client_config.set(k, v);
         }
     }

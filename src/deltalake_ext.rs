@@ -21,7 +21,7 @@ use deltalake::{
     DeltaDataTypeLong, DeltaDataTypeVersion, DeltaTable, DeltaTableError, Schema, StorageBackend,
     StorageError, UriError,
 };
-use log::{debug, info, warn};
+use log::{info, warn};
 use parquet::{
     arrow::ArrowWriter,
     basic::{Compression, LogicalType, TimestampType},
@@ -207,13 +207,14 @@ impl DeltaArrowWriter {
         json_buffer: Vec<Value>,
         parquet_error: ParquetError,
     ) -> Result<(), DeltaWriterError> {
-        warn!("Failed with parquet error. Attempting quarantine of bad records.");
+        warn!("Failed with parquet error while writing record batch. Attempting quarantine of bad records.");
         let (good, bad) = quarantine_failed_parquet_rows(arrow_schema.clone(), json_buffer)?;
         let record_batch = record_batch_from_json(arrow_schema, good.as_slice())?;
         self.write_record_batch(partition_columns, record_batch)
             .await?;
-        warn!(
-            "Succeeded with partial write by quarantining {} bad records.",
+        info!(
+            "Wrote {} good records to record batch and quarantined {} bad records.",
+            good.len(),
             bad.len()
         );
         Err(DeltaWriterError::PartialParquetWrite {
@@ -358,8 +359,6 @@ impl DeltaWriter {
 
         let v = tx_versions.get(app_id).map(|v| v.to_owned());
 
-        debug!("Transaction version is {:?} for {}", v, app_id);
-
         v
     }
 
@@ -449,8 +448,6 @@ impl DeltaWriter {
 
     /// Writes the existing parquet bytes to storage and resets internal state to handle another file.
     pub async fn write_parquet_files(&mut self) -> Result<Vec<Add>, DeltaWriterError> {
-        debug!("Writing parquet files.");
-
         let writers = std::mem::take(&mut self.arrow_writers);
         let mut actions = Vec::new();
 
@@ -473,8 +470,6 @@ impl DeltaWriter {
             self.storage
                 .put_obj(&storage_path, obj_bytes.as_slice())
                 .await?;
-
-            debug!("Parquet file {} written.", &storage_path);
 
             // Replace self null_counts with an empty map. Use the other for stats.
             let null_counts = std::mem::take(&mut writer.null_counts);
@@ -612,14 +607,12 @@ impl DeltaWriter {
                 self.table.load_version(version).await?;
             }
 
-            info!(
-                "Creating checkpoint at version {}. Table version {}.",
-                version, table_version
-            );
-
             checkpoints::create_checkpoint_from_table(&self.table).await?;
 
-            info!("Checkpoint for version {} is created.", version);
+            info!(
+                "Created checkpoint version {} for table uri {}.",
+                version, self.table.table_uri
+            );
 
             if version_updated {
                 self.table.update().await?;
@@ -648,8 +641,6 @@ fn quarantine_failed_parquet_rows(
     arrow_schema: Arc<ArrowSchema>,
     values: Vec<Value>,
 ) -> Result<(Vec<Value>, Vec<BadValue>), DeltaWriterError> {
-    warn!("Attempting to quarantine bad records");
-
     let mut good: Vec<Value> = Vec::new();
     let mut bad: Vec<BadValue> = Vec::new();
 
@@ -664,12 +655,6 @@ fn quarantine_failed_parquet_rows(
             Err(e) => bad.push((value, e)),
         }
     }
-
-    warn!(
-        "Identified {} good records and {} bad records",
-        good.len(),
-        bad.len()
-    );
 
     Ok((good, bad))
 }
