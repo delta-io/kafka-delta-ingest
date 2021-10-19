@@ -1007,7 +1007,7 @@ enum RebalanceSignal {
     RebalanceAssign(Vec<DataTypePartition>),
 }
 
-/// Contains the partition to offset map for all partitions assigned to the a consumer.
+/// Contains the partition to offset map for all partitions assigned to the consumer.
 struct PartitionAssignment {
     assignment: HashMap<DataTypePartition, Option<DataTypeOffset>>,
 }
