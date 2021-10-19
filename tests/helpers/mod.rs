@@ -261,8 +261,8 @@ pub fn wait_until_file_created(path: &Path) {
     loop {
         let now = Local::now();
         let poll_time = now - start_time;
-        if path.exists() || poll_time > chrono::Duration::seconds(60) {
-            return;
+        if path.exists() || poll_time > chrono::Duration::seconds(180) {
+            panic!("File was not created before timeout");
         }
     }
 }

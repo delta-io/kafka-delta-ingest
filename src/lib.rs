@@ -204,6 +204,10 @@ pub type StartingPartitionOffsets = HashMap<DataTypePartition, DataTypeOffset>;
 /// When specifying explicit starting offsets, the JSON string passed must have a string key representing the partition
 /// and a u64 value representing the offset to start from.
 ///
+/// If the offset specified does not exist in Kafka, seeking to it will fail.
+/// If this happens, configuration should be adjusted to either provide a valid offset that does exist in Kafka,
+/// or remove the partition from the starting offsets configuration and rely on `auto.offset.reset` policy.
+///
 /// # Example:
 ///
 /// ```
@@ -414,9 +418,9 @@ pub async fn start_ingest(
                 }
                 Ok(v) => {
                     info!(
-                        "Delta version {} completed for table uri {} in {} milliseconds.",
+                        "Delta version {} completed for topic {} in {} milliseconds.",
                         v,
-                        table_uri,
+                        topic,
                         timer.elapsed().as_millis()
                     );
                 }
@@ -538,7 +542,7 @@ fn calculate_lag(
     let lags = partition_offsets
         .iter()
         .zip(high_watermarks.iter())
-        .map(|((_, o), w)| w - o)
+        .map(|((_, offset), high_watermark_offset)| high_watermark_offset - offset)
         .collect();
 
     Ok(lags)
@@ -704,8 +708,8 @@ impl IngestProcessor {
                 sample_error,
             }) => {
                 warn!(
-                    "Partial parquet write, skipped {} values for table uri {}, sample ParquetError {:?}",
-                    self.delta_writer.table.table_uri,
+                    "Partial parquet write, skipped {} values for topic {}, sample ParquetError {:?}",
+                    self.topic,
                     skipped_values.len(),
                     sample_error
                 );
@@ -794,12 +798,12 @@ impl IngestProcessor {
                     DeltaTableError::VersionAlreadyExists(_)
                         if attempt_number > DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS + 1 =>
                     {
-                        error!("Transaction attempt failed. Attempts exhausted beyond max_retry_commit_attempts of {} so failing - table uri: {}", DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS, self.delta_writer.table.table_uri);
+                        error!("Transaction attempt failed. Attempts exhausted beyond max_retry_commit_attempts of {} so failing - topic: {}", DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS, self.topic);
                         return Err(e.into());
                     }
                     DeltaTableError::VersionAlreadyExists(_) => {
                         attempt_number += 1;
-                        warn!("Transaction attempt failed. Incrementing attempt number to {} and retrying - table uri: {}", attempt_number, self.delta_writer.table.table_uri);
+                        warn!("Transaction attempt failed. Incrementing attempt number to {} and retrying - topic: {}", attempt_number, self.topic);
                     }
                     DeltaTableError::StorageError {
                         source:
@@ -808,8 +812,8 @@ impl IngestProcessor {
                             },
                     } => {
                         error!(
-                            "Delta write failed for table uri: {}. DeltaTableError: {}",
-                            self.delta_writer.table.table_uri, e
+                            "Delta write failed for topic: {}. DeltaTableError: {}",
+                            self.topic, e
                         );
                         return Err(IngestError::InconsistentState(
                             "The remote dynamodb lock is non-acquirable!".to_string(),
@@ -979,8 +983,8 @@ impl IngestProcessor {
                     Some(offset) if *offset == version => (),
                     _ => {
                         info!(
-                            "Conflicting offset for partition {}: offset={:?}, delta={}. Table uri: {}",
-                            partition, offset, version, self.delta_writer.table.table_uri
+                            "Conflicting offset for partition {}: offset={:?}, delta={}, topic={}",
+                            partition, offset, version, self.topic
                         );
                         result = false;
                     }

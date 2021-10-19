@@ -143,7 +143,7 @@ impl TestScope {
 
             println!("Ingest process exited");
 
-            // token.cancel();
+            token.cancel();
         })
     }
 
