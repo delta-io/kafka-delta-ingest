@@ -15,7 +15,7 @@ use serial_test::serial;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use kafka_delta_ingest::{IngestOptions, IngestProcessor};
+use kafka_delta_ingest::{start_ingest, IngestOptions};
 use rusoto_core::Region;
 use rusoto_s3::{CopyObjectRequest, S3};
 use tokio::task::JoinHandle;
@@ -57,7 +57,7 @@ async fn run_emails_s3_tests(initiate_rebalance: bool) {
     let w1 = scope.create_and_start(WORKER_1).await;
 
     // in order to initiate rebalance we first send messages,
-    // ensure that worker 1 consumes  some of them and then crate worker 2,
+    // ensure that worker 1 consumes some of them and then create worker 2,
     // otherwise, to proceed without rebalance the two workers has to be created simultaneously
     let w2 = if initiate_rebalance {
         scope.send_messages(TEST_TOTAL_MESSAGES).await;
@@ -91,11 +91,11 @@ async fn run_emails_s3_tests(initiate_rebalance: bool) {
 
     println!("Waiting on workers futures to exit...");
     // wait until workers are completely stopped
-    w1.await.unwrap();
-    println!("Worker 1 finished!");
+    let w1_result = w1.await;
+    println!("Worker 1 finished - {:?}", w1_result);
 
-    w2.await.unwrap();
-    println!("Worker 2 finished!");
+    let w2_result = w2.await;
+    println!("Worker 2 finished - {:?}", w2_result);
 
     // it's safe now to stop sending dummy messages
     dummy_messages_token.cancel();
@@ -134,12 +134,20 @@ impl TestScope {
 
     async fn create_and_start(&self, name: &str) -> JoinHandle<()> {
         let rt = self.runtime.get(name).unwrap();
-        let mut worker = self.create_worker(name);
+        let topic = self.topic.clone();
+        let table = self.table.clone();
+        let options = self.create_options(name);
         let token = self.workers_token.clone();
-        rt.spawn(async move { worker.start(Some(&token)).await.unwrap() })
+        rt.spawn(async move {
+            let _ = start_ingest(topic, table, options, token.clone()).await;
+
+            println!("Ingest process exited");
+
+            token.cancel();
+        })
     }
 
-    fn create_worker(&self, name: &str) -> IngestProcessor {
+    fn create_options(&self, name: &str) -> IngestOptions {
         env::set_var("AWS_S3_LOCKING_PROVIDER", "dynamodb");
         env::set_var("DYNAMO_LOCK_TABLE_NAME", "locks");
         env::set_var("DYNAMO_LOCK_OWNER_NAME", name);
@@ -160,7 +168,7 @@ impl TestScope {
         transforms.insert("date".to_string(), "substr(timestamp,`0`,`10`)".to_string());
         transforms.insert("_kafka_offset".to_string(), "kafka.offset".to_string());
 
-        let opts = IngestOptions {
+        IngestOptions {
             transforms,
             kafka_brokers: TEST_BROKER.to_string(),
             consumer_group_id: TEST_CONSUMER_GROUP_ID.to_string(),
@@ -171,9 +179,7 @@ impl TestScope {
             min_bytes_per_file,
             write_checkpoints: true,
             ..Default::default()
-        };
-
-        IngestProcessor::new(self.topic.clone(), self.table.clone(), opts).unwrap()
+        }
     }
 
     async fn send_messages(&self, amount: i32) {

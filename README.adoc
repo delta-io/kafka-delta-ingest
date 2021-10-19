@@ -35,11 +35,11 @@ export AWS_SECRET_ACCESS_KEY=test
 RUST_LOG=debug cargo run ingest web_requests ./tests/data/web_requests \
   -l 60 \
   -a web_requests \
-  -K "auto.offset.reset=earliest" \
   -t 'date: substr(meta.producer.timestamp, `0`, `10`)' \
       'meta.kafka.offset: kafka.offset' \
       'meta.kafka.partition: kafka.partition' \
-      'meta.kafka.topic: kafka.topic'
+      'meta.kafka.topic: kafka.topic' \
+  -o earliest
 ```
 
 To clean data from previous local runs, execute `./bin/clean-example-data.sh`. You'll need to do this if you destroy your Kafka container between runs since your delta log directory will be out of sync with Kafka offsets.

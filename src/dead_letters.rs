@@ -268,14 +268,17 @@ impl DeadLetterQueue for DeltaSinkDeadLetterQueue {
             .collect();
         let values = values?;
 
-        info!("Starting insert_all");
         let version = self.delta_writer.insert_all(values).await?;
 
         if self.write_checkpoints {
             self.delta_writer.try_create_checkpoint(version).await?;
         }
 
-        info!("Completed insert_all");
+        info!(
+            "Inserted {} dead letters to {}",
+            dead_letters.len(),
+            self.delta_writer.table.table_uri
+        );
 
         Ok(())
     }

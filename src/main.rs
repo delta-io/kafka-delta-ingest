@@ -11,6 +11,7 @@
 //! * Control the characteristics of output files written to Delta Lake by tuning buffer latency and file size parameters
 //! * Automatically write Delta log checkpoints
 //! * Passthrough of [librdkafka properties](https://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md) for additional Kafka configuration
+//! * Start from explicit partition offsets.
 //! * Write to any table URI supported by [`deltalake::storage::StorageBackend`]
 //!
 //! # Usage
@@ -32,7 +33,7 @@
 extern crate clap;
 
 use clap::{AppSettings, Values};
-use kafka_delta_ingest::{IngestOptions, IngestProcessor};
+use kafka_delta_ingest::{start_ingest, IngestOptions, StartingOffsets};
 use log::{error, info};
 use std::collections::HashMap;
 
@@ -58,31 +59,23 @@ async fn main() -> anyhow::Result<()> {
         (about: "Service for ingesting messages from a Kafka topic and writing them to a Delta table")
         (@subcommand ingest =>
             (about: "Starts a stream that consumes from a Kafka topic and and writes to a Delta table")
+
             (@arg TOPIC: +required "The Kafka topic to stream from")
             (@arg TABLE_LOCATION: +required "The Delta table location to write to")
 
-            (@arg DLQ_TABLE_LOCATION: --dlq_table_location +takes_value "Optional table to write dead letters to")
-
             (@arg KAFKA_BROKERS: -k --kafka +takes_value default_value("localhost:9092") 
              "The Kafka broker connection string to use when connecting to Kafka.")
+
             (@arg CONSUMER_GROUP: -g --consumer_group_id +takes_value default_value("kafka_delta_ingest") 
              "The consumer group id to use when subscribing to Kafka.")
 
-            (@arg ADDITIONAL_KAFKA_SETTINGS: -K --Kafka +multiple_occurrences +multiple_values +takes_value validator(parse_kafka_property)
-            r#"A list of additional settings to include when creating the Kafka consumer.
-
-            Each additional setting should follow the pattern: "PROPERTY_NAME=PROPERTY_VALUE". For example:
-
-            ... -K "auto.offset.reset=earliest"
-
-            This can be used to provide TLS configuration as in:
-
-            ... -K "security.protocol=SSL" "ssl.certificate.location=kafka.crt" "ssl.key.location=kafka.key"
-
-             "#)
-
             (@arg APP_ID: -a --app_id +takes_value default_value("kafka_delta_ingest") 
              "The app id to use when writing to Delta.")
+
+            (@arg STARTING_OFFSETS: -o --offsets +takes_value default_value("earliest") 
+             r#"Offsets to start from. This may be 'earliest' or 'latest' to start from the earliest or latest available offsets in Kafka, 
+or a JSON string specifying the explicit offset to start from for each partition. 
+NOTE: This configuration is only applied when offsets are not already stored in delta lake."#)
 
             (@arg ALLOWED_LATENCY: -l --allowed_latency +takes_value default_value("300") 
              "The allowed latency (in seconds) from the time a message is consumed to when it should be written to Delta.")
@@ -109,14 +102,24 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
 * kafka.topic
 * kafka.timestamp
 "#)
+            (@arg DLQ_TABLE_LOCATION: --dlq_table_location +takes_value "Optional table to write dead letters to")
 
             (@arg DLQ_TRANSFORM: --dlq_transform +multiple_occurrences +multiple_values +takes_value validator(parse_transform) "Transforms to apply before writing dead letters to delta")
 
-            (@arg STATSD_ENDPOINT: -s --statsd_endpoint +takes_value default_value("localhost:8125")
-             "The statsd endpoint to send statistics to.")
-
             (@arg CHECKPOINTS: -c --checkpoints
             "If set then Kafka Delta ingest will write checkpoints on each 10th commit.")
+
+            (@arg ADDITIONAL_KAFKA_SETTINGS: -K --Kafka +multiple_occurrences +multiple_values +takes_value validator(parse_kafka_property)
+            r#"A list of additional settings to include when creating the Kafka consumer.
+
+            This can be used to provide TLS configuration as in:
+
+            ... -K "security.protocol=SSL" "ssl.certificate.location=kafka.crt" "ssl.key.location=kafka.key"
+
+             "#)
+
+            (@arg STATSD_ENDPOINT: -s --statsd_endpoint +takes_value default_value("localhost:8125")
+             "The statsd endpoint to send statistics to.")
         )
     )
     .setting(AppSettings::SubcommandRequiredElseHelp)
@@ -131,10 +134,6 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
                 .unwrap()
                 .to_string();
 
-            let dlq_table_location = ingest_matches
-                .value_of("DLQ_TABLE_LOCATION")
-                .map(|s| s.to_owned());
-
             let kafka_brokers = ingest_matches
                 .value_of("KAFKA_BROKERS")
                 .unwrap()
@@ -144,17 +143,13 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
                 .unwrap()
                 .to_string();
 
-            let additional_kafka_properties = ingest_matches
-                .values_of("ADDITIONAL_KAFKA_SETTINGS")
-                .map(Values::collect)
-                .unwrap_or_else(Vec::new);
-            let additional_kafka_settings: HashMap<String, String> = additional_kafka_properties
-                .iter()
-                .map(|p| parse_kafka_property(p).unwrap())
-                .collect();
-            let additional_kafka_settings = Some(additional_kafka_settings);
-
             let app_id = ingest_matches.value_of("APP_ID").unwrap().to_string();
+
+            let starting_offsets = ingest_matches
+                .value_of("STARTING_OFFSETS")
+                .unwrap()
+                .to_string();
+            let starting_offsets = StartingOffsets::from_string(starting_offsets)?;
 
             let allowed_latency = ingest_matches.value_of_t::<u64>("ALLOWED_LATENCY").unwrap();
             let max_messages_per_batch = ingest_matches
@@ -173,6 +168,10 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
                 .map(|t| parse_transform(t).unwrap())
                 .collect();
 
+            let dlq_table_location = ingest_matches
+                .value_of("DLQ_TABLE_LOCATION")
+                .map(|s| s.to_owned());
+
             let dlq_transforms: Vec<&str> = ingest_matches
                 .values_of("DLQ_TRANSFORM")
                 .map(Values::collect)
@@ -182,32 +181,47 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
                 .map(|t| parse_transform(t).unwrap())
                 .collect();
 
+            let write_checkpoints = ingest_matches.is_present("CHECKPOINTS");
+
+            let additional_kafka_properties = ingest_matches
+                .values_of("ADDITIONAL_KAFKA_SETTINGS")
+                .map(Values::collect)
+                .unwrap_or_else(Vec::new);
+            let additional_kafka_settings: HashMap<String, String> = additional_kafka_properties
+                .iter()
+                .map(|p| parse_kafka_property(p).unwrap())
+                .collect();
+            let additional_kafka_settings = Some(additional_kafka_settings);
+
             let statsd_endpoint = ingest_matches
                 .value_of("STATSD_ENDPOINT")
                 .unwrap()
                 .to_string();
 
-            let write_checkpoints = ingest_matches.is_present("CHECKPOINTS");
-
             let options = IngestOptions {
-                transforms,
-                dlq_table_uri: dlq_table_location,
-                dlq_transforms,
                 kafka_brokers,
                 consumer_group_id,
-                additional_kafka_settings,
                 app_id,
+                starting_offsets,
                 allowed_latency,
                 max_messages_per_batch,
                 min_bytes_per_file,
+                transforms,
+                dlq_table_uri: dlq_table_location,
+                dlq_transforms,
                 write_checkpoints,
+                additional_kafka_settings,
                 statsd_endpoint,
             };
 
-            let mut ingest_service = IngestProcessor::new(topic, table_location, options)?;
-
             tokio::spawn(async move {
-                let run = ingest_service.start(None).await;
+                let run = start_ingest(
+                    topic,
+                    table_location,
+                    options,
+                    std::sync::Arc::new(tokio_util::sync::CancellationToken::new()),
+                )
+                .await;
                 match &run {
                     Ok(_) => info!("Ingest service exited gracefully"),
                     Err(e) => error!("Ingest service exited with error {:?}", e),

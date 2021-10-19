@@ -1,6 +1,6 @@
 use chrono::Local;
 use deltalake::action::{Action, Add, MetaData, Protocol, Remove, Txn};
-use kafka_delta_ingest::{IngestOptions, IngestProcessor};
+use kafka_delta_ingest::{start_ingest, IngestOptions};
 use parquet::util::cursor::SliceableCursor;
 use parquet::{
     file::reader::{FileReader, SerializedFileReader},
@@ -10,7 +10,6 @@ use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::util::Timeout;
 use rdkafka::ClientConfig;
-use rusoto_core::Region;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -190,25 +189,6 @@ pub fn create_local_table_in(schema: HashMap<&str, &str>, partitions: Vec<&str>,
     .unwrap();
 }
 
-pub fn region() -> Region {
-    Region::Custom {
-        name: "custom".to_string(),
-        endpoint: LOCALSTACK_ENDPOINT.to_string(),
-    }
-}
-
-pub fn setup_envs() {
-    env::set_var("AWS_ENDPOINT_URL", LOCALSTACK_ENDPOINT);
-    env::set_var("AWS_ACCESS_KEY_ID", "test");
-    env::set_var("AWS_SECRET_ACCESS_KEY", "test");
-    env::set_var("AWS_S3_LOCKING_PROVIDER", "dynamodb");
-    env::set_var("DYNAMO_LOCK_TABLE_NAME", "locks");
-    env::set_var("DYNAMO_LOCK_OWNER_NAME", Uuid::new_v4().to_string());
-    env::set_var("DYNAMO_LOCK_REFRESH_PERIOD_MILLIS", "100");
-    env::set_var("DYNAMO_LOCK_ADDITIONAL_TIME_TO_WAIT_MILLIS", "100");
-    env::set_var("DYNAMO_LOCK_LEASE_DURATION", "2");
-}
-
 pub fn create_kdi(
     topic: &str,
     table: &str,
@@ -216,17 +196,26 @@ pub fn create_kdi(
 ) -> (JoinHandle<()>, Arc<CancellationToken>, Runtime) {
     let app_id = options.app_id.to_string();
 
-    setup_envs();
+    env::set_var("AWS_S3_LOCKING_PROVIDER", "dynamodb");
+    env::set_var("DYNAMO_LOCK_TABLE_NAME", "locks");
+    env::set_var("DYNAMO_LOCK_OWNER_NAME", Uuid::new_v4().to_string());
     env::set_var("DYNAMO_LOCK_PARTITION_KEY_VALUE", app_id.clone());
-
-    let mut kdi = IngestProcessor::new(topic.to_string(), table.to_string(), options).unwrap();
+    env::set_var("DYNAMO_LOCK_REFRESH_PERIOD_MILLIS", "100");
+    env::set_var("DYNAMO_LOCK_ADDITIONAL_TIME_TO_WAIT_MILLIS", "100");
+    env::set_var("DYNAMO_LOCK_LEASE_DURATION", "2");
 
     let rt = create_runtime(app_id.as_str());
     let token = Arc::new(CancellationToken::new());
 
     let run_loop = {
         let token = token.clone();
-        rt.spawn(async move { kdi.start(Some(&token)).await.unwrap() })
+        let topic = topic.to_string();
+        let table = table.to_string();
+        rt.spawn(async move {
+            start_ingest(topic, table, options, token.clone())
+                .await
+                .unwrap()
+        })
     };
 
     (run_loop, token, rt)
@@ -240,7 +229,7 @@ pub fn create_runtime(name: &str) -> Runtime {
         .enable_io()
         .enable_time()
         .build()
-        .unwrap()
+        .expect("Tokio runtime error")
 }
 
 pub fn init_logger() {
@@ -260,14 +249,25 @@ pub fn init_logger() {
                 record.args(),
             )
         })
-        .filter(None, log::LevelFilter::Info)
+        .filter(Some("dipstick"), log::LevelFilter::Info)
+        .filter(Some("rusoto_core"), log::LevelFilter::Info)
+        .filter(Some("deltalake"), log::LevelFilter::Info)
+        .filter(None, log::LevelFilter::Debug)
         .try_init();
 }
 
 pub fn wait_until_file_created(path: &Path) {
+    let start_time = Local::now();
     loop {
         if path.exists() {
             return;
+        }
+
+        let now = Local::now();
+        let poll_time = now - start_time;
+
+        if poll_time > chrono::Duration::seconds(180) {
+            panic!("File was not created before timeout");
         }
     }
 }
