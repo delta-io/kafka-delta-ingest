@@ -315,6 +315,28 @@ pub async fn start_ingest(
     opts: IngestOptions,
     cancellation_token: Arc<CancellationToken>,
 ) -> Result<(), IngestError> {
+    info!(
+        "Ingesting messages from {} Kafka topic to {} Delta table",
+        topic, table_uri
+    );
+    info!("Using options: [allowed_latency={},max_messages_per_batch={},min_bytes_per_file={},write_checkpoints={}]",
+        opts.allowed_latency,
+        opts.max_messages_per_batch,
+        opts.min_bytes_per_file,
+        opts.write_checkpoints);
+
+    match &opts.starting_offsets {
+        StartingOffsets::Earliest => info!("Using earliest starting offsets"),
+        StartingOffsets::Latest => info!("Using latest starting offsets"),
+        StartingOffsets::Explicit(map) => {
+            info!("Using explicit starting offsets");
+
+            for (p, o) in map {
+                info!("Starting offset for partition {} is {}", p, o);
+            }
+        }
+    }
+
     // Initialize a RebalanceSignal to share between threads so it can be set when rebalance events are sent from Kafka and checked or cleared in the run loop.
     // We use an RwLock so we can quickly skip past the typical case in the run loop where the rebalance signal is a None without starving the writer.
     // See also `handle_rebalance`.
@@ -858,12 +880,12 @@ impl IngestProcessor {
             match offset {
                 Some(o) if *o == 0 => {
                     // MARK: workaround for rdkafka error when attempting seek to offset 0
-                    debug!("Seeking consumer to beginning for partition {} of topic {}. Delta log offset is 0, but seek to zero is not possible.", p, self.topic);
+                    info!("Seeking consumer to beginning for partition {} of topic {}. Delta log offset is 0, but seek to zero is not possible.", p, self.topic);
                     self.consumer
                         .seek(&self.topic, *p, Offset::Beginning, Timeout::Never)?;
                 }
                 Some(o) => {
-                    debug!(
+                    info!(
                         "Seeking consumer to offset {} for partition {} of topic {} found in delta log.",
                         o, p,
                         self.topic,
@@ -874,7 +896,7 @@ impl IngestProcessor {
                 None => {
                     match &self.opts.starting_offsets {
                         StartingOffsets::Earliest => {
-                            debug!(
+                            info!(
                                 "Seeking consumer to earliest offsets for partition {} of topic {}",
                                 p, self.topic
                             );
@@ -886,7 +908,7 @@ impl IngestProcessor {
                             )?;
                         }
                         StartingOffsets::Latest => {
-                            debug!(
+                            info!(
                                 "Seeking consumer to latest offsets for partition {} of topic {}",
                                 p, self.topic
                             );
@@ -895,7 +917,7 @@ impl IngestProcessor {
                         }
                         StartingOffsets::Explicit(starting_offsets) => {
                             if let Some(offset) = starting_offsets.get(p) {
-                                debug!("Seeking consumer to offset {} for partition {} of topic {}. No offset is stored in delta log but explicit starting offsets are specified.", offset, p, self.topic);
+                                info!("Seeking consumer to offset {} for partition {} of topic {}. No offset is stored in delta log but explicit starting offsets are specified.", offset, p, self.topic);
                                 self.consumer.seek(
                                     &self.topic,
                                     *p,
@@ -903,7 +925,7 @@ impl IngestProcessor {
                                     Timeout::Never,
                                 )?;
                             } else {
-                                debug!("Not seeking consumer. Offsets are explicit, but an entry is not provided for partition {} of topic {}. `auto.offset.reset` from additional kafka settings will be used.", p, self.topic);
+                                warn!("Not seeking consumer. Offsets are explicit, but an entry is not provided for partition {} of topic {}. `auto.offset.reset` from additional kafka settings will be used.", p, self.topic);
                                 // TODO: may need to lookup auto.offset.reset and force seek instead
                             }
                         }
