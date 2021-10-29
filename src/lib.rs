@@ -315,7 +315,10 @@ pub async fn start_ingest(
     opts: IngestOptions,
     cancellation_token: Arc<CancellationToken>,
 ) -> Result<(), IngestError> {
-    info!("Ingesting messages from {} Kafka topic to {} Delta table", topic, table_uri);
+    info!(
+        "Ingesting messages from {} Kafka topic to {} Delta table",
+        topic, table_uri
+    );
     info!("Using options: [allowed_latency={},max_messages_per_batch={},min_bytes_per_file={},write_checkpoints={}]",
         opts.allowed_latency,
         opts.max_messages_per_batch,
@@ -331,7 +334,7 @@ pub async fn start_ingest(
             for (p, o) in map {
                 info!("Starting offset for partition {} is {}", p, o);
             }
-        },
+        }
     }
 
     // Initialize a RebalanceSignal to share between threads so it can be set when rebalance events are sent from Kafka and checked or cleared in the run loop.
