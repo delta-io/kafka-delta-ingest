@@ -90,7 +90,7 @@ pub(crate) async fn write_offsets_to_delta(
             let detailed_error_msg = conflict_offsets
                 .iter()
                 .map(|(partition, stored, provided)| {
-                    format!("{}:stored={}/provided={}", partition, stored, provided)
+                    format!("{}:stored={}/seek={}", partition, stored, provided)
                 })
                 .collect::<Vec<String>>()
                 .join(", ");
@@ -221,7 +221,7 @@ mod tests {
 
         assert_eq!(
             err.as_str(),
-            "InconsistentStoredOffsets(\"[test-0:stored=5/provided=15]\")"
+            "InconsistentStoredOffsets(\"[test-0:stored=5/seek=15]\")"
         );
 
         std::fs::remove_dir_all(table.table_uri).unwrap();
