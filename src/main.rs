@@ -74,7 +74,7 @@ async fn main() -> anyhow::Result<()> {
             (@arg APP_ID: -a --app_id +takes_value default_value("kafka_delta_ingest") 
              "The app id to use when writing to Delta.")
 
-            (@arg SEEK_OFFSETS: -s --seek_offsets +takes_value
+            (@arg SEEK_OFFSETS: --seek_offsets +takes_value
              r#"A JSON string specifying the partition to offset map as the starting point for the ingestion.
 NOTE: This is seeking offsets rather than starting offsets, as such, the very first ingested message would be `seek_offset + 1` or the next successive message in a partition.
 NOTE: This configuration is only applied when offsets are not already stored in delta lake.
