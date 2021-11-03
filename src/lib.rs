@@ -33,29 +33,27 @@ mod dead_letters;
 mod delta_helpers;
 pub mod deltalake_ext;
 mod metrics;
+mod offsets;
 mod transforms;
 
+use crate::offsets::WriteOffsetsError;
 use crate::{
     dead_letters::*,
     deltalake_ext::{DeltaWriter, DeltaWriterError},
     metrics::*,
     transforms::*,
 };
+use delta_helpers::*;
 use deltalake::storage::s3::dynamodb_lock::DynamoError;
 use deltalake::storage::StorageError;
 
-type DataTypePartition = i32;
-type DataTypeOffset = i64;
+/// Type alias for Kafka partition
+pub type DataTypePartition = i32;
+/// Type alias for Kafka message offset
+pub type DataTypeOffset = i64;
 
 /// The default number of times to retry a delta commit when optimistic concurrency fails.
-const DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS: u32 = 10_000_000;
-
-/// The librdkafka config key used to specify an `auto.offset.reset` policy.
-const AUTO_OFFSET_RESET_CONFIG_KEY: &str = "auto.offset.reset";
-/// The librdkafka config value used to specify consumption should start from the earliest offset available for partitions.
-const AUTO_OFFSET_RESET_CONFIG_VALUE_EARLIEST: &str = "earliest";
-/// The librdkafka config value used to specify consumption should start from the earliest offset available for partitions.
-const AUTO_OFFSET_RESET_CONFIG_VALUE_LATEST: &str = "latest";
+pub(crate) const DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS: u32 = 10_000_000;
 
 /// Number of seconds to wait between sending buffer lag metrics to statsd.
 const BUFFER_LAG_REPORT_SECONDS: u64 = 60;
@@ -85,6 +83,14 @@ pub enum IngestError {
         /// Wrapped [`DeltaWriterError`]
         #[from]
         source: DeltaWriterError,
+    },
+
+    /// Error from [`WriteOffsetsError`]
+    #[error("DeltaWriter error: {source}")]
+    WriteOffsets {
+        /// Wrapped [`WriteOffsetsError`]
+        #[from]
+        source: WriteOffsetsError,
     },
 
     /// Error from [`DeadLetterQueue`]
@@ -178,79 +184,17 @@ pub enum IngestError {
     },
 }
 
-/// Error returned when the string passed to [`StartingOffsets`] `from_string` method is invalid.
-#[derive(thiserror::Error, Debug)]
-pub struct StartingOffsetsParseError {
-    /// The string that failed to parse.
-    string_to_parse: String,
-    /// serde_json error returned when trying to parse the string as explicit offsets.
-    error_message: String,
-}
-
-impl std::fmt::Display for StartingOffsetsParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Failed to parse string {}, error: {}",
-            self.string_to_parse, self.error_message
-        )
-    }
-}
-
-/// HashMap containing a specific offset to start from for each partition.
-pub type StartingPartitionOffsets = HashMap<DataTypePartition, DataTypeOffset>;
-
-/// Enum representing available starting offset options.
-/// When specifying explicit starting offsets, the JSON string passed must have a string key representing the partition
-/// and a u64 value representing the offset to start from.
-///
-/// If the offset specified does not exist in Kafka, seeking to it will fail.
-/// If this happens, configuration should be adjusted to either provide a valid offset that does exist in Kafka,
-/// or remove the partition from the starting offsets configuration and rely on `auto.offset.reset` policy.
-///
-/// # Example:
-///
-/// ```
-/// use maplit::hashmap;
-/// use kafka_delta_ingest::StartingOffsets;
-///
-/// let starting_offsets = StartingOffsets::from_string(r#"{"0":21,"1":52,"2":3}"#.to_string());
-///
-/// match starting_offsets {
-///     Ok(StartingOffsets::Explicit(starting_offsets)) => {
-///         assert_eq!(hashmap!{0 => 21, 1 => 52, 2 => 3}, starting_offsets);
-///     }
-///     _ => assert!(false, "This won't happen if you're JSON is formatted correctly.")
-/// }
-/// ```
-#[derive(Debug, serde::Deserialize, Clone, PartialEq)]
-pub enum StartingOffsets {
-    /// Start from earliest available Kafka offsets for partition offsets not stored in the delta log.
+/// The enum to represent 'auto.offset.reset' options.
+pub enum AutoOffsetReset {
+    /// The "earliest" option. Messages will be ingested from the beginning of a partition on reset.
     Earliest,
-    /// Start from latest available Kafka offsets for partition offsets not stored in the delta log.
+    /// The "latest" option. Messages will be ingested from the end of a partition on reset.
     Latest,
-    /// Start from explicit partition offsets when no offsets are stored in the delta log.
-    Explicit(StartingPartitionOffsets),
 }
 
-impl StartingOffsets {
-    /// Parses a string as [`StartingOffsets`].
-    /// Returns [`StartingOffsetsParseError`] if the string is not parseable.
-    pub fn from_string(s: String) -> Result<StartingOffsets, StartingOffsetsParseError> {
-        match s.as_str() {
-            "earliest" => Ok(StartingOffsets::Earliest),
-            "latest" => Ok(StartingOffsets::Latest),
-            maybe_json => {
-                let starting_partition_offsets: StartingPartitionOffsets =
-                    serde_json::from_str(maybe_json).map_err(|e| StartingOffsetsParseError {
-                        string_to_parse: s.clone(),
-                        error_message: e.to_string(),
-                    })?;
-
-                Ok(StartingOffsets::Explicit(starting_partition_offsets))
-            }
-        }
-    }
+impl AutoOffsetReset {
+    /// The librdkafka config key used to specify an `auto.offset.reset` policy.
+    pub const CONFIG_KEY: &'static str = "auto.offset.reset";
 }
 
 /// Options for configuring the behavior of the run loop executed by the [`start_ingest`] function.
@@ -259,14 +203,22 @@ pub struct IngestOptions {
     pub kafka_brokers: String,
     /// The Kafka consumer group id to set to allow for multiple consumers per topic.
     pub consumer_group_id: String,
-    /// Unique per topic per environment. Must be the same for all processes that are part of a single job.
+    /// Unique per topic per environment. **Must** be the same for all processes that are part of a single job.
+    /// It's used as a prefix for the `txn` actions to track messages offsets between partition/writers.
     pub app_id: String,
-    /// Offsets to start from. This may be `earliest` or `latest` to start from the earliest or latest available offsets in Kafka,
-    /// or a JSON string specifying the explicit offset to start from for each partition.
-    /// This configuration is only applied when offsets are not already stored in delta lake.
-    /// When using explicit starting offsets, `auto.offset.reset` may also be specified in `additional_kafka_settings` to control
-    /// reset behavior in case partitions are added to the topic in the future.
-    pub starting_offsets: StartingOffsets,
+    /// Offsets to seek to before the ingestion. Creates new delta log version with `txn` actions
+    /// to store the offsets for each partition in delta table.
+    /// Note that `seek_offsets` is not the starting offsets, as such, then first ingested message
+    /// will be `seek_offset + 1` or the next successive message in a partition.
+    /// This configuration is only applied when offsets are not already stored in delta table.
+    /// Note that if offsets are already exists in delta table but they're lower than provided
+    /// then the error will be returned as this could break the data integrity. If one would want to skip
+    /// the data and write from the later offsets then supplying new `app_id` is a safer approach.
+    pub seek_offsets: Option<Vec<(DataTypePartition, DataTypeOffset)>>,
+    /// The policy to start reading from if both `txn` and `seek_offsets` has no specified offset
+    /// for the partition. Either "earliest" or "latest". The configuration is also applied to the
+    /// librdkafka `auto.offset.reset` config.
+    pub auto_offset_reset: AutoOffsetReset,
     /// Max desired latency from when a message is received to when it is written and
     /// committed to the target delta table (in seconds)
     pub allowed_latency: u64,
@@ -295,7 +247,8 @@ impl Default for IngestOptions {
             kafka_brokers: "localhost:9092".to_string(),
             consumer_group_id: "kafka_delta_ingest".to_string(),
             app_id: "kafka_delta_ingest".to_string(),
-            starting_offsets: StartingOffsets::Earliest,
+            seek_offsets: None,
+            auto_offset_reset: AutoOffsetReset::Earliest,
             allowed_latency: 300,
             max_messages_per_batch: 5000,
             min_bytes_per_file: 134217728,
@@ -324,18 +277,6 @@ pub async fn start_ingest(
         opts.max_messages_per_batch,
         opts.min_bytes_per_file,
         opts.write_checkpoints);
-
-    match &opts.starting_offsets {
-        StartingOffsets::Earliest => info!("Using earliest starting offsets"),
-        StartingOffsets::Latest => info!("Using latest starting offsets"),
-        StartingOffsets::Explicit(map) => {
-            info!("Using explicit starting offsets");
-
-            for (p, o) in map {
-                info!("Starting offset for partition {} is {}", p, o);
-            }
-        }
-    }
 
     // Initialize a RebalanceSignal to share between threads so it can be set when rebalance events are sent from Kafka and checked or cleared in the run loop.
     // We use an RwLock so we can quickly skip past the typical case in the run loop where the rebalance signal is a None without starving the writer.
@@ -366,6 +307,10 @@ pub async fn start_ingest(
         ingest_metrics.clone(),
     )
     .await?;
+
+    // Write seek_offsets if it's supplied and has not been written yet
+    ingest_processor.write_offsets_to_delta_if_any().await?;
+
     // Initialize a timer for reporting buffer lag periodically
     let mut last_buffer_lag_report: Option<Instant> = None;
 
@@ -576,7 +521,7 @@ fn calculate_lag(
 enum MessageDeserializationError {
     #[error("Kafka message contained empty payload")]
     EmptyPayload,
-    #[error("Kafka message dserialization failed")]
+    #[error("Kafka message deserialization failed")]
     JsonDeserialization { dead_letter: DeadLetter },
 }
 
@@ -623,6 +568,19 @@ impl IngestProcessor {
             opts,
             ingest_metrics,
         })
+    }
+
+    /// If `opts.seek_offsets` is set then it calls the `offsets::write_offsets_to_delta` function.
+    async fn write_offsets_to_delta_if_any(&mut self) -> Result<(), IngestError> {
+        if let Some(ref offsets) = self.opts.seek_offsets {
+            offsets::write_offsets_to_delta(
+                &mut self.delta_writer.table,
+                &self.opts.app_id,
+                offsets,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     /// Processes a single message received from Kafka.
@@ -771,7 +729,7 @@ impl IngestProcessor {
         let mut attempt_number: u32 = 0;
         let prepared_commit = {
             let mut tx = self.delta_writer.table.create_transaction(None);
-            tx.add_actions(delta_helpers::build_actions(
+            tx.add_actions(build_actions(
                 &partition_offsets,
                 self.opts.app_id.as_str(),
                 add,
@@ -861,8 +819,7 @@ impl IngestProcessor {
         let partitions: Vec<DataTypePartition> = partition_assignment.assigned_partitions();
         // Update offsets stored in PartitionAssignment to the latest from the delta log
         for partition in partitions.iter() {
-            let txn_app_id =
-                delta_helpers::txn_app_id_for_partition(self.opts.app_id.as_str(), *partition);
+            let txn_app_id = txn_app_id_for_partition(self.opts.app_id.as_str(), *partition);
             let version = self
                 .delta_writer
                 .last_transaction_version(txn_app_id.as_str());
@@ -893,44 +850,18 @@ impl IngestProcessor {
                     self.consumer
                         .seek(&self.topic, *p, Offset::Offset(*o), Timeout::Never)?;
                 }
-                None => {
-                    match &self.opts.starting_offsets {
-                        StartingOffsets::Earliest => {
-                            info!(
-                                "Seeking consumer to earliest offsets for partition {} of topic {}",
-                                p, self.topic
-                            );
-                            self.consumer.seek(
-                                &self.topic,
-                                *p,
-                                Offset::Beginning,
-                                Timeout::Never,
-                            )?;
-                        }
-                        StartingOffsets::Latest => {
-                            info!(
-                                "Seeking consumer to latest offsets for partition {} of topic {}",
-                                p, self.topic
-                            );
-                            self.consumer
-                                .seek(&self.topic, *p, Offset::End, Timeout::Never)?;
-                        }
-                        StartingOffsets::Explicit(starting_offsets) => {
-                            if let Some(offset) = starting_offsets.get(p) {
-                                info!("Seeking consumer to offset {} for partition {} of topic {}. No offset is stored in delta log but explicit starting offsets are specified.", offset, p, self.topic);
-                                self.consumer.seek(
-                                    &self.topic,
-                                    *p,
-                                    Offset::Offset(*offset),
-                                    Timeout::Never,
-                                )?;
-                            } else {
-                                warn!("Not seeking consumer. Offsets are explicit, but an entry is not provided for partition {} of topic {}. `auto.offset.reset` from additional kafka settings will be used.", p, self.topic);
-                                // TODO: may need to lookup auto.offset.reset and force seek instead
-                            }
-                        }
-                    };
-                }
+                None => match self.opts.auto_offset_reset {
+                    AutoOffsetReset::Earliest => {
+                        info!("Seeking consumer to beginning for partition {} of topic {}. Partition has no stored offset but 'auto.offset.reset' is earliest", p, self.topic);
+                        self.consumer
+                            .seek(&self.topic, *p, Offset::Beginning, Timeout::Never)?;
+                    }
+                    AutoOffsetReset::Latest => {
+                        info!("Seeking consumer to end for partition {} of topic {}. Partition has no stored offset but 'auto.offset.reset' is latest", p, self.topic);
+                        self.consumer
+                            .seek(&self.topic, *p, Offset::End, Timeout::Never)?;
+                    }
+                },
             };
         }
         Ok(())
@@ -996,9 +927,12 @@ impl IngestProcessor {
     fn are_partition_offsets_match(&self) -> bool {
         let mut result = true;
         for (partition, offset) in &self.delta_partition_offsets {
-            let version = self.delta_writer.last_transaction_version(
-                &delta_helpers::txn_app_id_for_partition(self.opts.app_id.as_str(), *partition),
-            );
+            let version = self
+                .delta_writer
+                .last_transaction_version(&txn_app_id_for_partition(
+                    self.opts.app_id.as_str(),
+                    *partition,
+                ));
 
             if let Some(version) = version {
                 match offset {
@@ -1255,17 +1189,13 @@ fn kafka_client_config_from_options(opts: &IngestOptions) -> ClientConfig {
     if let Ok(key_pem) = std::env::var("KAFKA_DELTA_INGEST_KEY") {
         kafka_client_config.set("ssl.key.pem", key_pem);
     }
-    if opts.starting_offsets == StartingOffsets::Latest {
-        kafka_client_config.set(
-            AUTO_OFFSET_RESET_CONFIG_KEY,
-            AUTO_OFFSET_RESET_CONFIG_VALUE_LATEST,
-        );
-    } else if opts.starting_offsets == StartingOffsets::Earliest {
-        kafka_client_config.set(
-            AUTO_OFFSET_RESET_CONFIG_KEY,
-            AUTO_OFFSET_RESET_CONFIG_VALUE_EARLIEST,
-        );
-    }
+
+    let auto_offset_reset = match opts.auto_offset_reset {
+        AutoOffsetReset::Earliest => "earliest",
+        AutoOffsetReset::Latest => "latest",
+    };
+    kafka_client_config.set(AutoOffsetReset::CONFIG_KEY, auto_offset_reset);
+
     if let Some(additional) = &opts.additional_kafka_settings {
         for (k, v) in additional.iter() {
             kafka_client_config.set(k, v);
@@ -1318,43 +1248,4 @@ where
                 .map(|(_, latest_offset)| latest_offset)
         })
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use maplit::hashmap;
-
-    #[test]
-    fn test_starting_offset_deserialization() {
-        let earliest_offsets: StartingOffsets =
-            StartingOffsets::from_string("earliest".to_string()).unwrap();
-        assert_eq!(StartingOffsets::Earliest, earliest_offsets);
-
-        let latest_offsets: StartingOffsets =
-            StartingOffsets::from_string("latest".to_string()).unwrap();
-        assert_eq!(StartingOffsets::Latest, latest_offsets);
-
-        let explicit_offsets: StartingOffsets =
-            StartingOffsets::from_string(r#"{"0":1,"1":2,"2":42}"#.to_string()).unwrap();
-        assert_eq!(
-            StartingOffsets::Explicit(hashmap! {
-                0 => 1,
-                1 => 2,
-                2 => 42,
-            }),
-            explicit_offsets
-        );
-
-        let invalid = StartingOffsets::from_string(r#"{"not":"valid"}"#.to_string());
-
-        match invalid {
-            Err(StartingOffsetsParseError {
-                string_to_parse, ..
-            }) => {
-                assert_eq!(r#"{"not":"valid"}"#.to_string(), string_to_parse);
-            }
-            _ => assert!(false, "StartingOffsets::from_string should return an Err"),
-        }
-    }
 }
