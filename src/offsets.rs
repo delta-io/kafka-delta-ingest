@@ -32,7 +32,7 @@ pub enum WriteOffsetsError {
 pub(crate) async fn write_offsets_to_delta(
     table: &mut DeltaTable,
     app_id: &str,
-    offsets: &Vec<(DataTypePartition, DataTypeOffset)>,
+    offsets: &[(DataTypePartition, DataTypeOffset)],
 ) -> Result<(), WriteOffsetsError> {
     let offsets_as_str: String = offsets
         .iter()
@@ -50,7 +50,7 @@ pub(crate) async fn write_offsets_to_delta(
         .map(|(p, o)| (txn_app_id_for_partition(app_id, *p), *o))
         .collect();
 
-    if is_safe_to_commit_transactions(&table, &mapped_offsets) {
+    if is_safe_to_commit_transactions(table, &mapped_offsets) {
         // table has no stored offsets for given app_id/partitions so it is safe to write txn actions
         commit_partition_offsets(table, mapped_offsets, &offsets_as_str).await?;
         Ok(())
@@ -78,7 +78,7 @@ pub(crate) async fn write_offsets_to_delta(
         } else {
             let partitions = conflict_offsets
                 .iter()
-                .map(|p| p.0.split("-").last().unwrap_or("N/A"))
+                .map(|p| p.0.split('-').last().unwrap_or("N/A"))
                 .collect::<Vec<&str>>()
                 .join(",");
 
@@ -122,7 +122,7 @@ async fn commit_partition_offsets(
         table.update().await?;
         let version = table.version + 1;
 
-        if !is_safe_to_commit_transactions(&table, &offsets) {
+        if !is_safe_to_commit_transactions(table, &offsets) {
             // Partitions offsets have been committed by other writer, nothing to do here now
             return Ok(());
         }
@@ -143,7 +143,7 @@ async fn commit_partition_offsets(
                     if attempt_number > crate::DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS + 1 =>
                 {
                     error!("Transaction attempt failed. Attempts exhausted beyond max_retry_commit_attempts of {} so failing", crate::DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS);
-                    return Err(e.into());
+                    return Err(e);
                 }
                 DeltaTableError::VersionAlreadyExists(_) => {
                     attempt_number += 1;
@@ -158,7 +158,7 @@ async fn commit_partition_offsets(
 
 fn is_safe_to_commit_transactions(
     table: &DeltaTable,
-    offsets: &Vec<(String, DataTypeOffset)>,
+    offsets: &[(String, DataTypeOffset)],
 ) -> bool {
     offsets
         .iter()
