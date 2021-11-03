@@ -252,30 +252,6 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
     Ok(())
 }
 
-/// Enum representing available starting offset options.
-/// When specifying explicit starting offsets, the JSON string passed must have a string key representing the partition
-/// and a u64 value representing the offset to start from.
-///
-/// If the offset specified does not exist in Kafka, seeking to it will fail.
-/// If this happens, configuration should be adjusted to either provide a valid offset that does exist in Kafka,
-/// or remove the partition from the starting offsets configuration and rely on `auto.offset.reset` policy.
-///
-/// # Example:
-///
-/// ```
-/// use maplit::hashmap;
-/// use kafka_delta_ingest::StartingOffsets;
-///
-/// let starting_offsets = StartingOffsets::from_string(r#"{"0":21,"1":52,"2":3}"#.to_string());
-///
-/// match starting_offsets {
-///     Ok(StartingOffsets::Explicit(starting_offsets)) => {
-///         assert_eq!(hashmap!{0 => 21, 1 => 52, 2 => 3}, starting_offsets);
-///     }
-///     _ => assert!(false, "This won't happen if you're JSON is formatted correctly.")
-/// }
-/// ```
-
 #[derive(thiserror::Error, Debug)]
 #[error("'{value}' - Each transform argument must be colon delimited and match the pattern 'PROPERTY: SOURCE'")]
 struct TransformSyntaxError {
