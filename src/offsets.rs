@@ -83,7 +83,7 @@ pub(crate) async fn write_offsets_to_delta(
                 .join(",");
 
             error!(
-                "Stored offsets for partitions [{}] are lower than provided offsets in table {}",
+                "Stored offsets for partitions [{}] are lower than seek offsets: table {}",
                 partitions, table.table_uri
             );
 
