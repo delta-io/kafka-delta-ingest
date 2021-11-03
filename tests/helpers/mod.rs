@@ -60,11 +60,23 @@ pub fn create_producer() -> FutureProducer {
         .unwrap()
 }
 
-pub async fn send_json(producer: &FutureProducer, topic: &str, json: &Value) {
+pub async fn send_json(producer: &FutureProducer, topic: &str, json: &Value) -> (i32, i64) {
     let json = serde_json::to_string(json).unwrap();
 
     let record: FutureRecord<String, String> = FutureRecord::to(topic).payload(&json);
-    let _ = producer.send(record, Timeout::Never).await;
+    producer.send(record, Timeout::Never).await.unwrap()
+}
+
+pub async fn send_kv_json(
+    producer: &FutureProducer,
+    topic: &str,
+    key: String,
+    json: &Value,
+) -> (i32, i64) {
+    let json = serde_json::to_string(json).unwrap();
+
+    let record: FutureRecord<String, String> = FutureRecord::to(topic).payload(&json).key(&key);
+    producer.send(record, Timeout::Never).await.unwrap()
 }
 
 pub async fn send_bytes(producer: &FutureProducer, topic: &str, bytes: &Vec<u8>) {
@@ -189,12 +201,14 @@ pub fn create_local_table_in(schema: HashMap<&str, &str>, partitions: Vec<&str>,
     .unwrap();
 }
 
-pub fn create_kdi(
+pub fn create_kdi_with(
     topic: &str,
     table: &str,
+    worker_name: Option<String>,
     options: IngestOptions,
 ) -> (JoinHandle<()>, Arc<CancellationToken>, Runtime) {
     let app_id = options.app_id.to_string();
+    let worker_name = worker_name.unwrap_or(app_id.clone());
 
     env::set_var("AWS_S3_LOCKING_PROVIDER", "dynamodb");
     env::set_var("DYNAMO_LOCK_TABLE_NAME", "locks");
@@ -204,7 +218,7 @@ pub fn create_kdi(
     env::set_var("DYNAMO_LOCK_ADDITIONAL_TIME_TO_WAIT_MILLIS", "100");
     env::set_var("DYNAMO_LOCK_LEASE_DURATION", "2");
 
-    let rt = create_runtime(app_id.as_str());
+    let rt = create_runtime(&worker_name);
     let token = Arc::new(CancellationToken::new());
 
     let run_loop = {
@@ -219,6 +233,14 @@ pub fn create_kdi(
     };
 
     (run_loop, token, rt)
+}
+
+pub fn create_kdi(
+    topic: &str,
+    table: &str,
+    options: IngestOptions,
+) -> (JoinHandle<()>, Arc<CancellationToken>, Runtime) {
+    create_kdi_with(topic, table, None, options)
 }
 
 pub fn create_runtime(name: &str) -> Runtime {
@@ -249,10 +271,10 @@ pub fn init_logger() {
                 record.args(),
             )
         })
-        .filter(Some("dipstick"), log::LevelFilter::Info)
-        .filter(Some("rusoto_core"), log::LevelFilter::Info)
-        .filter(Some("deltalake"), log::LevelFilter::Info)
-        .filter(None, log::LevelFilter::Debug)
+        // .filter(Some("dipstick"), log::LevelFilter::Info)
+        // .filter(Some("rusoto_core"), log::LevelFilter::Info)
+        // .filter(Some("deltalake"), log::LevelFilter::Info)
+        .filter(None, log::LevelFilter::Info)
         .try_init();
 }
 
@@ -294,7 +316,10 @@ pub async fn read_table_content(table_uri: &str) -> Vec<Value> {
             list.push(record.to_json_value());
         }
     }
-    std::fs::remove_file(tmp).unwrap();
+
+    if !list.is_empty() {
+        std::fs::remove_file(tmp).unwrap();
+    }
 
     list
 }

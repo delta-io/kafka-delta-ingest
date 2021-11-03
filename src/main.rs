@@ -33,7 +33,9 @@
 extern crate clap;
 
 use clap::{AppSettings, Values};
-use kafka_delta_ingest::{start_ingest, IngestOptions, StartingOffsets};
+use kafka_delta_ingest::{
+    start_ingest, AutoOffsetReset, DataTypeOffset, DataTypePartition, IngestOptions,
+};
 use log::{error, info};
 use std::collections::HashMap;
 
@@ -72,10 +74,15 @@ async fn main() -> anyhow::Result<()> {
             (@arg APP_ID: -a --app_id +takes_value default_value("kafka_delta_ingest") 
              "The app id to use when writing to Delta.")
 
-            (@arg STARTING_OFFSETS: -o --offsets +takes_value default_value("earliest") 
-             r#"Offsets to start from. This may be 'earliest' or 'latest' to start from the earliest or latest available offsets in Kafka, 
-or a JSON string specifying the explicit offset to start from for each partition. 
-NOTE: This configuration is only applied when offsets are not already stored in delta lake."#)
+            (@arg SEEK_OFFSETS: -s --seek_offsets +takes_value
+             r#"A JSON string specifying the partition to offset map as the starting point for the ingestion.
+NOTE: This is seeking offsets rather than starting offsets, as such, the very first ingested message would be `seek_offset + 1` or the next successive message in a partition.
+NOTE: This configuration is only applied when offsets are not already stored in delta lake.
+The JSON example: '{"0":123,"1":321}'"#)
+
+            (@arg AUTO_OFFSET_RESET: -o --auto_offset_reset +takes_value default_value("earliest")
+             r#"The default offset reset policy, which is either 'earliest' or 'latest'.
+The configuration is applied when offsets are not found in delta table or not specified with 'seek_offsets'. This also overrides the kafka consumer's 'auto.offset.reset' config."#)
 
             (@arg ALLOWED_LATENCY: -l --allowed_latency +takes_value default_value("300") 
              "The allowed latency (in seconds) from the time a message is consumed to when it should be written to Delta.")
@@ -145,11 +152,17 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
 
             let app_id = ingest_matches.value_of("APP_ID").unwrap().to_string();
 
-            let starting_offsets = ingest_matches
-                .value_of("STARTING_OFFSETS")
-                .unwrap()
-                .to_string();
-            let starting_offsets = StartingOffsets::from_string(starting_offsets)?;
+            let seek_offsets: Option<Vec<(DataTypePartition, DataTypeOffset)>> = ingest_matches
+                .value_of("SEEK_OFFSETS")
+                .map(|s| serde_json::from_str(s).expect("Cannot parse seek offsets"));
+
+            let auto_offset_reset = ingest_matches.value_of("AUTO_OFFSET_RESET").unwrap();
+
+            let auto_offset_reset: AutoOffsetReset = match auto_offset_reset {
+                "earliest" => AutoOffsetReset::Earliest,
+                "latest" => AutoOffsetReset::Latest,
+                unknown => panic!("Unknown auto_offset_reset {}", unknown),
+            };
 
             let allowed_latency = ingest_matches.value_of_t::<u64>("ALLOWED_LATENCY").unwrap();
             let max_messages_per_batch = ingest_matches
@@ -202,7 +215,8 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
                 kafka_brokers,
                 consumer_group_id,
                 app_id,
-                starting_offsets,
+                seek_offsets,
+                auto_offset_reset,
                 allowed_latency,
                 max_messages_per_batch,
                 min_bytes_per_file,
@@ -237,6 +251,30 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
 
     Ok(())
 }
+
+/// Enum representing available starting offset options.
+/// When specifying explicit starting offsets, the JSON string passed must have a string key representing the partition
+/// and a u64 value representing the offset to start from.
+///
+/// If the offset specified does not exist in Kafka, seeking to it will fail.
+/// If this happens, configuration should be adjusted to either provide a valid offset that does exist in Kafka,
+/// or remove the partition from the starting offsets configuration and rely on `auto.offset.reset` policy.
+///
+/// # Example:
+///
+/// ```
+/// use maplit::hashmap;
+/// use kafka_delta_ingest::StartingOffsets;
+///
+/// let starting_offsets = StartingOffsets::from_string(r#"{"0":21,"1":52,"2":3}"#.to_string());
+///
+/// match starting_offsets {
+///     Ok(StartingOffsets::Explicit(starting_offsets)) => {
+///         assert_eq!(hashmap!{0 => 21, 1 => 52, 2 => 3}, starting_offsets);
+///     }
+///     _ => assert!(false, "This won't happen if you're JSON is formatted correctly.")
+/// }
+/// ```
 
 #[derive(thiserror::Error, Debug)]
 #[error("'{value}' - Each transform argument must be colon delimited and match the pattern 'PROPERTY: SOURCE'")]

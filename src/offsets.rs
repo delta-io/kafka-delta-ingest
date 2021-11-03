@@ -4,11 +4,11 @@ use deltalake::action::Action;
 use deltalake::{DeltaTable, DeltaTableError};
 use log::{error, info};
 
-/// Errors returned by `write_starting_offsets` function.
+/// Errors returned by `write_offsets_to_delta` function.
 #[derive(thiserror::Error, Debug)]
-pub enum StartingOffsetsError {
-    /// Error returned when stored offsets in delta table are lower than given starting offsets.
-    #[error("Stored offsets are lower than starting: {0}")]
+pub enum WriteOffsetsError {
+    /// Error returned when stored offsets in delta table are lower than provided seek offsets.
+    #[error("Stored offsets are lower than provided: {0}")]
     InconsistentStoredOffsets(String),
 
     /// Error from [`deltalake::DeltaTable`]
@@ -20,12 +20,20 @@ pub enum StartingOffsetsError {
     },
 }
 
-#[allow(dead_code)]
-pub(crate) async fn write_starting_offsets(
+/// Write provided seeking offsets as a new delta log version with a set of `txn` actions.
+/// The `txn` id for each partition is constructed as `<app_id>-<partition>` and used across
+/// kafka-delta-ingest to track messages offsets and protect from data duplication.
+///
+/// However, if table has already stored offset for given app_id/partition then this action could
+/// be ignored if stored offsets are equals or greater than provided seeking offsets.
+/// But, if stored offsets are lower then the `InconsistentStoredOffsets` is returned since it
+/// could break the data integrity.
+/// Hence, one is advised to supply the new `app_id` if skipping offsets is what required.
+pub(crate) async fn write_offsets_to_delta(
     table: &mut DeltaTable,
     app_id: &str,
-    offsets: Vec<(DataTypePartition, DataTypeOffset)>,
-) -> Result<(), StartingOffsetsError> {
+    offsets: &Vec<(DataTypePartition, DataTypeOffset)>,
+) -> Result<(), WriteOffsetsError> {
     let offsets_as_str: String = offsets
         .iter()
         .map(|(p, o)| format!("{}:{}", p, o))
@@ -33,7 +41,7 @@ pub(crate) async fn write_starting_offsets(
         .join(",");
 
     info!(
-        "Writing starting offsets [{}] to delta table {}",
+        "Writing offsets [{}] to delta table {}",
         offsets_as_str, table.table_uri
     );
 
@@ -53,7 +61,7 @@ pub(crate) async fn write_starting_offsets(
 
         for (txn_app_id, offset) in mapped_offsets {
             match table.get_app_transaction_version().get(&txn_app_id) {
-                Some(stored_offset) if stored_offset < &offset => {
+                Some(stored_offset) if *stored_offset < offset => {
                     conflict_offsets.push((txn_app_id, *stored_offset, offset));
                 }
                 _ => (),
@@ -61,9 +69,9 @@ pub(crate) async fn write_starting_offsets(
         }
 
         if conflict_offsets.is_empty() {
-            // there's no conflicted offsets in delta, e.g. is either missing or is higher than starting offset
+            // there's no conflicted offsets in delta, e.g. it's either missing or is higher than seek offset
             info!(
-                "The starting offsets are already applied for table {}",
+                "The provided offsets are already applied for table {}",
                 table.table_uri
             );
             Ok(())
@@ -74,17 +82,20 @@ pub(crate) async fn write_starting_offsets(
                 .collect::<Vec<&str>>()
                 .join(",");
 
-            error!("Stored offsets for partitions [{}] are lower than given starting offsets in table {}", partitions, table.table_uri);
+            error!(
+                "Stored offsets for partitions [{}] are lower than provided offsets in table {}",
+                partitions, table.table_uri
+            );
 
             let detailed_error_msg = conflict_offsets
                 .iter()
-                .map(|(partition, stored, starting)| {
-                    format!("{}:stored={}/starting={}", partition, stored, starting)
+                .map(|(partition, stored, provided)| {
+                    format!("{}:stored={}/provided={}", partition, stored, provided)
                 })
                 .collect::<Vec<String>>()
                 .join(", ");
 
-            Err(StartingOffsetsError::InconsistentStoredOffsets(format!(
+            Err(WriteOffsetsError::InconsistentStoredOffsets(format!(
                 "[{}]",
                 detailed_error_msg
             )))
@@ -122,7 +133,7 @@ async fn commit_partition_offsets(
         {
             Ok(v) => {
                 info!(
-                    "Delta version {} completed with starting offsets {}.",
+                    "Delta version {} completed with new txn offsets {}.",
                     v, offsets_as_str
                 );
                 return Ok(());
@@ -166,7 +177,7 @@ mod tests {
 "#;
 
     #[tokio::test]
-    async fn write_starting_offsets_test() {
+    async fn write_offsets_to_delta_test() {
         env_logger::init();
 
         let mut table = create_table().await;
@@ -175,7 +186,7 @@ mod tests {
 
         // Test successful write
         assert_eq!(table.version, 0);
-        write_starting_offsets(&mut table, "test", offsets.clone())
+        write_offsets_to_delta(&mut table, "test", &offsets)
             .await
             .unwrap();
 
@@ -192,7 +203,7 @@ mod tests {
         );
 
         // Test ignored write
-        write_starting_offsets(&mut table, "test", offsets)
+        write_offsets_to_delta(&mut table, "test", &offsets)
             .await
             .unwrap();
 
@@ -202,7 +213,7 @@ mod tests {
 
         // Test failed write (lower stored offsets)
         let offsets = vec![(0, 15)];
-        let err = write_starting_offsets(&mut table, "test", offsets)
+        let err = write_offsets_to_delta(&mut table, "test", &offsets)
             .await
             .err()
             .unwrap();
@@ -210,7 +221,7 @@ mod tests {
 
         assert_eq!(
             err.as_str(),
-            "InconsistentStoredOffsets(\"[test-0:stored=5/starting=15]\")"
+            "InconsistentStoredOffsets(\"[test-0:stored=5/provided=15]\")"
         );
 
         std::fs::remove_dir_all(table.table_uri).unwrap();

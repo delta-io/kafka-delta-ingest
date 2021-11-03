@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 // when the local kafka container is receiving concurrent requests from other tasks.
 use serial_test::serial;
 
-use kafka_delta_ingest::{IngestOptions, StartingOffsets};
+use kafka_delta_ingest::{AutoOffsetReset, IngestOptions};
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 struct TestMsg {
@@ -56,10 +56,7 @@ async fn test_start_from_explicit() {
             allowed_latency: 20,
             max_messages_per_batch: 10,
             min_bytes_per_file: 10,
-            starting_offsets: StartingOffsets::Explicit(hashmap! {
-                // starting offset is set at 4
-                0 => 4,
-            }),
+            seek_offsets: Some(vec![(0, 3)]), // starting offset is goign to be 4
             ..Default::default()
         },
     );
@@ -124,7 +121,7 @@ async fn test_start_from_earliest() {
             allowed_latency: 2,
             max_messages_per_batch: 10,
             min_bytes_per_file: 10,
-            starting_offsets: StartingOffsets::Earliest,
+            auto_offset_reset: AutoOffsetReset::Earliest,
             ..Default::default()
         },
     );
@@ -182,7 +179,7 @@ async fn test_start_from_latest() {
             allowed_latency: 10,
             max_messages_per_batch: 10,
             min_bytes_per_file: 10,
-            starting_offsets: StartingOffsets::Latest,
+            auto_offset_reset: AutoOffsetReset::Latest,
             ..Default::default()
         },
     );
