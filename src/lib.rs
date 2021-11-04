@@ -615,7 +615,7 @@ impl IngestProcessor {
                     Ok(()) => {
                         self.ingest_metrics.message_transformed();
                         // Buffer
-                        self.value_buffers.add(partition, offset, value);
+                        self.value_buffers.add(partition, offset, value)?;
                     }
                     Err(e) => {
                         warn!(

@@ -1,4 +1,4 @@
-use crate::{DataTypeOffset, DataTypePartition};
+use crate::{DataTypeOffset, DataTypePartition, IngestError};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -25,13 +25,21 @@ impl ValueBuffers {
         partition: DataTypePartition,
         offset: DataTypeOffset,
         value: Value,
-    ) {
+    ) -> Result<(), IngestError> {
         let buffer = self
             .buffers
             .entry(partition)
             .or_insert_with(ValueBuffer::new);
+
+        if let Some(last_offset) = buffer.last_offset {
+            if offset <= last_offset {
+                return Err(IngestError::AlreadyProcessedPartitionOffset { partition, offset });
+            }
+        }
+
         buffer.add(value, offset);
         self.len += 1;
+        Ok(())
     }
 
     /// Returns the total number of items stored across each partition specific [`ValueBuffer`].
@@ -76,7 +84,7 @@ impl ValueBuffers {
 
 /// Buffer of values held in memory for a single Kafka partition.
 #[derive(Debug)]
-pub(crate) struct ValueBuffer {
+struct ValueBuffer {
     /// The offset of the last message stored in the buffer.
     last_offset: Option<DataTypeOffset>,
     /// The buffer of [`Value`] instances.
@@ -119,4 +127,99 @@ pub(crate) struct ConsumedBuffers {
     pub(crate) partition_offsets: HashMap<DataTypePartition, DataTypeOffset>,
     /// A [`HashMap`] from partition to number of messages consumed for each partition.
     pub(crate) partition_counts: HashMap<DataTypePartition, usize>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maplit::hashmap;
+
+    #[test]
+    fn value_buffers_test() {
+        let mut buffers = ValueBuffers::default();
+        let mut add = |p, o| {
+            buffers
+                .add(p, o, Value::String(format!("{}:{}", p, o)))
+                .unwrap();
+        };
+
+        add(0, 0);
+        add(1, 0);
+        add(0, 1);
+        add(0, 2);
+        add(1, 1);
+
+        assert_eq!(buffers.len, 5);
+        assert_eq!(buffers.buffers.len(), 2);
+        assert_eq!(buffers.buffers.get(&0).unwrap().last_offset, Some(2));
+        assert_eq!(buffers.buffers.get(&0).unwrap().values.len(), 3);
+        assert_eq!(buffers.buffers.get(&1).unwrap().last_offset, Some(1));
+        assert_eq!(buffers.buffers.get(&1).unwrap().values.len(), 2);
+
+        let consumed = buffers.consume();
+
+        assert_eq!(buffers.len, 0);
+        assert_eq!(buffers.buffers.len(), 2);
+        assert_eq!(buffers.buffers.get(&0).unwrap().last_offset, None);
+        assert_eq!(buffers.buffers.get(&0).unwrap().values.len(), 0);
+        assert_eq!(buffers.buffers.get(&1).unwrap().last_offset, None);
+        assert_eq!(buffers.buffers.get(&1).unwrap().values.len(), 0);
+
+        assert_eq!(
+            consumed.partition_counts,
+            hashmap! {
+                0 => 3,
+                1 => 2
+            }
+        );
+        assert_eq!(
+            consumed.partition_offsets,
+            hashmap! {
+                0 => 2,
+                1 => 1
+            }
+        );
+
+        let mut values: Vec<String> = consumed.values.iter().map(|j| j.to_string()).collect();
+
+        values.sort();
+
+        let expected: Vec<String> = vec!["\"0:0\"", "\"0:1\"", "\"0:2\"", "\"1:0\"", "\"1:1\""]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(values, expected);
+    }
+
+    #[test]
+    fn value_buffers_conflict_offsets_test() {
+        let mut buffers = ValueBuffers::default();
+        let mut add = |o| buffers.add(0, o, Value::Number(o.into()));
+
+        let verify_error = |res: Result<(), IngestError>, o: i64| {
+            match res.err().unwrap() {
+                IngestError::AlreadyProcessedPartitionOffset { partition, offset } => {
+                    assert_eq!(partition, 0);
+                    assert_eq!(offset, o);
+                }
+                other => panic!("{:?}", other),
+            };
+        };
+
+        add(0).unwrap();
+        add(1).unwrap();
+        verify_error(add(0), 0);
+        verify_error(add(1), 1);
+        add(2).unwrap();
+
+        let consumed = buffers.consume();
+
+        assert_eq!(consumed.values.len(), 3);
+        assert_eq!(
+            consumed.partition_offsets,
+            hashmap! {
+                0 => 2,
+            }
+        );
+    }
 }
