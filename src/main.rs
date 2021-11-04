@@ -32,17 +32,18 @@
 #[macro_use]
 extern crate clap;
 
+use chrono::Local;
 use clap::{AppSettings, Values};
 use kafka_delta_ingest::{
     start_ingest, AutoOffsetReset, DataTypeOffset, DataTypePartition, IngestOptions,
 };
-use log::{error, info};
+use log::{error, info, LevelFilter};
 use std::collections::HashMap;
+use std::io::prelude::*;
+use std::str::FromStr;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-
     #[cfg(feature = "sentry-ext")]
     {
         let _guard = std::env::var("SENTRY_DSN").ok().map(|dsn| {
@@ -135,6 +136,10 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
 
     match matches.subcommand() {
         Some(("ingest", ingest_matches)) => {
+            let app_id = ingest_matches.value_of("APP_ID").unwrap().to_string();
+
+            init_logger(app_id.clone());
+
             let topic = ingest_matches.value_of("TOPIC").unwrap().to_string();
             let table_location = ingest_matches
                 .value_of("TABLE_LOCATION")
@@ -149,8 +154,6 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
                 .value_of("CONSUMER_GROUP")
                 .unwrap()
                 .to_string();
-
-            let app_id = ingest_matches.value_of("APP_ID").unwrap().to_string();
 
             let seek_offsets: Option<Vec<(DataTypePartition, DataTypeOffset)>> = ingest_matches
                 .value_of("SEEK_OFFSETS")
@@ -250,6 +253,28 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
     }
 
     Ok(())
+}
+
+fn init_logger(app_id: String) {
+    let app_id: &'static str = Box::leak(app_id.into_boxed_str());
+    let log_level = std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|l| LevelFilter::from_str(l.as_str()).ok())
+        .unwrap_or(log::LevelFilter::Info);
+
+    let _ = env_logger::Builder::new()
+        .format(move |buf, record| {
+            writeln!(
+                buf,
+                "{} [{}] - {}: {}",
+                Local::now().format("%Y-%m-%dT%H:%M:%S"),
+                record.level(),
+                app_id,
+                record.args(),
+            )
+        })
+        .filter(None, log_level)
+        .try_init();
 }
 
 #[derive(thiserror::Error, Debug)]
