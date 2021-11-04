@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::{delta_writer::*, transforms::TransformError};
+use crate::{transforms::TransformError, writer::*};
 use deltalake::checkpoints::CheckpointError;
 
 mod env_vars {
@@ -94,10 +94,10 @@ pub enum DeadLetterQueueError {
     },
 
     /// Error returned when a write to the dead letter delta table used by [DeltaSinkDeadLetterQueue] fails.
-    #[error("Delta write failed: {source}")]
-    DeltaWriter {
+    #[error("Write failed: {source}")]
+    Writer {
         #[from]
-        source: DeltaWriterError,
+        source: DataWriterError,
     },
 
     /// Error returned by the internal dead letter transformer.
@@ -234,7 +234,7 @@ impl DeadLetterQueue for LoggingDeadLetterQueue {
 /// A dead letter transform with key: `date` and value: `substr(epoch_micros_to_iso8601(timestamp),`0`,`10`)` should be provided to generate the `date` field.
 pub(crate) struct DeltaSinkDeadLetterQueue {
     table: DeltaTable,
-    delta_writer: DeltaWriter,
+    delta_writer: DataWriter,
     transformer: Transformer,
     write_checkpoints: bool,
 }
@@ -250,7 +250,7 @@ impl DeltaSinkDeadLetterQueue {
                     .unwrap_or_else(|_| "kafka_delta_ingest-dead_letters".to_string()),
                 };
                 let table = crate::delta_helpers::load_table(table_uri, opts.clone()).await?;
-                let delta_writer = DeltaWriter::for_table(&table, opts)?;
+                let delta_writer = DataWriter::for_table(&table, opts)?;
 
                 Ok(Self {
                     table,

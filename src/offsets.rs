@@ -40,10 +40,7 @@ pub(crate) async fn write_offsets_to_delta(
         .collect::<Vec<String>>()
         .join(",");
 
-    info!(
-        "Writing offsets [{}] to delta table {}",
-        offsets_as_str, table.table_uri
-    );
+    info!("Writing offsets [{}]", offsets_as_str);
 
     let mapped_offsets: Vec<(String, DataTypeOffset)> = offsets
         .iter()
@@ -70,10 +67,7 @@ pub(crate) async fn write_offsets_to_delta(
 
         if conflict_offsets.is_empty() {
             // there's no conflicted offsets in delta, e.g. it's either missing or is higher than seek offset
-            info!(
-                "The provided offsets are already applied for table {}",
-                table.table_uri
-            );
+            info!("The provided offsets are already applied.");
             Ok(())
         } else {
             let partitions = conflict_offsets
@@ -83,8 +77,8 @@ pub(crate) async fn write_offsets_to_delta(
                 .join(",");
 
             error!(
-                "Stored offsets for partitions [{}] are lower than seek offsets: table {}",
-                partitions, table.table_uri
+                "Stored offsets for partitions [{}] are lower than seek offsets.",
+                partitions
             );
 
             let detailed_error_msg = conflict_offsets

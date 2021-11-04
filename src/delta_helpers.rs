@@ -62,11 +62,7 @@ pub(crate) async fn try_create_checkpoint(
 
         deltalake::checkpoints::create_checkpoint_from_table(table).await?;
 
-        log::info!(
-            "Created checkpoint version {} for table uri {}.",
-            version,
-            table.table_uri
-        );
+        log::info!("Created checkpoint version {}.", version);
 
         if version_updated {
             table.update().await?;

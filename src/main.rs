@@ -266,9 +266,8 @@ fn init_logger(app_id: String) {
         .format(move |buf, record| {
             writeln!(
                 buf,
-                "{} {} [{}] - {}: {}",
+                "{} [{}] - {}: {}",
                 Local::now().format("%Y-%m-%dT%H:%M:%S"),
-                record.module_path().unwrap(),
                 record.level(),
                 app_id,
                 record.args(),

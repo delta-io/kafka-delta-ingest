@@ -5,7 +5,7 @@ extern crate maplit;
 mod helpers;
 
 use deltalake::action::Add;
-use kafka_delta_ingest::delta_writer::*;
+use kafka_delta_ingest::writer::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -40,7 +40,7 @@ async fn test_delta_partitions() {
     );
 
     let table = deltalake::open_table(&table_path).await.unwrap();
-    let mut delta_writer = DeltaWriter::for_table(&table, HashMap::new()).unwrap();
+    let mut delta_writer = DataWriter::for_table(&table, HashMap::new()).unwrap();
 
     let batch1 = vec![
         TestMsg::new(1, "red"),

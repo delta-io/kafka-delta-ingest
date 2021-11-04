@@ -31,19 +31,19 @@ use tokio_util::sync::CancellationToken;
 
 mod dead_letters;
 mod delta_helpers;
-pub mod delta_writer;
 mod metrics;
 mod offsets;
 mod transforms;
 mod value_buffers;
+pub mod writer;
 
 use crate::offsets::WriteOffsetsError;
 use crate::value_buffers::{ConsumedBuffers, ValueBuffers};
 use crate::{
     dead_letters::*,
-    delta_writer::{DeltaWriter, DeltaWriterError},
     metrics::*,
     transforms::*,
+    writer::{DataWriter, DataWriterError},
 };
 use delta_helpers::*;
 use deltalake::checkpoints::CheckpointError;
@@ -80,12 +80,12 @@ pub enum IngestError {
         source: DeltaTableError,
     },
 
-    /// Error from [`DeltaWriter`]
-    #[error("DeltaWriter error: {source}")]
-    DeltaWriter {
-        /// Wrapped [`DeltaWriterError`]
+    /// Error from [`writer::DataWriter`]
+    #[error("Writer error: {source}")]
+    Writer {
+        /// Wrapped [`DataWriterError`]
         #[from]
-        source: DeltaWriterError,
+        source: DataWriterError,
     },
 
     /// Error occurred when writing a delta log checkpoint.
@@ -97,7 +97,7 @@ pub enum IngestError {
     },
 
     /// Error from [`WriteOffsetsError`]
-    #[error("DeltaWriter error: {source}")]
+    #[error("WriteOffsets error: {source}")]
     WriteOffsets {
         /// Wrapped [`WriteOffsetsError`]
         #[from]
@@ -154,8 +154,8 @@ pub enum IngestError {
         ending_offsets: String,
         /// Message counts for each partition that failed to be written to delta.
         partition_counts: String,
-        /// The underlying DeltaWriterError.
-        source: DeltaWriterError,
+        /// The underlying DataWriterError.
+        source: DataWriterError,
     },
 
     /// Error returned when a message is received from Kafka that has already been processed.
@@ -396,9 +396,8 @@ pub async fn start_ingest(
                 }
                 Ok(v) => {
                     info!(
-                        "Delta version {} completed for topic {} in {} milliseconds.",
+                        "Delta version {} completed in {} milliseconds.",
                         v,
-                        topic,
                         timer.elapsed().as_millis()
                     );
                 }
@@ -450,8 +449,8 @@ async fn handle_rebalance(
             match rebalance_signal.as_mut() {
                 Some(RebalanceSignal::RebalanceAssign(partitions)) => {
                     info!(
-                        "Handling rebalance assign. New assigned partitions are {:?} on topic {}",
-                        partitions, processor.topic
+                        "Handling rebalance assign. New assigned partitions are {:?}",
+                        partitions
                     );
                     processor.table.update().await?;
                     partition_assignment.reset_with(partitions.as_slice());
@@ -548,7 +547,7 @@ struct IngestProcessor {
     consumer: Arc<StreamConsumer<KafkaContext>>,
     transformer: Transformer,
     table: DeltaTable,
-    delta_writer: DeltaWriter,
+    delta_writer: DataWriter,
     value_buffers: ValueBuffers,
     delta_partition_offsets: HashMap<DataTypePartition, Option<DataTypeOffset>>,
     latency_timer: Instant,
@@ -569,7 +568,7 @@ impl IngestProcessor {
         let dlq = dead_letter_queue_from_options(&opts).await?;
         let transformer = Transformer::from_transforms(&opts.transforms)?;
         let table = delta_helpers::load_table(table_uri, HashMap::new()).await?;
-        let delta_writer = DeltaWriter::for_table(&table, HashMap::new())?;
+        let delta_writer = DataWriter::for_table(&table, HashMap::new())?;
 
         Ok(IngestProcessor {
             topic,
@@ -620,8 +619,8 @@ impl IngestProcessor {
                     }
                     Err(e) => {
                         warn!(
-                            "Transform failed - topic {}, partition {}, offset {}",
-                            self.topic, partition, offset
+                            "Transform failed - partition {}, offset {}",
+                            partition, offset
                         );
                         self.ingest_metrics.message_transform_failed();
                         self.dlq
@@ -632,14 +631,14 @@ impl IngestProcessor {
             }
             Err(MessageDeserializationError::EmptyPayload) => {
                 warn!(
-                    "Empty payload for message - topic {}, partition {}, offset {}",
-                    self.topic, partition, offset
+                    "Empty payload for message - partition {}, offset {}",
+                    partition, offset
                 );
             }
             Err(MessageDeserializationError::JsonDeserialization { dead_letter }) => {
                 warn!(
-                    "Deserialization failed - topic {}, partition {}, offset {}",
-                    self.topic, partition, offset
+                    "Deserialization failed - partition {}, offset {}",
+                    partition, offset
                 );
                 self.ingest_metrics.message_deserialization_failed();
                 self.dlq.write_dead_letter(dead_letter).await?;
@@ -694,13 +693,12 @@ impl IngestProcessor {
         }
 
         match self.delta_writer.write(values).await {
-            Err(DeltaWriterError::PartialParquetWrite {
+            Err(DataWriterError::PartialParquetWrite {
                 skipped_values,
                 sample_error,
             }) => {
                 warn!(
-                    "Partial parquet write, skipped {} values for topic {}, sample ParquetError {:?}",
-                    self.topic,
+                    "Partial parquet write, skipped {} values, sample ParquetError {:?}",
                     skipped_values.len(),
                     sample_error
                 );
@@ -794,12 +792,12 @@ impl IngestProcessor {
                     DeltaTableError::VersionAlreadyExists(_)
                         if attempt_number > DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS + 1 =>
                     {
-                        error!("Transaction attempt failed. Attempts exhausted beyond max_retry_commit_attempts of {} so failing - topic: {}", DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS, self.topic);
+                        error!("Transaction attempt failed. Attempts exhausted beyond max_retry_commit_attempts of {} so failing", DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS);
                         return Err(e.into());
                     }
                     DeltaTableError::VersionAlreadyExists(_) => {
                         attempt_number += 1;
-                        warn!("Transaction attempt failed. Incrementing attempt number to {} and retrying - topic: {}", attempt_number, self.topic);
+                        warn!("Transaction attempt failed. Incrementing attempt number to {} and retrying", attempt_number);
                     }
                     DeltaTableError::StorageError {
                         source:
@@ -807,10 +805,7 @@ impl IngestProcessor {
                                 source: DynamoError::NonAcquirableLock,
                             },
                     } => {
-                        error!(
-                            "Delta write failed for topic: {}. DeltaTableError: {}",
-                            self.topic, e
-                        );
+                        error!("Delta write failed.. DeltaTableError: {}", e);
                         return Err(IngestError::InconsistentState(
                             "The remote dynamodb lock is non-acquirable!".to_string(),
                         ));
@@ -851,27 +846,26 @@ impl IngestProcessor {
             match offset {
                 Some(o) if *o == 0 => {
                     // MARK: workaround for rdkafka error when attempting seek to offset 0
-                    info!("Seeking consumer to beginning for partition {} of topic {}. Delta log offset is 0, but seek to zero is not possible.", p, self.topic);
+                    info!("Seeking consumer to beginning for partition {}. Delta log offset is 0, but seek to zero is not possible.", p);
                     self.consumer
                         .seek(&self.topic, *p, Offset::Beginning, Timeout::Never)?;
                 }
                 Some(o) => {
                     info!(
-                        "Seeking consumer to offset {} for partition {} of topic {} found in delta log.",
-                        o, p,
-                        self.topic,
+                        "Seeking consumer to offset {} for partition {} found in delta log.",
+                        o, p
                     );
                     self.consumer
                         .seek(&self.topic, *p, Offset::Offset(*o), Timeout::Never)?;
                 }
                 None => match self.opts.auto_offset_reset {
                     AutoOffsetReset::Earliest => {
-                        info!("Seeking consumer to beginning for partition {} of topic {}. Partition has no stored offset but 'auto.offset.reset' is earliest", p, self.topic);
+                        info!("Seeking consumer to beginning for partition {}. Partition has no stored offset but 'auto.offset.reset' is earliest", p);
                         self.consumer
                             .seek(&self.topic, *p, Offset::Beginning, Timeout::Never)?;
                     }
                     AutoOffsetReset::Latest => {
-                        info!("Seeking consumer to end for partition {} of topic {}. Partition has no stored offset but 'auto.offset.reset' is latest", p, self.topic);
+                        info!("Seeking consumer to end for partition {}. Partition has no stored offset but 'auto.offset.reset' is latest", p);
                         self.consumer
                             .seek(&self.topic, *p, Offset::End, Timeout::Never)?;
                     }
@@ -951,8 +945,8 @@ impl IngestProcessor {
                     Some(offset) if *offset == version => (),
                     _ => {
                         info!(
-                            "Conflicting offset for partition {}: offset={:?}, delta={}, topic={}",
-                            partition, offset, version, self.topic
+                            "Conflicting offset for partition {}: offset={:?}, delta={}",
+                            partition, offset, version
                         );
                         result = false;
                     }
