@@ -316,9 +316,13 @@ fn parse_seek_offsets(val: &str) -> Vec<(DataTypePartition, DataTypeOffset)> {
     let map: HashMap<String, DataTypeOffset> =
         serde_json::from_str(val).expect("Cannot parse seek offsets");
 
-    map.iter()
+    let mut list: Vec<(DataTypePartition, DataTypeOffset)> = map
+        .iter()
         .map(|(p, o)| (p.parse::<DataTypePartition>().unwrap(), *o))
-        .collect()
+        .collect();
+
+    list.sort_by(|a, b| a.0.cmp(&b.0));
+    list
 }
 
 #[cfg(test)]
@@ -327,7 +331,7 @@ mod test {
 
     #[test]
     fn parse_seek_offsets_test() {
-        let parsed = parse_seek_offsets(r#"{"0":10,"1":12}"#);
-        assert_eq!(parsed, vec![(0, 10), (1, 12)]);
+        let parsed = parse_seek_offsets(r#"{"0":10,"2":12,"1":13}"#);
+        assert_eq!(parsed, vec![(0, 10), (1, 13), (2, 12)]);
     }
 }
