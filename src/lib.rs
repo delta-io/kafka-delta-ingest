@@ -12,7 +12,7 @@ extern crate strum_macros;
 #[cfg(test)]
 extern crate serde_json;
 
-use deltalake::{DeltaDataTypeVersion, DeltaTableError};
+use deltalake::{DeltaDataTypeVersion, DeltaTable, DeltaTableError};
 use futures::stream::StreamExt;
 use log::{debug, error, info, warn};
 use rdkafka::{
@@ -31,19 +31,22 @@ use tokio_util::sync::CancellationToken;
 
 mod dead_letters;
 mod delta_helpers;
-pub mod deltalake_ext;
+pub mod delta_writer;
 mod metrics;
 mod offsets;
 mod transforms;
+mod value_buffers;
 
 use crate::offsets::WriteOffsetsError;
+use crate::value_buffers::{ConsumedBuffers, ValueBuffers};
 use crate::{
     dead_letters::*,
-    deltalake_ext::{DeltaWriter, DeltaWriterError},
+    delta_writer::{DeltaWriter, DeltaWriterError},
     metrics::*,
     transforms::*,
 };
 use delta_helpers::*;
+use deltalake::checkpoints::CheckpointError;
 use deltalake::storage::s3::dynamodb_lock::DynamoError;
 use deltalake::storage::StorageError;
 
@@ -83,6 +86,14 @@ pub enum IngestError {
         /// Wrapped [`DeltaWriterError`]
         #[from]
         source: DeltaWriterError,
+    },
+
+    /// Error occurred when writing a delta log checkpoint.
+    #[error("CheckpointErrorError error: {source}")]
+    CheckpointErrorError {
+        /// The wrapped [`CheckpointError`]
+        #[from]
+        source: CheckpointError,
     },
 
     /// Error from [`WriteOffsetsError`]
@@ -442,7 +453,7 @@ async fn handle_rebalance(
                         "Handling rebalance assign. New assigned partitions are {:?} on topic {}",
                         partitions, processor.topic
                     );
-                    processor.delta_writer.update_table().await?;
+                    processor.table.update().await?;
                     partition_assignment.reset_with(partitions.as_slice());
                     processor.reset_state(partition_assignment)?;
                     *rebalance_signal = None;
@@ -536,6 +547,7 @@ struct IngestProcessor {
     topic: String,
     consumer: Arc<StreamConsumer<KafkaContext>>,
     transformer: Transformer,
+    table: DeltaTable,
     delta_writer: DeltaWriter,
     value_buffers: ValueBuffers,
     delta_partition_offsets: HashMap<DataTypePartition, Option<DataTypeOffset>>,
@@ -556,11 +568,15 @@ impl IngestProcessor {
     ) -> Result<IngestProcessor, IngestError> {
         let dlq = dead_letter_queue_from_options(&opts).await?;
         let transformer = Transformer::from_transforms(&opts.transforms)?;
+        let table = delta_helpers::load_table(table_uri, HashMap::new()).await?;
+        let delta_writer = DeltaWriter::for_table(&table, HashMap::new())?;
+
         Ok(IngestProcessor {
             topic,
             consumer,
             transformer,
-            delta_writer: DeltaWriter::for_table_uri(table_uri).await?,
+            table,
+            delta_writer,
             value_buffers: ValueBuffers::default(),
             latency_timer: Instant::now(),
             delta_partition_offsets: HashMap::new(),
@@ -573,12 +589,7 @@ impl IngestProcessor {
     /// If `opts.seek_offsets` is set then it calls the `offsets::write_offsets_to_delta` function.
     async fn write_offsets_to_delta_if_any(&mut self) -> Result<(), IngestError> {
         if let Some(ref offsets) = self.opts.seek_offsets {
-            offsets::write_offsets_to_delta(
-                &mut self.delta_writer.table,
-                &self.opts.app_id,
-                offsets,
-            )
-            .await?;
+            offsets::write_offsets_to_delta(&mut self.table, &self.opts.app_id, offsets).await?;
         }
         Ok(())
     }
@@ -720,7 +731,10 @@ impl IngestProcessor {
         let partition_offsets = partition_assignment.nonempty_partition_offsets();
         // Upload pending parquet file to delta store
         // TODO: remove it if we got conflict error? or it'll be considered as tombstone
-        let add = self.delta_writer.write_parquet_files().await?;
+        let add = self
+            .delta_writer
+            .write_parquet_files(&self.table.table_uri)
+            .await?;
         // Record file sizes
         for a in add.iter() {
             self.ingest_metrics.delta_file_size(a.size);
@@ -728,7 +742,7 @@ impl IngestProcessor {
         // Try to commit
         let mut attempt_number: u32 = 0;
         let prepared_commit = {
-            let mut tx = self.delta_writer.table.create_transaction(None);
+            let mut tx = self.table.create_transaction(None);
             tx.add_actions(build_actions(
                 &partition_offsets,
                 self.opts.app_id.as_str(),
@@ -738,16 +752,18 @@ impl IngestProcessor {
         };
 
         loop {
-            self.delta_writer.update_table().await?;
+            self.table.update().await?;
             if !self.are_partition_offsets_match() {
                 return Err(IngestError::ConflictingOffsets);
             }
-            if self.delta_writer.update_schema()? {
+            if self
+                .delta_writer
+                .update_schema(self.table.get_metadata()?)?
+            {
                 return Err(IngestError::DeltaSchemaChanged);
             }
-            let version = self.delta_writer.table_version() + 1;
+            let version = self.table.version + 1;
             let commit_result = self
-                .delta_writer
                 .table
                 .try_commit_transaction(&prepared_commit, version)
                 .await;
@@ -764,7 +780,7 @@ impl IngestProcessor {
                         self.delta_partition_offsets.insert(*p, Some(*o));
                     }
                     if self.opts.write_checkpoints {
-                        self.delta_writer.try_create_checkpoint(version).await?;
+                        try_create_checkpoint(&mut self.table, version).await?;
                     }
                     record_write_lag(
                         self.topic.as_str(),
@@ -820,9 +836,7 @@ impl IngestProcessor {
         // Update offsets stored in PartitionAssignment to the latest from the delta log
         for partition in partitions.iter() {
             let txn_app_id = txn_app_id_for_partition(self.opts.app_id.as_str(), *partition);
-            let version = self
-                .delta_writer
-                .last_transaction_version(txn_app_id.as_str());
+            let version = last_txn_version(&self.table, &txn_app_id);
             partition_assignment.assignment.insert(*partition, version);
             self.delta_partition_offsets.insert(*partition, version);
         }
@@ -927,12 +941,10 @@ impl IngestProcessor {
     fn are_partition_offsets_match(&self) -> bool {
         let mut result = true;
         for (partition, offset) in &self.delta_partition_offsets {
-            let version = self
-                .delta_writer
-                .last_transaction_version(&txn_app_id_for_partition(
-                    self.opts.app_id.as_str(),
-                    *partition,
-                ));
+            let version = last_txn_version(
+                &self.table,
+                &txn_app_id_for_partition(self.opts.app_id.as_str(), *partition),
+            );
 
             if let Some(version) = version {
                 match offset {
@@ -1011,120 +1023,6 @@ impl PartitionAssignment {
 
         partition_offsets
     }
-}
-
-/// Provides a single interface into the multiple [`ValueBuffer`] instances used to buffer data for each assigned partition.
-#[derive(Debug)]
-struct ValueBuffers {
-    buffers: HashMap<DataTypePartition, ValueBuffer>,
-    len: usize,
-}
-
-impl Default for ValueBuffers {
-    fn default() -> Self {
-        Self {
-            buffers: HashMap::new(),
-            len: 0,
-        }
-    }
-}
-
-impl ValueBuffers {
-    /// Adds a value to in-memory buffers and tracks the partition and offset.
-    fn add(&mut self, partition: DataTypePartition, offset: DataTypeOffset, value: Value) {
-        let buffer = self
-            .buffers
-            .entry(partition)
-            .or_insert_with(ValueBuffer::new);
-        buffer.add(value, offset);
-        self.len += 1;
-    }
-
-    /// Returns the total number of items stored across each partition specific [`ValueBuffer`].
-    fn len(&self) -> usize {
-        self.len
-    }
-
-    /// Returns values, partition offsets and partition counts currently held in buffer and resets buffers to empty.
-    fn consume(&mut self) -> ConsumedBuffers {
-        let mut partition_offsets = HashMap::new();
-        let mut partition_counts = HashMap::new();
-
-        let values = self
-            .buffers
-            .iter_mut()
-            .filter_map(|(partition, buffer)| match buffer.consume() {
-                Some((values, offset)) => {
-                    partition_offsets.insert(*partition, offset);
-                    partition_counts.insert(*partition, values.len());
-                    Some(values)
-                }
-                None => None,
-            })
-            .flatten()
-            .collect();
-
-        self.len = 0;
-
-        ConsumedBuffers {
-            values,
-            partition_offsets,
-            partition_counts,
-        }
-    }
-
-    /// Clears all value buffers currently held in memory.
-    fn reset(&mut self) {
-        self.len = 0;
-        self.buffers.clear();
-    }
-}
-
-/// Buffer of values held in memory for a single Kafka partition.
-#[derive(Debug)]
-struct ValueBuffer {
-    /// The offset of the last message stored in the buffer.
-    last_offset: Option<DataTypeOffset>,
-    /// The buffer of [`Value`] instances.
-    values: Vec<Value>,
-}
-
-impl ValueBuffer {
-    /// Creates a new [`ValueBuffer`] to store messages from a Kafka partition.
-    fn new() -> Self {
-        Self {
-            last_offset: None,
-            values: Vec::new(),
-        }
-    }
-
-    /// Adds the value to buffer and stores its offset as the `last_offset` of the buffer.
-    fn add(&mut self, value: Value, offset: DataTypeOffset) {
-        self.last_offset = Some(offset);
-        self.values.push(value);
-    }
-
-    /// Consumes and returns the buffer and last offset so it may be written to delta and clears internal state.
-    fn consume(&mut self) -> Option<(Vec<Value>, DataTypeOffset)> {
-        match self.last_offset {
-            Some(last_offset) => {
-                let consumed = (std::mem::take(&mut self.values), last_offset);
-                self.last_offset = None;
-                Some(consumed)
-            }
-            None => None,
-        }
-    }
-}
-
-/// A struct that wraps the data consumed from [`ValueBuffers`] before writing to a [`arrow::record_batch::RecordBatch`].
-struct ConsumedBuffers {
-    /// The vector of [`Value`] instances consumed.
-    values: Vec<Value>,
-    /// A [`HashMap`] from partition to last offset represented by the consumed buffers.
-    partition_offsets: HashMap<DataTypePartition, DataTypeOffset>,
-    /// A [`HashMap`] from partition to number of messages consumed for each partition.
-    partition_counts: HashMap<DataTypePartition, usize>,
 }
 
 /// Implements rdkafka [`ClientContext`] to handle rebalance events sent to the rdkafka [`Consumer`].

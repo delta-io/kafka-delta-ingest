@@ -2,7 +2,7 @@ use crate::transforms::Transformer;
 use async_trait::async_trait;
 use chrono::prelude::*;
 use core::fmt::Debug;
-use deltalake::dynamo_lock_options;
+use deltalake::{dynamo_lock_options, DeltaTable, DeltaTableError};
 use log::{error, info, warn};
 use maplit::hashmap;
 use parquet::errors::ParquetError;
@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::{deltalake_ext::*, transforms::TransformError};
+use crate::{delta_writer::*, transforms::TransformError};
+use deltalake::checkpoints::CheckpointError;
 
 mod env_vars {
     pub(crate) const DEAD_LETTER_DYNAMO_LOCK_PARTITION_KEY_VALUE: &str =
@@ -104,6 +105,22 @@ pub enum DeadLetterQueueError {
     Transform {
         #[from]
         source: TransformError,
+    },
+
+    /// Error occurred when writing a delta log checkpoint.
+    #[error("CheckpointErrorError error: {source}")]
+    CheckpointErrorError {
+        /// The wrapped [`CheckpointError`]
+        #[from]
+        source: CheckpointError,
+    },
+
+    /// DeltaTable returned an error.
+    #[error("DeltaTable interaction failed: {source}")]
+    DeltaTable {
+        /// The wrapped [`DeltaTableError`]
+        #[from]
+        source: DeltaTableError,
     },
 
     /// Error returned when the DeltaSinkDeadLetterQueue is used but no table uri is specified.
@@ -216,6 +233,7 @@ impl DeadLetterQueue for LoggingDeadLetterQueue {
 ///
 /// A dead letter transform with key: `date` and value: `substr(epoch_micros_to_iso8601(timestamp),`0`,`10`)` should be provided to generate the `date` field.
 pub(crate) struct DeltaSinkDeadLetterQueue {
+    table: DeltaTable,
     delta_writer: DeltaWriter,
     transformer: Transformer,
     write_checkpoints: bool,
@@ -227,18 +245,19 @@ impl DeltaSinkDeadLetterQueue {
     ) -> Result<Self, DeadLetterQueueError> {
         match &options.delta_table_uri {
             Some(table_uri) => {
+                let opts = hashmap! {
+                    dynamo_lock_options::DYNAMO_LOCK_PARTITION_KEY_VALUE.to_string() => std::env::var(env_vars::DEAD_LETTER_DYNAMO_LOCK_PARTITION_KEY_VALUE)
+                    .unwrap_or_else(|_| "kafka_delta_ingest-dead_letters".to_string()),
+                };
+                let table = crate::delta_helpers::load_table(table_uri, opts.clone()).await?;
+                let delta_writer = DeltaWriter::for_table(&table, opts)?;
+
                 Ok(Self {
-                delta_writer: DeltaWriter::for_table_uri_with_storage_options(
-                    table_uri,
-                    hashmap! {
-                        dynamo_lock_options::DYNAMO_LOCK_PARTITION_KEY_VALUE.to_string() => std::env::var(env_vars::DEAD_LETTER_DYNAMO_LOCK_PARTITION_KEY_VALUE)
-                        .unwrap_or_else(|_| "kafka_delta_ingest-dead_letters".to_string()),
-                    },
-                )
-                .await?,
-                transformer: Transformer::from_transforms(&options.dead_letter_transforms)?,
-                write_checkpoints: options.write_checkpoints,
-            })
+                    table,
+                    delta_writer,
+                    transformer: Transformer::from_transforms(&options.dead_letter_transforms)?,
+                    write_checkpoints: options.write_checkpoints,
+                })
             }
             _ => Err(DeadLetterQueueError::NoTableUri),
         }
@@ -268,16 +287,19 @@ impl DeadLetterQueue for DeltaSinkDeadLetterQueue {
             .collect();
         let values = values?;
 
-        let version = self.delta_writer.insert_all(values).await?;
+        let version = self
+            .delta_writer
+            .insert_all(&mut self.table, values)
+            .await?;
 
         if self.write_checkpoints {
-            self.delta_writer.try_create_checkpoint(version).await?;
+            crate::delta_helpers::try_create_checkpoint(&mut self.table, version).await?;
         }
 
         info!(
             "Inserted {} dead letters to {}",
             dead_letters.len(),
-            self.delta_writer.table.table_uri
+            self.table.table_uri
         );
 
         Ok(())

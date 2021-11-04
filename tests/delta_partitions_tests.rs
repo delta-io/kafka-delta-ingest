@@ -5,9 +5,10 @@ extern crate maplit;
 mod helpers;
 
 use deltalake::action::Add;
-use kafka_delta_ingest::deltalake_ext::*;
+use kafka_delta_ingest::delta_writer::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct TestMsg {
@@ -38,7 +39,8 @@ async fn test_delta_partitions() {
         vec!["color"],
     );
 
-    let mut delta_writer = DeltaWriter::for_table_uri(&table_path).await.unwrap();
+    let table = deltalake::open_table(&table_path).await.unwrap();
+    let mut delta_writer = DeltaWriter::for_table(&table, HashMap::new()).unwrap();
 
     let batch1 = vec![
         TestMsg::new(1, "red"),
@@ -58,7 +60,10 @@ async fn test_delta_partitions() {
     delta_writer.write(msgs_to_values(batch1)).await.unwrap();
     delta_writer.write(msgs_to_values(batch2)).await.unwrap();
 
-    let result = delta_writer.write_parquet_files().await.unwrap();
+    let result = delta_writer
+        .write_parquet_files(&table.table_uri)
+        .await
+        .unwrap();
 
     for add in result {
         match add

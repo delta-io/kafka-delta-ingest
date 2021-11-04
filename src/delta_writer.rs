@@ -14,12 +14,10 @@ use arrow::{
 };
 use deltalake::{
     action::{Action, Add, ColumnCountStat, ColumnValueStat, Stats},
-    checkpoints,
-    checkpoints::CheckpointError,
     get_backend_for_uri_with_options,
     writer::time_utils::timestamp_to_delta_stats_string,
-    DeltaDataTypeLong, DeltaDataTypeVersion, DeltaTable, DeltaTableError, Schema, StorageBackend,
-    StorageError, UriError,
+    DeltaDataTypeLong, DeltaDataTypeVersion, DeltaTable, DeltaTableError, DeltaTableMetaData,
+    Schema, StorageBackend, StorageError, UriError,
 };
 use log::{info, warn};
 use parquet::{
@@ -138,20 +136,10 @@ pub enum DeltaWriterError {
         #[from]
         source: std::io::Error,
     },
-
-    /// Error occurred when writing a delta log checkpoint.
-    #[error("CheckpointErrorError error: {source}")]
-    CheckpointErrorError {
-        /// The wrapped [`CheckpointError`]
-        #[from]
-        source: CheckpointError,
-    },
 }
 
 /// Writes messages to a delta lake table.
 pub struct DeltaWriter {
-    /// The underlying delta table used to manage the transaction log.
-    pub table: DeltaTable,
     storage: Box<dyn StorageBackend>,
     arrow_schema_ref: Arc<arrow::datatypes::Schema>,
     writer_properties: WriterProperties,
@@ -311,25 +299,12 @@ impl DeltaArrowWriter {
 }
 
 impl DeltaWriter {
-    /// Creates a DeltaWriter to write to the given table URI
-    pub async fn for_table_uri(table_uri: &str) -> Result<DeltaWriter, DeltaWriterError> {
-        Self::for_table_uri_with_storage_options(table_uri, HashMap::new()).await
-    }
-
-    /// Creates a DeltaWriter to write to the given table URI with a storage backend configured through the provided storage options.
-    pub async fn for_table_uri_with_storage_options(
-        table_uri: &str,
+    /// Creates a DeltaWriter to write to the given table
+    pub fn for_table(
+        table: &DeltaTable,
         options: HashMap<String, String>,
     ) -> Result<DeltaWriter, DeltaWriterError> {
-        let mut table = DeltaTable::new(
-            table_uri,
-            get_backend_for_uri_with_options(table_uri, options.clone())?,
-            deltalake::DeltaTableConfig {
-                require_tombstones: true,
-            },
-        )?;
-        table.load().await?;
-        let storage = get_backend_for_uri_with_options(table_uri, options)?;
+        let storage = get_backend_for_uri_with_options(&table.table_uri, options)?;
 
         // Initialize an arrow schema ref from the delta table schema
         let metadata = table.get_metadata()?;
@@ -344,7 +319,6 @@ impl DeltaWriter {
             .build();
 
         Ok(Self {
-            table,
             storage,
             arrow_schema_ref,
             writer_properties,
@@ -353,26 +327,13 @@ impl DeltaWriter {
         })
     }
 
-    /// Returns the last transaction version for the given app id recorded in the wrapped delta table.
-    pub fn last_transaction_version(&self, app_id: &str) -> Option<DeltaDataTypeVersion> {
-        let tx_versions = self.table.get_app_transaction_version();
-
-        let v = tx_versions.get(app_id).map(|v| v.to_owned());
-
-        v
-    }
-
-    /// Updates the wrapped delta table to load new delta log entries.
-    pub async fn update_table(&mut self) -> Result<(), DeltaWriterError> {
-        self.table.update().await?;
-        Ok(())
-    }
-
     /// Retrieves the latest schema from table, compares to the current and updates if changed.
     /// When schema is updated then `true` is returned which signals the caller that parquet
     /// created file or arrow batch should be revisited.
-    pub fn update_schema(&mut self) -> Result<bool, DeltaWriterError> {
-        let metadata = self.table.get_metadata()?;
+    pub fn update_schema(
+        &mut self,
+        metadata: &DeltaTableMetaData,
+    ) -> Result<bool, DeltaWriterError> {
         let schema: ArrowSchema = <ArrowSchema as TryFrom<&Schema>>::try_from(&metadata.schema)?;
 
         let schema_updated = self.arrow_schema_ref.as_ref() != &schema
@@ -387,11 +348,6 @@ impl DeltaWriter {
         }
 
         Ok(schema_updated)
-    }
-
-    /// Returns the table version of the wrapped delta table.
-    pub fn table_version(&self) -> DeltaDataTypeVersion {
-        self.table.version
     }
 
     /// Writes the given values to internal parquet buffers for each represented partition.
@@ -447,7 +403,10 @@ impl DeltaWriter {
     }
 
     /// Writes the existing parquet bytes to storage and resets internal state to handle another file.
-    pub async fn write_parquet_files(&mut self) -> Result<Vec<Add>, DeltaWriterError> {
+    pub async fn write_parquet_files(
+        &mut self,
+        table_uri: &str,
+    ) -> Result<Vec<Add>, DeltaWriterError> {
         let writers = std::mem::take(&mut self.arrow_writers);
         let mut actions = Vec::new();
 
@@ -459,9 +418,7 @@ impl DeltaWriter {
             let obj_bytes = writer.cursor.data();
             let file_size = obj_bytes.len() as i64;
 
-            let storage_path = self
-                .storage
-                .join_path(self.table.table_uri.as_str(), path.as_str());
+            let storage_path = self.storage.join_path(table_uri, path.as_str());
 
             //
             // TODO: Wrap in retry loop to handle temporary network errors
@@ -582,43 +539,16 @@ impl DeltaWriter {
     // TODO: Re-using existing methods for now, but this method is batch oriented. We may be able to create a more streamlined implementation for batch writes.
     pub async fn insert_all(
         &mut self,
+        table: &mut DeltaTable,
         values: Vec<Value>,
     ) -> Result<DeltaDataTypeVersion, DeltaWriterError> {
         self.write(values).await?;
-        let mut adds = self.write_parquet_files().await?;
-        let mut tx = self.table.create_transaction(None);
+        let mut adds = self.write_parquet_files(&table.table_uri).await?;
+        let mut tx = table.create_transaction(None);
         tx.add_actions(adds.drain(..).map(Action::add).collect());
         let version = tx.commit(None).await?;
 
         Ok(version)
-    }
-
-    /// Create a checkpoint if the given version is a 10th commit.
-    pub async fn try_create_checkpoint(
-        &mut self,
-        version: DeltaDataTypeVersion,
-    ) -> Result<(), DeltaWriterError> {
-        if version % 10 == 0 {
-            let table_version = self.table.version;
-            // if there's new version right after current commit, then we need to reset
-            // the table right back to version to create the checkpoint
-            let version_updated = table_version != version;
-            if version_updated {
-                self.table.load_version(version).await?;
-            }
-
-            checkpoints::create_checkpoint_from_table(&self.table).await?;
-
-            info!(
-                "Created checkpoint version {} for table uri {}.",
-                version, self.table.table_uri
-            );
-
-            if version_updated {
-                self.table.update().await?;
-            }
-        }
-        Ok(())
     }
 }
 
@@ -1129,12 +1059,13 @@ mod tests {
         let table_path = temp_dir.path();
         create_temp_table(table_path);
 
-        let mut writer = DeltaWriter::for_table_uri(table_path.to_str().unwrap())
+        let table = crate::delta_helpers::load_table(table_path.to_str().unwrap(), HashMap::new())
             .await
             .unwrap();
+        let mut writer = DeltaWriter::for_table(&table, HashMap::new()).unwrap();
 
         writer.write(JSON_ROWS.clone()).await.unwrap();
-        let add = writer.write_parquet_files().await.unwrap();
+        let add = writer.write_parquet_files(&table.table_uri).await.unwrap();
         assert_eq!(add.len(), 1);
         let stats = add[0].get_stats().unwrap().unwrap();
 
