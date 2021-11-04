@@ -157,7 +157,7 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
 
             let seek_offsets: Option<Vec<(DataTypePartition, DataTypeOffset)>> = ingest_matches
                 .value_of("SEEK_OFFSETS")
-                .map(|s| serde_json::from_str(s).expect("Cannot parse seek offsets"));
+                .map(parse_seek_offsets);
 
             let auto_offset_reset = ingest_matches.value_of("AUTO_OFFSET_RESET").unwrap();
 
@@ -309,5 +309,29 @@ fn parse_tuple(val: &str, delimiter: &str) -> Result<(String, String), String> {
             Ok(tuple)
         }
         _ => Err(val.to_string()),
+    }
+}
+
+fn parse_seek_offsets(val: &str) -> Vec<(DataTypePartition, DataTypeOffset)> {
+    let map: HashMap<String, DataTypeOffset> =
+        serde_json::from_str(val).expect("Cannot parse seek offsets");
+
+    let mut list: Vec<(DataTypePartition, DataTypeOffset)> = map
+        .iter()
+        .map(|(p, o)| (p.parse::<DataTypePartition>().unwrap(), *o))
+        .collect();
+
+    list.sort_by(|a, b| a.0.cmp(&b.0));
+    list
+}
+
+#[cfg(test)]
+mod test {
+    use crate::parse_seek_offsets;
+
+    #[test]
+    fn parse_seek_offsets_test() {
+        let parsed = parse_seek_offsets(r#"{"0":10,"2":12,"1":13}"#);
+        assert_eq!(parsed, vec![(0, 10), (1, 13), (2, 12)]);
     }
 }
