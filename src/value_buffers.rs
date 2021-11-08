@@ -31,10 +31,11 @@ impl ValueBuffers {
             .entry(partition)
             .or_insert_with(ValueBuffer::new);
 
-        if let Some(last_offset) = buffer.last_offset {
-            if offset <= last_offset {
-                return Err(IngestError::AlreadyProcessedPartitionOffset { partition, offset });
-            }
+        // The streaming consumer might read the same offsets twice on rebalance/seek,
+        // hence we protect the buffer from dupes by filtering out the already processed offsets.
+        // Having this guarantees the at-most-once rule.
+        if offset <= buffer.last_offset {
+            return Err(IngestError::AlreadyProcessedPartitionOffset { partition, offset });
         }
 
         buffer.add(value, offset);
@@ -86,7 +87,7 @@ impl ValueBuffers {
 #[derive(Debug)]
 struct ValueBuffer {
     /// The offset of the last message stored in the buffer.
-    last_offset: Option<DataTypeOffset>,
+    last_offset: DataTypeOffset,
     /// The buffer of [`Value`] instances.
     values: Vec<Value>,
 }
@@ -95,26 +96,28 @@ impl ValueBuffer {
     /// Creates a new [`ValueBuffer`] to store messages from a Kafka partition.
     pub(crate) fn new() -> Self {
         Self {
-            last_offset: None,
+            // The -1 means that it has no stored offset and anything that is firstly passed
+            // will be accepted, since message offsets starts with 0.
+            // Hence, if the buffer is "consumed", the values list is emptied, but the last_offset
+            // should always holds the value to prevent messages duplicates.
+            last_offset: -1,
             values: Vec::new(),
         }
     }
 
     /// Adds the value to buffer and stores its offset as the `last_offset` of the buffer.
     pub(crate) fn add(&mut self, value: Value, offset: DataTypeOffset) {
-        self.last_offset = Some(offset);
+        self.last_offset = offset;
         self.values.push(value);
     }
 
     /// Consumes and returns the buffer and last offset so it may be written to delta and clears internal state.
     pub(crate) fn consume(&mut self) -> Option<(Vec<Value>, DataTypeOffset)> {
-        match self.last_offset {
-            Some(last_offset) => {
-                let consumed = (std::mem::take(&mut self.values), last_offset);
-                self.last_offset = None;
-                Some(consumed)
-            }
-            None => None,
+        if !self.values.is_empty() {
+            assert!(self.last_offset >= 0);
+            Some((std::mem::take(&mut self.values), self.last_offset))
+        } else {
+            None
         }
     }
 }
@@ -151,18 +154,19 @@ mod tests {
 
         assert_eq!(buffers.len, 5);
         assert_eq!(buffers.buffers.len(), 2);
-        assert_eq!(buffers.buffers.get(&0).unwrap().last_offset, Some(2));
+        assert_eq!(buffers.buffers.get(&0).unwrap().last_offset, 2);
         assert_eq!(buffers.buffers.get(&0).unwrap().values.len(), 3);
-        assert_eq!(buffers.buffers.get(&1).unwrap().last_offset, Some(1));
+        assert_eq!(buffers.buffers.get(&1).unwrap().last_offset, 1);
         assert_eq!(buffers.buffers.get(&1).unwrap().values.len(), 2);
 
         let consumed = buffers.consume();
 
         assert_eq!(buffers.len, 0);
         assert_eq!(buffers.buffers.len(), 2);
-        assert_eq!(buffers.buffers.get(&0).unwrap().last_offset, None);
+        // last_offset is kept after consume
+        assert_eq!(buffers.buffers.get(&0).unwrap().last_offset, 2);
         assert_eq!(buffers.buffers.get(&0).unwrap().values.len(), 0);
-        assert_eq!(buffers.buffers.get(&1).unwrap().last_offset, None);
+        assert_eq!(buffers.buffers.get(&1).unwrap().last_offset, 1);
         assert_eq!(buffers.buffers.get(&1).unwrap().values.len(), 0);
 
         assert_eq!(
@@ -194,7 +198,6 @@ mod tests {
     #[test]
     fn value_buffers_conflict_offsets_test() {
         let mut buffers = ValueBuffers::default();
-        let mut add = |o| buffers.add(0, o, Value::Number(o.into()));
 
         let verify_error = |res: Result<(), IngestError>, o: i64| {
             match res.err().unwrap() {
@@ -206,11 +209,11 @@ mod tests {
             };
         };
 
-        add(0).unwrap();
-        add(1).unwrap();
-        verify_error(add(0), 0);
-        verify_error(add(1), 1);
-        add(2).unwrap();
+        add(&mut buffers, 0).unwrap();
+        add(&mut buffers, 1).unwrap();
+        verify_error(add(&mut buffers, 0), 0);
+        verify_error(add(&mut buffers, 1), 1);
+        add(&mut buffers, 2).unwrap();
 
         let consumed = buffers.consume();
 
@@ -221,5 +224,26 @@ mod tests {
                 0 => 2,
             }
         );
+
+        // Also value buffer should hold last_offset after consume
+        verify_error(add(&mut buffers, 0), 0);
+        verify_error(add(&mut buffers, 1), 1);
+        verify_error(add(&mut buffers, 2), 2);
+        add(&mut buffers, 3).unwrap();
+        add(&mut buffers, 4).unwrap();
+
+        let consumed_again = buffers.consume();
+
+        assert_eq!(consumed_again.values.len(), 2);
+        assert_eq!(
+            consumed_again.partition_offsets,
+            hashmap! {
+                0 => 4,
+            }
+        );
+    }
+
+    fn add(buffers: &mut ValueBuffers, offset: i64) -> Result<(), IngestError> {
+        buffers.add(0, offset, Value::Number(offset.into()))
     }
 }
