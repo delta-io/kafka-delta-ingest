@@ -49,6 +49,7 @@ use delta_helpers::*;
 use deltalake::checkpoints::CheckpointError;
 use deltalake::storage::s3::dynamodb_lock::DynamoError;
 use deltalake::storage::StorageError;
+use std::ops::Add;
 
 /// Type alias for Kafka partition
 pub type DataTypePartition = i32;
@@ -306,7 +307,7 @@ pub async fn start_ingest(
     consumer.subscribe(&[topic.as_str()])?;
 
     // Initialize metrics
-    let ingest_metrics = IngestMetrics::new(opts.statsd_endpoint.as_str(), opts.app_id.as_str())?;
+    let ingest_metrics = IngestMetrics::new(opts.statsd_endpoint.as_str())?;
     // Initialize partition assignment tracking
     let mut partition_assignment = PartitionAssignment::default();
     // Initialize the processor
@@ -842,6 +843,8 @@ impl IngestProcessor {
 
     /// Seeks the Kafka consumer to the appropriate offsets based on the [`PartitionAssignment`].
     fn seek_consumer(&self, partition_assignment: &PartitionAssignment) -> Result<(), IngestError> {
+        let mut log_message = String::new();
+
         for (p, offset) in partition_assignment.assignment.iter() {
             match offset {
                 Some(o) if *o == 0 => {
@@ -851,12 +854,10 @@ impl IngestProcessor {
                         .seek(&self.topic, *p, Offset::Beginning, Timeout::Never)?;
                 }
                 Some(o) => {
-                    info!(
-                        "Seeking consumer to offset {} for partition {} found in delta log.",
-                        o, p
-                    );
                     self.consumer
                         .seek(&self.topic, *p, Offset::Offset(*o), Timeout::Never)?;
+
+                    log_message = log_message.add(format!("{}:{},", p, o).as_str());
                 }
                 None => match self.opts.auto_offset_reset {
                     AutoOffsetReset::Earliest => {
@@ -872,6 +873,8 @@ impl IngestProcessor {
                 },
             };
         }
+
+        info!("Seeking consumer to partition offsets: [{}]", log_message);
         Ok(())
     }
 

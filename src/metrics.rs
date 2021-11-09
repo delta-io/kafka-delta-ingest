@@ -4,7 +4,9 @@ use std::convert::TryInto;
 use std::time::Instant;
 
 /// The environment variable used to specify how many metrics should be written to the metrics queue before flushing to statsd.
-const METRICS_INPUT_QUEUE_SIZE_VAR_NAME: &str = "METRICS_INPUT_QUEUE_SIZE";
+const METRICS_INPUT_QUEUE_SIZE_VAR_NAME: &str = "KDI_METRICS_INPUT_QUEUE_SIZE";
+/// The environment variable used to specify a prefix for metrics.
+const METRICS_PREFIX_VAR_NAME: &str = "KDI_METRICS_PREFIX";
 
 /// The default input queue size for sending metrics to statsd.
 const DEFAULT_INPUT_QUEUE_SIZE: usize = 100;
@@ -25,8 +27,8 @@ pub(crate) struct IngestMetrics {
 
 impl IngestMetrics {
     /// Creates an instance of [`IngestMetrics`] for sending metrics to statsd.
-    pub(crate) fn new(endpoint: &str, app_id: &str) -> Result<Self, IngestMetricsError> {
-        let metrics = create_queue(endpoint, app_id)?;
+    pub(crate) fn new(endpoint: &str) -> Result<Self, IngestMetricsError> {
+        let metrics = create_queue(endpoint)?;
 
         Ok(Self { metrics })
     }
@@ -307,7 +309,7 @@ struct LagMetrics {
 }
 
 /// Creates a statsd metric scope to send metrics to.
-fn create_queue(endpoint: &str, app_id: &str) -> Result<InputQueueScope, IngestMetricsError> {
+fn create_queue(endpoint: &str) -> Result<InputQueueScope, IngestMetricsError> {
     let input_queue_size = if let Ok(val) = std::env::var(METRICS_INPUT_QUEUE_SIZE_VAR_NAME) {
         val.parse::<usize>()
             .map_err(|_| IngestMetricsError::InvalidMetricsInputQueueSize(val))?
@@ -315,12 +317,14 @@ fn create_queue(endpoint: &str, app_id: &str) -> Result<InputQueueScope, IngestM
         DEFAULT_INPUT_QUEUE_SIZE
     };
 
+    let prefix = std::env::var(METRICS_PREFIX_VAR_NAME).unwrap_or("kafka_delta_ingest".to_string());
+
     let scope = Statsd::send_to(endpoint)
         .unwrap()
         // don't send stats immediately -
         // wait to trigger on input queue size
         .queued(input_queue_size)
-        .named(app_id)
+        .named(prefix)
         .metrics();
 
     Ok(scope)
