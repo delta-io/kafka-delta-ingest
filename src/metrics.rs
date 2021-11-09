@@ -317,7 +317,8 @@ fn create_queue(endpoint: &str) -> Result<InputQueueScope, IngestMetricsError> {
         DEFAULT_INPUT_QUEUE_SIZE
     };
 
-    let prefix = std::env::var(METRICS_PREFIX_VAR_NAME).unwrap_or("kafka_delta_ingest".to_string());
+    let prefix =
+        std::env::var(METRICS_PREFIX_VAR_NAME).unwrap_or_else(|_| "kafka_delta_ingest".to_string());
 
     let scope = Statsd::send_to(endpoint)
         .unwrap()
