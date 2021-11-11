@@ -346,7 +346,7 @@ impl Transformer {
         Ok(Self { transforms })
     }
 
-    /// Transforms a serde_json::Value according to the list of transforms used to create the transform.
+    /// Transforms a [`Value`] according to the list of transforms used to create the [`Transformer`].
     /// The optional `kafka_message` must be provided to include well known Kafka properties in the value.
     pub(crate) fn transform<M>(
         &self,
@@ -363,42 +363,16 @@ impl Transformer {
                 for (value_path, message_transform) in self.transforms.iter() {
                     match message_transform {
                         MessageTransform::ExpressionTransform(expression) => {
-                            let variable = expression.search(&data)?;
-                            let v = serde_json::to_value(variable)?;
-                            set_value(map, value_path, 0, v);
+                            apply_expression_transform(map, &data, value_path, expression)?;
                         }
                         MessageTransform::KafkaMetaTransform(meta_property) => {
                             if let Some(kafka_message) = kafka_message {
-                                let v = match meta_property {
-                                    KafkaMetaProperty::Partition => {
-                                        serde_json::to_value(kafka_message.partition())?
-                                    }
-                                    KafkaMetaProperty::Offset => {
-                                        serde_json::to_value(kafka_message.offset())?
-                                    }
-                                    KafkaMetaProperty::Topic => {
-                                        serde_json::to_value(kafka_message.topic())?
-                                    }
-                                    KafkaMetaProperty::Timestamp => {
-                                        timestamp_value_from_kafka(kafka_message.timestamp())?
-                                    }
-                                    // For enum int value definitions, see:
-                                    // https://github.com/apache/kafka/blob/fd36e5a8b657b0858dbfef4ae9706bf714db4ca7/clients/src/main/java/org/apache/kafka/common/record/TimestampType.java#L24-L46
-                                    KafkaMetaProperty::TimestampType => {
-                                        match kafka_message.timestamp() {
-                                            rdkafka::Timestamp::NotAvailable => {
-                                                serde_json::to_value(-1)?
-                                            }
-                                            rdkafka::Timestamp::CreateTime(_) => {
-                                                serde_json::to_value(0)?
-                                            }
-                                            rdkafka::Timestamp::LogAppendTime(_) => {
-                                                serde_json::to_value(1)?
-                                            }
-                                        }
-                                    }
-                                };
-                                set_value(map, value_path, 0, v);
+                                apply_kafka_meta_transform(
+                                    map,
+                                    value_path,
+                                    kafka_message,
+                                    meta_property,
+                                )?;
                             }
                         }
                     }
@@ -410,6 +384,44 @@ impl Transformer {
             }),
         }
     }
+}
+
+fn apply_expression_transform(
+    object_mut: &mut Map<String, Value>,
+    message_variable: &Variable,
+    value_path: &ValuePath,
+    expression: &Expression,
+) -> Result<(), TransformError> {
+    let variable = expression.search(message_variable)?;
+    let v = serde_json::to_value(variable)?;
+    set_value(object_mut, value_path, 0, v);
+    Ok(())
+}
+
+fn apply_kafka_meta_transform<M>(
+    object_mut: &mut Map<String, Value>,
+    value_path: &ValuePath,
+    kafka_message: &M,
+    meta_property: &KafkaMetaProperty,
+) -> Result<(), TransformError>
+where
+    M: Message,
+{
+    let v = match meta_property {
+        KafkaMetaProperty::Partition => serde_json::to_value(kafka_message.partition())?,
+        KafkaMetaProperty::Offset => serde_json::to_value(kafka_message.offset())?,
+        KafkaMetaProperty::Topic => serde_json::to_value(kafka_message.topic())?,
+        KafkaMetaProperty::Timestamp => timestamp_value_from_kafka(kafka_message.timestamp())?,
+        // For enum int value definitions, see:
+        // https://github.com/apache/kafka/blob/fd36e5a8b657b0858dbfef4ae9706bf714db4ca7/clients/src/main/java/org/apache/kafka/common/record/TimestampType.java#L24-L46
+        KafkaMetaProperty::TimestampType => match kafka_message.timestamp() {
+            rdkafka::Timestamp::NotAvailable => serde_json::to_value(-1)?,
+            rdkafka::Timestamp::CreateTime(_) => serde_json::to_value(0)?,
+            rdkafka::Timestamp::LogAppendTime(_) => serde_json::to_value(1)?,
+        },
+    };
+    set_value(object_mut, value_path, 0, v);
+    Ok(())
 }
 
 fn timestamp_value_from_kafka(
