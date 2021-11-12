@@ -25,7 +25,7 @@ pub(crate) struct CoercionTree {
 }
 
 /// Returns a [`CoercionTree`] so the schema can be walked efficiently level by level when performing conversions.
-pub(crate) fn create_coercion_tree(schema: DeltaSchema) -> CoercionTree {
+pub(crate) fn create_coercion_tree(schema: &DeltaSchema) -> CoercionTree {
     let mut root = HashMap::new();
 
     for field in schema.get_fields() {
@@ -179,7 +179,7 @@ mod tests {
     fn test_coercion_tree() {
         let delta_schema: DeltaSchema = serde_json::from_value(SCHEMA.clone()).unwrap();
 
-        let tree = create_coercion_tree(delta_schema);
+        let tree = create_coercion_tree(&delta_schema);
 
         let mut top_level_keys: Vec<&String> = tree.root.keys().collect();
         top_level_keys.sort();
@@ -221,7 +221,7 @@ mod tests {
     fn test_coercions() {
         let delta_schema: DeltaSchema = serde_json::from_value(SCHEMA.clone()).unwrap();
 
-        let coercion_tree = create_coercion_tree(delta_schema);
+        let coercion_tree = create_coercion_tree(&delta_schema);
 
         let mut messages = vec![
             json!({

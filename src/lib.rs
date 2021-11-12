@@ -574,12 +574,11 @@ impl IngestProcessor {
         let table = delta_helpers::load_table(table_uri, HashMap::new()).await?;
         // TODO: The coercion_tree needs to be replaced when a schema update is received.
         // TODO: If the delta schema is None, return an `IngestError` instead of using expect.
-        let coercion_tree = coercions::create_coercion_tree(
-            table
-                .schema()
-                .expect("Delta table must have a schema")
-                .clone(),
-        );
+        let coercion_tree = coercions::create_coercion_tree(&table.get_metadata()?.schema);
+        // .schema()
+        // .expect("Delta table must have a schema")
+        // .clone(),
+        // );
         let delta_writer = DataWriter::for_table(&table, HashMap::new())?;
 
         Ok(IngestProcessor {
@@ -773,6 +772,11 @@ impl IngestProcessor {
                 .delta_writer
                 .update_schema(self.table.get_metadata()?)?
             {
+                // Update the coercion tree to reflect the new schema
+                let coercion_tree =
+                    coercions::create_coercion_tree(&self.table.get_metadata()?.schema);
+                let _ = std::mem::replace(&mut self.coercion_tree, coercion_tree);
+
                 return Err(IngestError::DeltaSchemaChanged);
             }
             let version = self.table.version + 1;
