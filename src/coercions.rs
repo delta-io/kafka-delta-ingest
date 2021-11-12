@@ -7,19 +7,19 @@ use serde_json::{Map, Number, Value};
 use std::collections::HashMap;
 use std::str::FromStr;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 enum CoercionNode {
     Coercion(Coercion),
     Tree(CoercionTree),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 enum Coercion {
     ToString,
     ToTimestamp,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CoercionTree {
     root: HashMap<String, CoercionNode>,
 }
@@ -138,12 +138,16 @@ fn apply_coercion(context: &mut Map<String, Value>, field_name: &str, node: &Coe
 mod tests {
 
     use super::*;
+    // use maplit::hashmap;
     use serde_json::json;
 
     lazy_static! {
         static ref SCHEMA: Value = json!({
             "type": "struct",
             "fields": [
+                { "name": "level1_string", "type": "string", "nullable": true, "metadata": {} },
+                { "name": "level1_integer", "type": "integer", "nullable": true, "metadata": {} },
+                { "name": "level1_timestamp", "type": "timestamp", "nullable": true, "metadata": {} },
                 {
                     "name": "level2",
                     "type": {
@@ -167,15 +171,54 @@ mod tests {
                     },
                     "nullable": true, "metadata": {}
                 },
-                { "name": "level1_string", "type": "string", "nullable": true, "metadata": {} },
-                { "name": "level1_integer", "type": "integer", "nullable": true, "metadata": {} },
-                { "name": "level1_timestamp", "type": "timestamp", "nullable": true, "metadata": {} },
             ]
         });
     }
 
     #[test]
-    fn test_value_coercion_tree() {
+    fn test_coercion_tree() {
+        let delta_schema: DeltaSchema = serde_json::from_value(SCHEMA.clone()).unwrap();
+
+        let tree = create_coercion_tree(delta_schema);
+
+        let mut top_level_keys: Vec<&String> = tree.root.keys().collect();
+        top_level_keys.sort();
+
+        let level2 = tree.root.get("level2");
+        let level2_root = match level2 {
+            Some(CoercionNode::Tree(tree)) => tree.root.clone(),
+            _ => unreachable!(""),
+        };
+        let mut level2_keys: Vec<&String> = level2_root.keys().collect();
+        level2_keys.sort();
+
+        assert_eq!(
+            vec!["level1_string", "level1_timestamp", "level2"],
+            top_level_keys
+        );
+
+        assert_eq!(vec!["level2_string", "level2_timestamp"], level2_keys);
+
+        assert_eq!(
+            CoercionNode::Coercion(Coercion::ToString),
+            tree.root.get("level1_string").unwrap().to_owned()
+        );
+        assert_eq!(
+            CoercionNode::Coercion(Coercion::ToTimestamp),
+            tree.root.get("level1_timestamp").unwrap().to_owned()
+        );
+        assert_eq!(
+            CoercionNode::Coercion(Coercion::ToString),
+            level2_root.get("level2_string").unwrap().to_owned()
+        );
+        assert_eq!(
+            CoercionNode::Coercion(Coercion::ToTimestamp),
+            level2_root.get("level2_timestamp").unwrap().to_owned()
+        );
+    }
+
+    #[test]
+    fn test_coercions() {
         let delta_schema: DeltaSchema = serde_json::from_value(SCHEMA.clone()).unwrap();
 
         let coercion_tree = create_coercion_tree(delta_schema);
@@ -184,7 +227,8 @@ mod tests {
             json!({
                 "level1_string": "a",
                 "level1_integer": 0,
-                "level1_timestamp": 1636668665000000i64,
+                // Timestamp passed in as an i64. We won't coerce it, but it will work anyway.
+                "level1_timestamp": 1636668718000000i64,
                 "level2": {
                     "level2_string": { "x": "x", "y": "y" },
                     "level2_timestamp": "2021-11-11T22:11:58Z"
@@ -193,19 +237,34 @@ mod tests {
             json!({
                 "level1_string": { "a": "a", "b": "b"},
                 "level1_integer": 42,
+                // Complies with ISO 8601 and RFC 3339. We WILL coerce it.
                 "level1_timestamp": "2021-11-11T22:11:58Z"
             }),
             json!({
                 "level1_integer": 99,
             }),
             json!({
+                // Complies with ISO 8601 and RFC 3339. We WILL coerce it.
+                "level1_timestamp": "2021-11-11T22:11:58+00:00",
+            }),
+            json!({
+                // RFC 3339 but not ISO 8601. We WILL coerce it.
+                "level1_timestamp": "2021-11-11T22:11:58-00:00",
+            }),
+            json!({
+                // ISO 8601 but not RFC 3339. We WON'T coerce it.
+                "level1_timestamp": "20211111T22115800Z",
+            }),
+            json!({
+                // This is a Java date style timestamp. We WON'T coerce it.
                 "level1_timestamp": "2021-11-11 22:11:58",
             }),
             json!({
                 "level1_timestamp": "This definitely is not a timestamp",
             }),
             json!({
-                "level1_timestamp": "1636668665000000",
+                // This is valid epoch micros, but typed as a string on the way in. We WON'T coerce it.
+                "level1_timestamp": "1636668718000000",
             }),
         ];
 
@@ -213,7 +272,52 @@ mod tests {
             coerce(message, &coercion_tree);
         }
 
-        println!("{:#?}", coercion_tree);
-        println!("{:#?}", messages);
+        assert_eq!(
+            messages,
+            vec![
+                json!({
+                    "level1_string": "a",
+                    "level1_integer": 0,
+                    // Timestamp passed in as an i64. We won't coerce it, but it will work anyway.
+                    "level1_timestamp": 1636668718000000i64,
+                    "level2": {
+                        "level2_string": r#"{"x":"x","y":"y"}"#,
+                        "level2_timestamp": 1636668718000000i64
+                    }
+                }),
+                json!({
+                    "level1_string": r#"{"a":"a","b":"b"}"#,
+                    "level1_integer": 42,
+                    // Complies with ISO 8601 and RFC 3339. We WILL coerce it.
+                    "level1_timestamp": 1636668718000000i64
+                }),
+                json!({
+                    "level1_integer": 99,
+                }),
+                json!({
+                    // Complies with ISO 8601 and RFC 3339. We WILL coerce it.
+                    "level1_timestamp": 1636668718000000i64
+                }),
+                json!({
+                    // RFC 3339 but not ISO 8601. We WILL coerce it.
+                    "level1_timestamp": 1636668718000000i64
+                }),
+                json!({
+                    // ISO 8601 but not RFC 3339. We WON'T coerce it.
+                    "level1_timestamp": "20211111T22115800Z",
+                }),
+                json!({
+                    // This is a Java date style timestamp. We WON'T coerce it.
+                    "level1_timestamp": "2021-11-11 22:11:58",
+                }),
+                json!({
+                    "level1_timestamp": "This definitely is not a timestamp",
+                }),
+                json!({
+                    // This is valid epoch micros, but typed as a string on the way in. We WON'T coerce it.
+                    "level1_timestamp": "1636668718000000",
+                }),
+            ]
+        );
     }
 }
