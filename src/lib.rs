@@ -12,6 +12,7 @@ extern crate strum_macros;
 #[cfg(test)]
 extern crate serde_json;
 
+use coercions::CoercionTree;
 use deltalake::{DeltaDataTypeVersion, DeltaTable, DeltaTableError};
 use futures::stream::StreamExt;
 use log::{debug, error, info, warn};
@@ -29,6 +30,7 @@ use std::time::Instant;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
+mod coercions;
 mod dead_letters;
 mod delta_helpers;
 mod metrics;
@@ -547,6 +549,7 @@ struct IngestProcessor {
     topic: String,
     consumer: Arc<StreamConsumer<KafkaContext>>,
     transformer: Transformer,
+    coercion_tree: CoercionTree,
     table: DeltaTable,
     delta_writer: DataWriter,
     value_buffers: ValueBuffers,
@@ -569,12 +572,14 @@ impl IngestProcessor {
         let dlq = dead_letter_queue_from_options(&opts).await?;
         let transformer = Transformer::from_transforms(&opts.transforms)?;
         let table = delta_helpers::load_table(table_uri, HashMap::new()).await?;
+        let coercion_tree = coercions::create_coercion_tree(&table.get_metadata()?.schema);
         let delta_writer = DataWriter::for_table(&table, HashMap::new())?;
 
         Ok(IngestProcessor {
             topic,
             consumer,
             transformer,
+            coercion_tree,
             table,
             delta_writer,
             value_buffers: ValueBuffers::default(),
@@ -615,6 +620,8 @@ impl IngestProcessor {
                 match self.transformer.transform(&mut value, Some(&message)) {
                     Ok(()) => {
                         self.ingest_metrics.message_transformed();
+                        // Coerce data types
+                        coercions::coerce(&mut value, &self.coercion_tree);
                         // Buffer
                         self.value_buffers.add(partition, offset, value)?;
                     }
@@ -759,6 +766,11 @@ impl IngestProcessor {
                 .delta_writer
                 .update_schema(self.table.get_metadata()?)?
             {
+                // Update the coercion tree to reflect the new schema
+                let coercion_tree =
+                    coercions::create_coercion_tree(&self.table.get_metadata()?.schema);
+                let _ = std::mem::replace(&mut self.coercion_tree, coercion_tree);
+
                 return Err(IngestError::DeltaSchemaChanged);
             }
             let version = self.table.version + 1;
