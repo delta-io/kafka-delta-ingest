@@ -15,7 +15,6 @@ use serde_json::json;
 use std::env;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::sync::Once;
 use std::{collections::HashMap, fs, path::PathBuf};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -32,11 +31,13 @@ const TEST_BROKER: &str = "0.0.0.0:9092";
 const TEST_CONSUMER_GROUP_ID: &str = "kafka_delta_ingest";
 const TEST_DELTA_TABLE_LOCATION: &str = "./tests/data/e2e_smoke_test";
 
-static INIT: Once = Once::new();
-
 #[tokio::test]
 async fn e2e_smoke_test() {
-    setup();
+    env::set_var("AWS_ENDPOINT_URL", LOCALSTACK_ENDPOINT);
+    env::set_var("AWS_ACCESS_KEY_ID", "test");
+    env::set_var("AWS_SECRET_ACCESS_KEY", "test");
+
+    helpers::init_logger();
 
     // Cleanup previous test run output
     cleanup_delta_files(TEST_DELTA_TABLE_LOCATION);
@@ -198,15 +199,6 @@ async fn e2e_smoke_test() {
     );
 }
 
-fn setup() {
-    INIT.call_once(|| {
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
-        env::set_var("AWS_ENDPOINT_URL", LOCALSTACK_ENDPOINT);
-        env::set_var("AWS_ACCESS_KEY_ID", "test");
-        env::set_var("AWS_SECRET_ACCESS_KEY", "test");
-    });
-}
-
 fn cleanup_delta_files(table_location: &str) {
     let table_path = PathBuf::from(table_location);
 
@@ -283,6 +275,8 @@ async fn produce_example(topic: &str, token: &CancellationToken) {
         .send(future_from_json(topic, &m2), Timeout::Never)
         .await;
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    helpers::wait_until_version_created(TEST_DELTA_TABLE_LOCATION, 1);
 
     // third message
 

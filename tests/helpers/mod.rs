@@ -7,12 +7,12 @@ use parquet::{
     record::RowAccessor,
 };
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
+use rdkafka::client::DefaultClientContext;
 use rdkafka::producer::{FutureProducer, FutureRecord};
-use rdkafka::util::Timeout;
+use rdkafka::util::{DefaultRuntime, Timeout};
 use rdkafka::ClientConfig;
 use serde::de::DeserializeOwned;
-use serde_json::Value;
-use std::collections::HashMap;
+use serde_json::{json, Value};
 use std::env;
 use std::fs::{File, OpenOptions};
 use std::io::prelude::*;
@@ -120,67 +120,102 @@ pub async fn read_files_from_s3(paths: Vec<String>) -> Vec<i32> {
     list
 }
 
-pub fn create_schema_field(name: &str, data_type: &str) -> String {
-    let data_type = if data_type.starts_with("{") {
-        data_type.to_string()
-    } else {
-        format!("\\\"{}\\\"", data_type)
-    };
-
-    format!(
-        r#"{{\"metadata\":{{}}, \"name\":\"{}\",\"nullable\":true,\"type\":{}}}"#,
-        name, data_type
-    )
-}
-
-pub fn create_struct_schema_field(fields: Vec<String>) -> String {
-    format!(
-        r#"{{\"type\":\"struct\",\"fields\":[{}]}}"#,
-        fields.join(",")
-    )
-}
-
-pub fn create_array_schema_field(element_type: String) -> String {
-    let element_type = if element_type.starts_with("{") {
-        element_type.to_string()
-    } else {
-        format!("\"{}\"", element_type)
-    };
-    format!(
-        r#"{{\"type\":\"array\",\"elementType\":{},\"containsNull\":true}}"#,
-        element_type
-    )
-}
-
-pub fn create_metadata_action_json(schema: &HashMap<&str, &str>, partitions: &[&str]) -> String {
-    let mut fields = Vec::new();
-    for (name, tpe) in schema {
-        fields.push(create_schema_field(name, tpe));
+fn parse_type(schema: &Value) -> Value {
+    match schema {
+        Value::String(_) => schema.clone(),
+        Value::Object(_) => json!({
+            "type": "struct",
+            "fields": parse_fields(&schema),
+        }),
+        Value::Array(v) if v.len() == 1 => json!({
+            "type": "array",
+            "elementType": parse_type(v.first().unwrap()),
+            "containsNull": true,
+        }),
+        _ => panic!("Unsupported type {}", schema.to_string()),
     }
-    let schema = format!(
-        r#"{{\"type\":\"struct\",\"fields\":[{}]}}"#,
-        fields.join(",")
-    );
-
-    let partitions = partitions
-        .iter()
-        .map(|s| format!("\"{}\"", s))
-        .collect::<Vec<String>>()
-        .join(",");
-
-    format!(
-        r#"{{"metaData":{{"id":"ec285dbc-6479-4cc1-b038-1de97afabf9b","format":{{"provider":"parquet","options":{{}}}},"schemaString":"{}","partitionColumns":[{}],"configuration":{{}},"createdTime":1621845641001}}}}"#,
-        schema, partitions
-    )
 }
 
-pub fn create_local_table(schema: HashMap<&str, &str>, partitions: Vec<&str>) -> String {
-    let path = format!("./tests/data/gen/table-{}", Uuid::new_v4());
+fn parse_fields(schema: &Value) -> Value {
+    let iter = schema.as_object().unwrap().iter().map(|(name, value)| {
+        json!({
+            "name": name,
+            "type": parse_type(value),
+            "metadata": {},
+            "nullable": true,
+        })
+    });
+    Value::Array(iter.collect())
+}
+
+pub fn create_metadata_action_json(schema: Value, partitions: &[&str]) -> String {
+    let schema = json!({
+        "type": "struct",
+        "fields": parse_fields(&schema),
+    });
+
+    json!({
+        "metaData": {
+            "id": "ec285dbc-6479-4cc1-b038-1de97afabf9b",
+            "format": {"provider":"parquet","options":{}},
+            "schemaString": schema.to_string(),
+            "partitionColumns": partitions,
+            "createdTime": 1621845641001u64,
+            "configuration": {},
+        }
+    })
+    .to_string()
+}
+
+pub async fn cleanup_kdi(topic: &str, table: &str) {
+    delete_topic(topic).await;
+    std::fs::create_dir_all(table).unwrap();
+}
+
+pub async fn create_and_run_kdi(
+    app_id: &str,
+    schema: Value,
+    delta_partitions: Vec<&str>,
+    kafka_num_partitions: i32,
+    opts: Option<IngestOptions>,
+) -> (
+    String,
+    String,
+    FutureProducer<DefaultClientContext, DefaultRuntime>,
+    JoinHandle<()>,
+    Arc<CancellationToken>,
+    Runtime,
+) {
+    init_logger();
+    let topic = format!("{}-{}", app_id, Uuid::new_v4());
+    let table = create_local_table(schema, delta_partitions, &topic);
+    create_topic(&topic, kafka_num_partitions).await;
+
+    let opts = opts
+        .map(|o| IngestOptions {
+            app_id: app_id.to_string(),
+            ..o
+        })
+        .unwrap_or_else(|| IngestOptions {
+            app_id: app_id.to_string(),
+            allowed_latency: 10,
+            max_messages_per_batch: 1,
+            min_bytes_per_file: 20,
+            ..IngestOptions::default()
+        });
+
+    let (kdi, token, rt) = create_kdi(&topic, &table, opts);
+    let producer = create_producer();
+    (topic, table, producer, kdi, token, rt)
+}
+
+pub fn create_local_table(schema: Value, partitions: Vec<&str>, table_name: &str) -> String {
+    let path = format!("./tests/data/gen/{}-{}", table_name, Uuid::new_v4());
     create_local_table_in(schema, partitions, &path);
     path
 }
 
-pub fn create_local_table_in(schema: HashMap<&str, &str>, partitions: Vec<&str>, path: &str) {
+pub fn create_local_table_in(schema: Value, partitions: Vec<&str>, path: &str) {
     let v0 = format!("{}/_delta_log/00000000000000000000.json", &path);
 
     std::fs::create_dir_all(Path::new(&v0).parent().unwrap()).unwrap();
@@ -193,12 +228,7 @@ pub fn create_local_table_in(schema: HashMap<&str, &str>, partitions: Vec<&str>,
         r#"{{"protocol":{{"minReaderVersion":1,"minWriterVersion":2}}}}"#
     )
     .unwrap();
-    writeln!(
-        file,
-        "{}",
-        create_metadata_action_json(&schema, &partitions)
-    )
-    .unwrap();
+    writeln!(file, "{}", create_metadata_action_json(schema, &partitions)).unwrap();
 }
 
 pub fn create_kdi_with(
@@ -299,7 +329,15 @@ pub fn wait_until_version_created(table: &str, version: i64) {
     wait_until_file_created(Path::new(&path));
 }
 
-pub async fn read_table_content(table_uri: &str) -> Vec<Value> {
+pub async fn read_table_content_as<T: DeserializeOwned>(table_uri: &str) -> Vec<T> {
+    read_table_content_as_jsons(table_uri)
+        .await
+        .iter()
+        .map(|v| serde_json::from_value(v.clone()).unwrap())
+        .collect()
+}
+
+pub async fn read_table_content_as_jsons(table_uri: &str) -> Vec<Value> {
     let table = deltalake::open_table(table_uri).await.unwrap();
     let backend = deltalake::get_backend_for_uri(&table_uri).unwrap();
     let tmp = format!(".test-{}.tmp", Uuid::new_v4());

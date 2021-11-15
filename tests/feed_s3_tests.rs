@@ -30,16 +30,18 @@ const FEEDS: usize = 3;
 async fn feed_load_test() {
     helpers::init_logger();
 
+    let topic = format!("feed_load_{}", uuid::Uuid::new_v4());
+
     let table = helpers::create_local_table(
-        hashmap! {
-            "id" => "integer",
-            "text" => "string",
-            "feed" => "string",
-        },
+        json!({
+            "id": "integer",
+            "text": "string",
+            "feed": "string",
+        }),
         vec!["feed"],
+        &topic,
     );
 
-    let topic = format!("feed_load_{}", uuid::Uuid::new_v4());
     helpers::create_topic(&topic, 12).await;
 
     let producer = Arc::new(helpers::create_producer());
@@ -73,7 +75,7 @@ async fn feed_load_test() {
 
     println!("verifying results...");
 
-    let values = helpers::read_table_content(&table).await;
+    let values = helpers::read_table_content_as_jsons(&table).await;
     let id_count = values
         .iter()
         .map(|v| v.as_object().unwrap().get("id").unwrap().as_i64().unwrap())
@@ -168,7 +170,7 @@ fn send_jsons(
 async fn wait_until_all_messages_received(table: &str) {
     let mut waited_ms = 0;
     loop {
-        let values = helpers::read_table_content(table)
+        let values = helpers::read_table_content_as_jsons(table)
             .await
             .iter() // just to ensure it's expected value
             .map(|v| serde_json::from_value::<TestMsg>(v.clone()))

@@ -2,6 +2,7 @@ use kafka_delta_ingest::IngestOptions;
 use log::info;
 use serde::{Deserialize, Serialize};
 use serde_json;
+use serde_json::json;
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -128,7 +129,7 @@ async fn test_dlq() {
     // after above sequence - we should have 10 good messages and 3 dead letters
     // good messages should be in the data table and dead letters should be in the dlq_table
 
-    let table_content: Vec<TestMsg> = helpers::read_table_content(&table)
+    let table_content: Vec<TestMsg> = helpers::read_table_content_as_jsons(&table)
         .await
         .iter()
         .map(|v| serde_json::from_value(v.clone()).unwrap())
@@ -136,7 +137,7 @@ async fn test_dlq() {
 
     assert_eq!(table_content.len(), 10);
 
-    let dlq_content: Vec<Value> = helpers::read_table_content(&dlq_table).await;
+    let dlq_content: Vec<Value> = helpers::read_table_content_as_jsons(&dlq_table).await;
     assert_eq!(dlq_content.len(), 3);
 
     println!("Dead letter table content{:#?}", dlq_content);
@@ -171,18 +172,16 @@ async fn test_dlq() {
 }
 
 fn create_table() -> String {
-    let struct_schema =
-        helpers::create_array_schema_field(helpers::create_struct_schema_field(vec![
-            helpers::create_schema_field("value", "string"),
-        ]));
-
     helpers::create_local_table(
-        hashmap! {
-            "value" => "string",
-            "a_list_of_structs" => struct_schema.as_str(),
-            "date" => "string",
-        },
+        json!({
+            "value": "string",
+            "a_list_of_structs": [{
+                "value": "string"
+            }],
+            "date": "string",
+        }),
         vec!["date"],
+        "dlq",
     )
 }
 
@@ -194,13 +193,14 @@ async fn create_data_topic() -> String {
 
 async fn create_dlq_table() -> String {
     helpers::create_local_table(
-        hashmap! {
-            "base64_bytes" => "string",
-            "json_string" => "string",
-            "error" => "string",
-            "timestamp" => "timestamp",
-            "date" => "string",
-        },
+        json! ({
+            "base64_bytes": "string",
+            "json_string": "string",
+            "error": "string",
+            "timestamp": "timestamp",
+            "date": "string",
+        }),
         vec!["date"],
+        "dlq",
     )
 }

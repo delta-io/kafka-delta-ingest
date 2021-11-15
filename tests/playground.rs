@@ -2,11 +2,8 @@ use kafka_delta_ingest::IngestOptions;
 use log::info;
 use rdkafka::producer::FutureProducer;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use uuid::Uuid;
-
-#[macro_use]
-extern crate maplit;
 
 #[allow(dead_code)]
 mod helpers;
@@ -64,10 +61,10 @@ impl Playground {
         helpers::init_logger();
         let _ = std::fs::remove_dir_all(TABLE_PATH);
         helpers::create_local_table_in(
-            hashmap! {
-                "id" => "integer",
-                "date" => "string",
-            },
+            json!({
+                "id": "integer",
+                "date": "string",
+            }),
             vec!["date"],
             TABLE_PATH,
         );
@@ -98,7 +95,7 @@ impl Playground {
         rt.shutdown_background();
 
         info!("The table {} content:", TABLE_PATH);
-        let content = helpers::read_table_content(TABLE_PATH).await;
+        let content = helpers::read_table_content_as_jsons(TABLE_PATH).await;
         let len = content.len();
         let mut bytes = 0;
         for json in content {
