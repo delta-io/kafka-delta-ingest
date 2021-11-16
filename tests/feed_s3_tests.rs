@@ -5,6 +5,7 @@ use kafka_delta_ingest::IngestOptions;
 use maplit::hashmap;
 use rdkafka::producer::FutureProducer;
 
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
@@ -19,35 +20,45 @@ struct TestMsg {
     id: u64,
     text: String,
     feed: String,
+    timestamp: String,
 }
 
-const TOTAL_MESSAGES_SENT: usize = 900;
-// see seek offsets param, we skip 10 messages in each partition, e,g. 12 x 10
-const TOTAL_MESSAGES_RECEIVED: usize = TOTAL_MESSAGES_SENT - 120;
+const TOTAL_MESSAGES_SENT: usize = 600;
+// see seek offsets param, we skip 5 messages in each partition, e,g. 12 x 5
+const TOTAL_MESSAGES_RECEIVED: usize = TOTAL_MESSAGES_SENT - 60;
 const FEEDS: usize = 3;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn feed_load_test() {
     helpers::init_logger();
 
+    let topic = format!("feed_load_{}", uuid::Uuid::new_v4());
+
     let table = helpers::create_local_table(
-        hashmap! {
-            "id" => "integer",
-            "text" => "string",
-            "feed" => "string",
-        },
+        json!({
+            "id": "integer",
+            "text": "string",
+            "feed": "string",
+            "timestamp": "timestamp",
+            "date": "string",
+            "kafka": {
+                "offset": "integer",
+                "timestamp": "timestamp",
+                "timestamp_type": "integer",
+            }
+        }),
         vec!["feed"],
+        &topic,
     );
 
-    let topic = format!("feed_load_{}", uuid::Uuid::new_v4());
     helpers::create_topic(&topic, 12).await;
 
     let producer = Arc::new(helpers::create_producer());
 
     // send message in parallel
-    let f_a = send_jsons("A", 0, producer.clone(), &topic);
-    let f_b = send_jsons("B", 1, producer.clone(), &topic);
-    let f_c = send_jsons("C", 2, producer.clone(), &topic);
+    let f_a = spawn_send_jsons("A", 0, producer.clone(), &topic);
+    let f_b = spawn_send_jsons("B", 1, producer.clone(), &topic);
+    let f_c = spawn_send_jsons("C", 2, producer.clone(), &topic);
 
     let mut workers = Vec::new();
 
@@ -56,9 +67,11 @@ async fn feed_load_test() {
     workers.push(spawn_worker(2, &topic, &table));
     std::thread::sleep(Duration::from_secs(10));
     workers.push(spawn_worker(3, &topic, &table));
-    f_a.await.unwrap();
-    f_b.await.unwrap();
-    f_c.await.unwrap();
+
+    let mut feed_a_ids = f_a.await.unwrap();
+    let mut feed_b_ids = f_b.await.unwrap();
+    let mut feed_c_ids = f_c.await.unwrap();
+
     let (msg_handle, msg_token) = run_empty_messages(producer.clone(), &topic);
     wait_until_all_messages_received(&table).await;
     workers.iter().for_each(|w| w.1.cancel());
@@ -73,12 +86,14 @@ async fn feed_load_test() {
 
     println!("verifying results...");
 
-    let values = helpers::read_table_content(&table).await;
-    let id_count = values
+    let values = helpers::read_table_content_as_jsons(&table).await;
+    let mut ids: Vec<i64> = values
         .iter()
         .map(|v| v.as_object().unwrap().get("id").unwrap().as_i64().unwrap())
-        .count();
+        .collect();
+    ids.sort();
 
+    let id_count = ids.iter().count();
     let expected = (0..TOTAL_MESSAGES_RECEIVED).count();
 
     if id_count != expected {
@@ -86,8 +101,26 @@ async fn feed_load_test() {
     }
     assert_eq!(id_count, expected);
 
-    helpers::delete_topic(&topic).await;
-    std::fs::remove_dir_all(table).unwrap();
+    let mut expected = Vec::new();
+    expected.append(&mut feed_a_ids);
+    expected.append(&mut feed_b_ids);
+    expected.append(&mut feed_c_ids);
+    expected.sort();
+
+    assert_eq!(ids, expected);
+
+    // verify transforms
+    let m = values.first().unwrap().as_object().unwrap();
+    assert!(m.contains_key("date"));
+    let now = Utc::now().to_rfc3339();
+    assert_eq!(m.get("date").unwrap().as_str().unwrap(), &now[..10]);
+    assert!(m.contains_key("kafka"));
+    let kafka = m.get("kafka").unwrap().as_object().unwrap();
+    assert!(kafka.contains_key("offset"));
+    assert!(kafka.contains_key("timestamp"));
+    assert!(kafka.contains_key("timestamp_type"));
+
+    helpers::cleanup_kdi(&topic, &table).await;
 }
 
 fn spawn_worker(
@@ -95,28 +128,40 @@ fn spawn_worker(
     topic: &str,
     table: &str,
 ) -> (JoinHandle<()>, Arc<CancellationToken>, Runtime) {
+    let transforms = hashmap! {
+         "date" => "substr(timestamp, `0`, `10`)",
+         "kafka.offset" => "kafka.offset",
+         "kafka.timestamp" => "kafka.timestamp",
+         "kafka.timestamp_type" => "kafka.timestamp_type",
+    };
+    let transforms = transforms
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+
     helpers::create_kdi_with(
         &topic,
         &table,
         Some(format!("WORKER-{}", id)),
         IngestOptions {
             app_id: "feed".to_string(),
-            allowed_latency: 2,
-            max_messages_per_batch: 10,
+            allowed_latency: 3,
+            max_messages_per_batch: 30,
             min_bytes_per_file: 100,
+            transforms,
             seek_offsets: Some(vec![
-                (0, 9),
-                (1, 9),
-                (2, 9),
-                (3, 9),
-                (4, 9),
-                (5, 9),
-                (6, 9),
-                (7, 9),
-                (8, 9),
-                (9, 9),
-                (10, 9),
-                (11, 9),
+                (0, 4),
+                (1, 4),
+                (2, 4),
+                (3, 4),
+                (4, 4),
+                (5, 4),
+                (6, 4),
+                (7, 4),
+                (8, 4),
+                (9, 4),
+                (10, 4),
+                (11, 4),
             ]),
             additional_kafka_settings: Some(hashmap! {
                 "auto.offset.reset".to_string() => "earliest".to_string(),
@@ -126,49 +171,48 @@ fn spawn_worker(
     )
 }
 
-fn send_jsons(
+fn spawn_send_jsons(
     feed: &str,
     feed_n: usize,
     producer: Arc<FutureProducer>,
     topic: &str,
-) -> JoinHandle<()> {
-    let mut last: Option<JoinHandle<(i32, i64)>> = None;
+) -> JoinHandle<Vec<i64>> {
     let feed = feed.to_string();
+    let topic = topic.to_string();
+    tokio::spawn(async move { send_jsons(feed.as_str(), feed_n, producer, topic).await })
+}
+async fn send_jsons(
+    feed: &str,
+    feed_n: usize,
+    producer: Arc<FutureProducer>,
+    topic: String,
+) -> Vec<i64> {
+    let feed = feed.to_string();
+    let mut sent = Vec::new();
     for id in 0..TOTAL_MESSAGES_SENT {
-        let topic = topic.to_string();
+        let topic = topic.clone();
         if id % FEEDS == feed_n {
-            let m = serde_json::to_value(TestMsg {
-                id: id as u64,
-                text: format!(
-                    "{}-{}-{}-{}-{}",
-                    Uuid::new_v4(),
-                    Uuid::new_v4(),
-                    Uuid::new_v4(),
-                    Uuid::new_v4(),
-                    Uuid::new_v4()
-                ),
-                feed: feed.clone(),
+            let m = json!({
+                "id": id,
+                "text": format!("{}-{}-{}",Uuid::new_v4(),Uuid::new_v4(),Uuid::new_v4()),
+                "feed": feed,
+                "timestamp": Utc::now().to_rfc3339(),
             });
-            let p = producer.clone();
-            last = Some(tokio::spawn(async move {
-                helpers::send_kv_json(&p, &topic, format!("{}", id), &m.unwrap()).await
-            }));
+            let (_, o) = helpers::send_kv_json(&producer, &topic, format!("{}", id), &m).await;
+            if o > 4 {
+                sent.push(id as i64);
+            }
         }
     }
 
-    tokio::spawn(async move {
-        let (p, o) = last.unwrap().await.unwrap();
-        println!(
-            "Send last message for feed {} where partition={}, offset={}",
-            feed, p, o
-        );
-    })
+    println!("Sent {} messages for feed {}", sent.len(), feed);
+    sent
 }
 
 async fn wait_until_all_messages_received(table: &str) {
     let mut waited_ms = 0;
     loop {
-        let values = helpers::read_table_content(table)
+        let values = helpers::read_table_content_as_jsons(table)
             .await
             .iter() // just to ensure it's expected value
             .map(|v| serde_json::from_value::<TestMsg>(v.clone()))
@@ -210,7 +254,7 @@ fn run_empty_messages(
                 return;
             }
             helpers::send_json(&producer, &topic, &json!("{}")).await;
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(1000)).await;
         }
     });
     (handle, token)

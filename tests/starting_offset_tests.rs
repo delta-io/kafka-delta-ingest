@@ -2,9 +2,9 @@
 mod helpers;
 
 use log::{debug, info};
-use maplit::hashmap;
 use rdkafka::{producer::Producer, util::Timeout};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 // These tests are executed serially to allow for predictable rebalance waits.
 // Rebalance times vary too much to produce predictable earliest/latest seek positions
@@ -25,11 +25,12 @@ async fn test_start_from_explicit() {
     helpers::init_logger();
 
     let table = helpers::create_local_table(
-        hashmap! {
-            "id" => "integer",
-            "date" => "string",
-        },
+        json!({
+            "id": "integer",
+            "date": "string",
+        }),
         vec!["date"],
+        "starting_offsets_explicit",
     );
 
     let topic = format!("starting_offsets_explicit_{}", uuid::Uuid::new_v4());
@@ -77,13 +78,15 @@ async fn test_start_from_explicit() {
     kdi.await.unwrap();
     rt.shutdown_background();
 
-    let written_ids: Vec<u64> = helpers::read_table_content(&table)
+    let written_ids: Vec<u64> = helpers::read_table_content_as_jsons(&table)
         .await
         .iter()
         .map(|v| serde_json::from_value::<TestMsg>(v.clone()).unwrap().id)
         .collect();
 
     assert_eq!((5u64..15).collect::<Vec<u64>>(), written_ids);
+
+    helpers::cleanup_kdi(&topic, &table).await;
 }
 
 #[tokio::test]
@@ -92,11 +95,12 @@ async fn test_start_from_earliest() {
     helpers::init_logger();
 
     let table = helpers::create_local_table(
-        hashmap! {
-            "id" => "integer",
-            "date" => "string",
-        },
+        json!({
+            "id": "integer",
+            "date": "string",
+        }),
         vec!["date"],
+        "starting_offsets_earliest",
     );
 
     let topic = format!("starting_offsets_earliest{}", uuid::Uuid::new_v4());
@@ -118,7 +122,7 @@ async fn test_start_from_earliest() {
         &table,
         IngestOptions {
             app_id: "starting_offsets_earliest".to_string(),
-            allowed_latency: 2,
+            allowed_latency: 10,
             max_messages_per_batch: 10,
             min_bytes_per_file: 10,
             auto_offset_reset: AutoOffsetReset::Earliest,
@@ -133,7 +137,7 @@ async fn test_start_from_earliest() {
     kdi.await.unwrap();
     rt.shutdown_background();
 
-    let mut written_ids: Vec<u64> = helpers::read_table_content(&table)
+    let mut written_ids: Vec<u64> = helpers::read_table_content_as_jsons(&table)
         .await
         .iter()
         .map(|v| serde_json::from_value::<TestMsg>(v.clone()).unwrap().id)
@@ -141,6 +145,8 @@ async fn test_start_from_earliest() {
     written_ids.sort();
 
     assert_eq!((1u64..11).collect::<Vec<u64>>(), written_ids);
+
+    helpers::cleanup_kdi(&topic, &table).await;
 }
 
 #[tokio::test]
@@ -149,11 +155,12 @@ async fn test_start_from_latest() {
     helpers::init_logger();
 
     let table = helpers::create_local_table(
-        hashmap! {
-            "id" => "integer",
-            "date" => "string",
-        },
+        json! ({
+            "id": "integer",
+            "date": "string",
+        }),
         vec!["date"],
+        "starting_offsets_latest",
     );
 
     let topic = format!("starting_offsets_latest{}", uuid::Uuid::new_v4());
@@ -211,7 +218,7 @@ async fn test_start_from_latest() {
     kdi.await.unwrap();
     rt.shutdown_background();
 
-    let mut written_ids: Vec<u64> = helpers::read_table_content(&table)
+    let mut written_ids: Vec<u64> = helpers::read_table_content_as_jsons(&table)
         .await
         .iter()
         .map(|v| serde_json::from_value::<TestMsg>(v.clone()).unwrap().id)
@@ -220,6 +227,8 @@ async fn test_start_from_latest() {
 
     // ids should be 7 -16 (offsets 6-15)
     assert_eq!((7u64..17).collect::<Vec<u64>>(), written_ids);
+
+    helpers::cleanup_kdi(&topic, &table).await;
 }
 
 fn create_generator(starting_id: u64) -> impl Iterator<Item = TestMsg> {

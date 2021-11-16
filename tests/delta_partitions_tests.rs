@@ -1,13 +1,10 @@
-#[macro_use]
-extern crate maplit;
-
 #[allow(dead_code)]
 mod helpers;
 
 use deltalake::action::Add;
 use kafka_delta_ingest::writer::*;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -32,11 +29,12 @@ impl TestMsg {
 #[tokio::test]
 async fn test_delta_partitions() {
     let table_path = helpers::create_local_table(
-        hashmap! {
-            "id" => "integer",
-            "color" => "string",
-        },
+        json!({
+            "id": "integer",
+            "color": "string",
+        }),
         vec!["color"],
+        "test_delta_partitions",
     );
 
     let table = deltalake::open_table(&table_path).await.unwrap();

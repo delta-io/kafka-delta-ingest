@@ -766,6 +766,7 @@ impl IngestProcessor {
                 .delta_writer
                 .update_schema(self.table.get_metadata()?)?
             {
+                info!("Table schema has been updated");
                 // Update the coercion tree to reflect the new schema
                 let coercion_tree =
                     coercions::create_coercion_tree(&self.table.get_metadata()?.schema);
@@ -885,8 +886,9 @@ impl IngestProcessor {
                 },
             };
         }
-
-        info!("Seeking consumer to partition offsets: [{}]", log_message);
+        if !log_message.is_empty() {
+            info!("Seeking consumer to partition offsets: [{}]", log_message);
+        }
         Ok(())
     }
 

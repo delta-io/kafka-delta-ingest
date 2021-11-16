@@ -1,12 +1,7 @@
-use kafka_delta_ingest::IngestOptions;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use serde_json::{json, Value};
 use std::fs::File;
 use std::io::prelude::*;
-use uuid::Uuid;
-
-#[macro_use]
-extern crate maplit;
 
 #[allow(dead_code)]
 mod helpers;
@@ -26,29 +21,17 @@ struct MsgV2 {
 
 #[tokio::test]
 async fn schema_update_test() {
-    helpers::init_logger();
-    let table = helpers::create_local_table(
-        hashmap! {
-            "id" => "integer",
-            "date" => "string",
-        },
+    let (topic, table, producer, kdi, token, rt) = helpers::create_and_run_kdi(
+        "schema_update",
+        json!({
+            "id": "integer",
+            "date": "string",
+        }),
         vec!["date"],
-    );
-    let topic = format!("schema_update_{}", Uuid::new_v4());
-    helpers::create_topic(&topic, 1).await;
-
-    let (kdi, token, rt) = helpers::create_kdi(
-        &topic,
-        &table,
-        IngestOptions {
-            app_id: "schema_update".to_string(),
-            allowed_latency: 5,
-            max_messages_per_batch: 1,
-            min_bytes_per_file: 20,
-            ..Default::default()
-        },
-    );
-    let producer = helpers::create_producer();
+        1,
+        None,
+    )
+    .await;
 
     let msg_v1 = MsgV1 {
         id: 1,
@@ -77,11 +60,11 @@ async fn schema_update_test() {
     helpers::wait_until_version_created(&table, 1);
 
     // update delta schema with new col 'color'
-    let new_schema = hashmap! {
-        "id" => "integer",
-        "color" => "string",
-        "date" => "string",
-    };
+    let new_schema = json!({
+        "id": "integer",
+        "color": "string",
+        "date": "string",
+    });
     alter_schema(&table, 2, new_schema, vec!["date"]);
 
     // send few messages with new schema
@@ -104,7 +87,7 @@ async fn schema_update_test() {
     rt.shutdown_background();
 
     // retrieve data from the table
-    let content: Vec<MsgV2> = helpers::read_table_content(&table)
+    let content: Vec<MsgV2> = helpers::read_table_content_as_jsons(&table)
         .await
         .iter()
         .map(|v| serde_json::from_value(v.clone()).unwrap())
@@ -124,14 +107,17 @@ async fn schema_update_test() {
     //  and compare the results
     assert_eq!(content, expected);
 
-    // cleanup
-    for v in 1..=4 {
-        std::fs::remove_file(helpers::commit_file_path(&table, v)).unwrap();
-    }
+    helpers::cleanup_kdi(&topic, &table).await;
 }
 
-fn alter_schema(table: &str, version: i64, schema: HashMap<&str, &str>, partitions: Vec<&str>) {
-    let mut file = File::create(format!("{}/_delta_log/{:020}.json", table, version)).unwrap();
-    let schema = helpers::create_metadata_action_json(&schema, &partitions);
-    writeln!(file, "{}", schema).unwrap();
+fn alter_schema(table: &str, version: i64, schema: Value, partitions: Vec<&str>) {
+    let schema = helpers::create_metadata_action_json(schema, &partitions);
+    let tmp = format!("{}/_delta_log/temp.json", table);
+    {
+        let mut file = File::create(&tmp).unwrap();
+        writeln!(file, "{}", schema).unwrap();
+        file.flush().unwrap();
+    }
+    // rename is atomic, but create+write is not
+    std::fs::rename(tmp, format!("{}/_delta_log/{:020}.json", table, version)).unwrap();
 }
