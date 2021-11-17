@@ -1,16 +1,17 @@
-use deltalake::{
-    Schema as DeltaSchema, SchemaDataType as DeltaDataType, SchemaField as DeltaField,
-};
+use deltalake::{Schema as DeltaSchema, SchemaDataType as DeltaDataType};
 
 use chrono::prelude::*;
-use serde_json::{Map, Number, Value};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(unused)]
 enum CoercionNode {
     Coercion(Coercion),
     Tree(CoercionTree),
+    ArrayTree(CoercionTree),
+    ArrayPrimitive(Coercion),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -24,47 +25,48 @@ pub(crate) struct CoercionTree {
     root: HashMap<String, CoercionNode>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CoercionArray {
+    element: CoercionNode,
+}
+
 /// Returns a [`CoercionTree`] so the schema can be walked efficiently level by level when performing conversions.
 pub(crate) fn create_coercion_tree(schema: &DeltaSchema) -> CoercionTree {
     let mut root = HashMap::new();
 
     for field in schema.get_fields() {
-        append_coercion(&mut root, field)
+        if let Some(node) = build_coercion_node(field.get_type()) {
+            root.insert(field.get_name().to_string(), node);
+        }
     }
 
     CoercionTree { root }
 }
 
-fn append_coercion(context: &mut HashMap<String, CoercionNode>, field: &DeltaField) {
-    match field.get_type() {
-        DeltaDataType::primitive(primitive_type) if primitive_type == "string" => {
-            context.insert(
-                field.get_name().to_string(),
-                CoercionNode::Coercion(Coercion::ToString),
-            );
+fn build_coercion_node(r#type: &DeltaDataType) -> Option<CoercionNode> {
+    match r#type {
+        DeltaDataType::primitive(r#type) if r#type == "string" => {
+            Some(CoercionNode::Coercion(Coercion::ToString))
         }
-        DeltaDataType::primitive(primitive_type) if primitive_type == "timestamp" => {
-            context.insert(
-                field.get_name().to_string(),
-                CoercionNode::Coercion(Coercion::ToTimestamp),
-            );
+        DeltaDataType::primitive(r#type) if r#type == "timestamp" => {
+            Some(CoercionNode::Coercion(Coercion::ToTimestamp))
         }
         DeltaDataType::r#struct(schema) => {
-            let mut nested_context = HashMap::new();
-            for nested_field in schema.get_fields() {
-                append_coercion(&mut nested_context, nested_field);
-            }
-            if !nested_context.is_empty() {
-                let tree = CoercionTree {
-                    root: nested_context,
-                };
-                context.insert(field.get_name().to_string(), CoercionNode::Tree(tree));
+            let nested_context = create_coercion_tree(schema);
+            if !nested_context.root.is_empty() {
+                Some(CoercionNode::Tree(nested_context))
+            } else {
+                None
             }
         }
-        _ => {
-            // noop for now
-            // add more data type coercions as necessary
+        DeltaDataType::array(schema) => {
+            build_coercion_node(schema.get_element_type()).and_then(|node| match node {
+                CoercionNode::Coercion(c) => Some(CoercionNode::ArrayPrimitive(c)),
+                CoercionNode::Tree(t) => Some(CoercionNode::ArrayTree(t)),
+                _ => None,
+            })
         }
+        _ => None,
     }
 }
 
@@ -73,65 +75,70 @@ fn append_coercion(context: &mut HashMap<String, CoercionNode>, field: &DeltaFie
 pub(crate) fn coerce(value: &mut Value, coercion_tree: &CoercionTree) {
     if let Some(context) = value.as_object_mut() {
         for (field_name, coercion) in coercion_tree.root.iter() {
-            apply_coercion(context, field_name, coercion);
+            if let Some(mut value) = context.get_mut(field_name) {
+                apply_coercion(&mut value, coercion);
+            }
         }
     }
 }
 
-fn apply_coercion(context: &mut Map<String, Value>, field_name: &str, node: &CoercionNode) {
-    let opt = context.get_mut(field_name);
-
-    if let Some(value) = opt {
-        match node {
-            CoercionNode::Coercion(Coercion::ToString) => {
-                let replacement = if value.is_string() {
-                    None
-                } else {
-                    Some(value.to_string())
-                };
-
-                if let Some(coerced) = replacement {
-                    context.insert(field_name.to_string(), Value::String(coerced));
+fn apply_coercion(value: &mut Value, node: &CoercionNode) {
+    match node {
+        CoercionNode::Coercion(Coercion::ToString) => {
+            if !value.is_string() {
+                *value = Value::String(value.to_string());
+            }
+        }
+        CoercionNode::Coercion(Coercion::ToTimestamp) => {
+            if let Some(as_str) = value.as_str() {
+                if let Some(parsed) = string_to_timestamp(as_str) {
+                    *value = parsed
                 }
             }
-            CoercionNode::Coercion(Coercion::ToTimestamp) => {
-                let replacement: Option<i64> = if let Some(s) = value.as_str() {
-                    // The delta timestamp data type must be set as microseconds since epoch.
-                    // If we have a string, try to convert it.
-                    // If conversion fails, leave it alone. It'll come out null in delta.
-                    //
-                    // TODO: `from_str` doesn't work with all date formats.
-                    // It may be worthwhile to do some format sniffing and use more specific parse functions.
-                    //
-                    DateTime::from_str(s).map_or_else(
-                        |e| {
-                            log::error!(
-                                "Error coercing timestamp from string. String: {}. Error: {}",
-                                s,
-                                e
-                            );
-                            None
-                        },
-                        |dt: DateTime<Utc>| Some(dt.timestamp_nanos() / 1000),
-                    )
-                } else {
-                    None
-                };
-
-                if let Some(coerced) = replacement {
-                    context.insert(field_name.to_string(), Value::Number(Number::from(coerced)));
-                }
-            }
-            CoercionNode::Tree(tree) => {
-                for (k, v) in tree.root.iter() {
-                    let new_context = value.as_object_mut();
-                    if let Some(new_context) = new_context {
-                        apply_coercion(new_context, k, v);
+        }
+        CoercionNode::Tree(tree) => {
+            for (name, node) in tree.root.iter() {
+                let fields = value.as_object_mut();
+                if let Some(fields) = fields {
+                    if let Some(mut value) = fields.get_mut(name) {
+                        apply_coercion(&mut value, node);
                     }
                 }
             }
         }
+        CoercionNode::ArrayPrimitive(coercion) => {
+            let values = value.as_array_mut();
+            if let Some(values) = values {
+                let node = CoercionNode::Coercion(coercion.clone());
+                for value in values {
+                    apply_coercion(value, &node);
+                }
+            }
+        }
+        CoercionNode::ArrayTree(tree) => {
+            let values = value.as_array_mut();
+            if let Some(values) = values {
+                let node = CoercionNode::Tree(tree.clone());
+                for value in values {
+                    apply_coercion(value, &node);
+                }
+            }
+        }
     }
+}
+
+fn string_to_timestamp(string: &str) -> Option<Value> {
+    let parsed = DateTime::from_str(string);
+    if let Err(e) = parsed {
+        log::error!(
+            "Error coercing timestamp from string. String: {}. Error: {}",
+            string,
+            e
+        )
+    }
+    parsed
+        .ok()
+        .map(|dt: DateTime<Utc>| Value::Number((dt.timestamp_nanos() / 1000).into()))
 }
 
 #[cfg(test)]
@@ -171,6 +178,61 @@ mod tests {
                     },
                     "nullable": true, "metadata": {}
                 },
+                {
+                    "name": "array_timestamp",
+                    "type": {
+                        "type": "array",
+                        "containsNull": true,
+                        "elementType": "timestamp",
+                    },
+                    "nullable": true, "metadata": {},
+                },
+                {
+                    "name": "array_string",
+                    "type": {
+                        "type": "array",
+                        "containsNull": true,
+                        "elementType": "string",
+                    },
+                    "nullable": true, "metadata": {},
+                },
+                {
+                    "name": "array_int",
+                    "type": {
+                        "type": "array",
+                        "containsNull": true,
+                        "elementType": "integer",
+                    },
+                    "nullable": true, "metadata": {},
+                },
+                {
+                    "name": "array_struct",
+                    "type": {
+                        "type": "array",
+                        "containsNull": true,
+                        "elementType": {
+                            "type": "struct",
+                            "fields": [
+                                {
+                                    "name": "level2_string",
+                                    "type": "string",
+                                    "nullable": true, "metadata": {}
+                                },
+                                {
+                                    "name": "level2_int",
+                                    "type": "integer",
+                                    "nullable": true, "metadata": {}
+                                },
+                                {
+                                    "name": "level2_timestamp",
+                                    "type": "timestamp",
+                                    "nullable": true, "metadata": {}
+                                },
+                            ],
+                        },
+                    },
+                    "nullable": true, "metadata": {},
+                }
             ]
         });
     }
@@ -192,8 +254,21 @@ mod tests {
         let mut level2_keys: Vec<&String> = level2_root.keys().collect();
         level2_keys.sort();
 
+        let array_struct = tree.root.get("array_struct");
+        let array_struct_root = match array_struct {
+            Some(CoercionNode::ArrayTree(tree)) => tree.root.clone(),
+            _ => unreachable!(""),
+        };
+
         assert_eq!(
-            vec!["level1_string", "level1_timestamp", "level2"],
+            vec![
+                "array_string",
+                "array_struct",
+                "array_timestamp",
+                "level1_string",
+                "level1_timestamp",
+                "level2"
+            ],
             top_level_keys
         );
 
@@ -215,6 +290,25 @@ mod tests {
             CoercionNode::Coercion(Coercion::ToTimestamp),
             level2_root.get("level2_timestamp").unwrap().to_owned()
         );
+        assert_eq!(
+            CoercionNode::ArrayPrimitive(Coercion::ToString),
+            tree.root.get("array_string").unwrap().to_owned()
+        );
+        assert_eq!(
+            CoercionNode::ArrayPrimitive(Coercion::ToTimestamp),
+            tree.root.get("array_timestamp").unwrap().to_owned()
+        );
+        assert_eq!(
+            CoercionNode::Coercion(Coercion::ToString),
+            array_struct_root.get("level2_string").unwrap().to_owned()
+        );
+        assert_eq!(
+            CoercionNode::Coercion(Coercion::ToTimestamp),
+            array_struct_root
+                .get("level2_timestamp")
+                .unwrap()
+                .to_owned()
+        );
     }
 
     #[test]
@@ -232,7 +326,22 @@ mod tests {
                 "level2": {
                     "level2_string": { "x": "x", "y": "y" },
                     "level2_timestamp": "2021-11-11T22:11:58Z"
-                }
+                },
+                "array_timestamp": ["2021-11-17T01:02:03Z", "2021-11-17T02:03:04Z"],
+                "array_string": ["a", "b", {"a": 1}],
+                "array_int": [1, 2, 3],
+                "array_struct": [
+                    {
+                        "level2_string": r#"{"a":1}"#,
+                        "level2_int": 1,
+                        "level2_timestamp": "2021-11-17T00:00:01Z"
+                    },
+                    {
+                        "level2_string": { "a": 2 },
+                        "level2_int": 2,
+                        "level2_timestamp": 1637107202000000i64
+                    },
+                ]
             }),
             json!({
                 "level1_string": { "a": "a", "b": "b"},
@@ -272,52 +381,68 @@ mod tests {
             coerce(message, &coercion_tree);
         }
 
-        assert_eq!(
-            messages,
-            vec![
-                json!({
-                    "level1_string": "a",
-                    "level1_integer": 0,
-                    // Timestamp passed in as an i64. We won't coerce it, but it will work anyway.
-                    "level1_timestamp": 1636668718000000i64,
-                    "level2": {
-                        "level2_string": r#"{"x":"x","y":"y"}"#,
-                        "level2_timestamp": 1636668718000000i64
-                    }
-                }),
-                json!({
-                    "level1_string": r#"{"a":"a","b":"b"}"#,
-                    "level1_integer": 42,
-                    // Complies with ISO 8601 and RFC 3339. We WILL coerce it.
-                    "level1_timestamp": 1636668718000000i64
-                }),
-                json!({
-                    "level1_integer": 99,
-                }),
-                json!({
-                    // Complies with ISO 8601 and RFC 3339. We WILL coerce it.
-                    "level1_timestamp": 1636668718000000i64
-                }),
-                json!({
-                    // RFC 3339 but not ISO 8601. We WILL coerce it.
-                    "level1_timestamp": 1636668718000000i64
-                }),
-                json!({
-                    // ISO 8601 but not RFC 3339. We WON'T coerce it.
-                    "level1_timestamp": "20211111T22115800Z",
-                }),
-                json!({
-                    // This is a Java date style timestamp. We WON'T coerce it.
-                    "level1_timestamp": "2021-11-11 22:11:58",
-                }),
-                json!({
-                    "level1_timestamp": "This definitely is not a timestamp",
-                }),
-                json!({
-                    // This is valid epoch micros, but typed as a string on the way in. We WON'T coerce it.
-                    "level1_timestamp": "1636668718000000",
-                }),
-            ]
-        );
+        let expected = vec![
+            json!({
+                "level1_string": "a",
+                "level1_integer": 0,
+                // Timestamp passed in as an i64. We won't coerce it, but it will work anyway.
+                "level1_timestamp": 1636668718000000i64,
+                "level2": {
+                    "level2_string": r#"{"x":"x","y":"y"}"#,
+                    "level2_timestamp": 1636668718000000i64
+                },
+                "array_timestamp": [1637110923000000i64, 1637114584000000i64],
+                "array_string": ["a", "b", r#"{"a":1}"#],
+                "array_int": [1, 2, 3],
+                "array_struct": [
+                    {
+                        "level2_string": "{\"a\":1}",
+                        "level2_int": 1,
+                        "level2_timestamp": 1637107201000000i64
+                    },
+                    {
+                        "level2_string": r#"{"a":2}"#,
+                        "level2_int": 2,
+                        "level2_timestamp": 1637107202000000i64
+                    },
+                ]
+            }),
+            json!({
+                "level1_string": r#"{"a":"a","b":"b"}"#,
+                "level1_integer": 42,
+                // Complies with ISO 8601 and RFC 3339. We WILL coerce it.
+                "level1_timestamp": 1636668718000000i64
+            }),
+            json!({
+                "level1_integer": 99,
+            }),
+            json!({
+                // Complies with ISO 8601 and RFC 3339. We WILL coerce it.
+                "level1_timestamp": 1636668718000000i64
+            }),
+            json!({
+                // RFC 3339 but not ISO 8601. We WILL coerce it.
+                "level1_timestamp": 1636668718000000i64
+            }),
+            json!({
+                // ISO 8601 but not RFC 3339. We WON'T coerce it.
+                "level1_timestamp": "20211111T22115800Z",
+            }),
+            json!({
+                // This is a Java date style timestamp. We WON'T coerce it.
+                "level1_timestamp": "2021-11-11 22:11:58",
+            }),
+            json!({
+                "level1_timestamp": "This definitely is not a timestamp",
+            }),
+            json!({
+                // This is valid epoch micros, but typed as a string on the way in. We WON'T coerce it.
+                "level1_timestamp": "1636668718000000",
+            }),
+        ];
+
+        for i in 0..messages.len() {
+            assert_eq!(messages[i], expected[i]);
+        }
     }
 }
