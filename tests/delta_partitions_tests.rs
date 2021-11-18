@@ -1,7 +1,7 @@
 #[allow(dead_code)]
 mod helpers;
 
-use deltalake::action::Add;
+use deltalake::action::{Action, Add};
 use kafka_delta_ingest::writer::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -37,7 +37,7 @@ async fn test_delta_partitions() {
         "test_delta_partitions",
     );
 
-    let table = deltalake::open_table(&table_path).await.unwrap();
+    let mut table = deltalake::open_table(&table_path).await.unwrap();
     let mut delta_writer = DataWriter::for_table(&table, HashMap::new()).unwrap();
 
     let batch1 = vec![
@@ -63,7 +63,7 @@ async fn test_delta_partitions() {
         .await
         .unwrap();
 
-    for add in result {
+    for add in result.iter() {
         match add
             .partition_values
             .get("color")
@@ -94,6 +94,17 @@ async fn test_delta_partitions() {
             }
         }
     }
+
+    let mut tx = table.create_transaction(None);
+    tx.add_actions(result.iter().cloned().map(Action::add).collect());
+    let version = tx.commit(None).await.unwrap();
+
+    deltalake::checkpoints::create_checkpoint_from_table(&table)
+        .await
+        .unwrap();
+
+    let table = deltalake::open_table(&table_path).await.unwrap();
+    assert_eq!(table.version, version);
 
     std::fs::remove_dir_all(&table_path).unwrap();
 }
