@@ -401,7 +401,7 @@ dependencies = [
 [[package]]
 name = "deltalake"
 version = "0.4.1"
-source = "git+https://github.com/delta-io/delta-rs.git?branch=kdi-partition-values-quick-fix#6d63014e1544f8db80625eb7325573eeef1b7a9d"
+source = "git+https://github.com/delta-io/delta-rs.git?branch=kdi-partition-values-quick-fix#18853240272cadf24eaf141d58642d3d79a98ff4"
 dependencies = [
  "anyhow",
  "arrow",
