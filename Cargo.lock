@@ -58,8 +58,9 @@ checksum = "28ae2b3dec75a406790005a200b1bd89785afc02517a00ca99ecfe093ee9e6cf"
 
 [[package]]
 name = "arrow"
-version = "6.0.0-SNAPSHOT"
-source = "git+https://github.com/apache/arrow-rs?rev=615d7830fdaf994ebd32ca1e349daf68b18c99b0#615d7830fdaf994ebd32ca1e349daf68b18c99b0"
+version = "6.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46cb449d481a6b13ea4e82e9fc662ea3e29cb5dc0a310fc42e27592cef3cb611"
 dependencies = [
  "bitflags",
  "chrono",
@@ -401,7 +402,7 @@ dependencies = [
 [[package]]
 name = "deltalake"
 version = "0.4.1"
-source = "git+https://github.com/delta-io/delta-rs.git?branch=kdi-partition-values-quick-fix#18853240272cadf24eaf141d58642d3d79a98ff4"
+source = "git+https://github.com/delta-io/delta-rs.git?rev=88803ea2468aed1c265ccfcc9d947f58a55ef75d#88803ea2468aed1c265ccfcc9d947f58a55ef75d"
 dependencies = [
  "anyhow",
  "arrow",
@@ -1544,8 +1545,9 @@ dependencies = [
 
 [[package]]
 name = "parquet"
-version = "6.0.0-SNAPSHOT"
-source = "git+https://github.com/apache/arrow-rs?rev=615d7830fdaf994ebd32ca1e349daf68b18c99b0#615d7830fdaf994ebd32ca1e349daf68b18c99b0"
+version = "6.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "479de475fbb7abf51e39cde69da3cc902d13a6fcb9259993f98688325e6a1ee7"
 dependencies = [
  "arrow",
  "base64",
