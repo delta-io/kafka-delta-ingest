@@ -820,13 +820,13 @@ fn min_and_max_from_parquet_statistics(
         data_type.clone(),
         arrow_buffer_capacity,
         stats_with_min_max.iter().map(|s| s.min_bytes()).collect(),
-    );
+    )?;
 
     let max_array = arrow_array_from_bytes(
         data_type.clone(),
         arrow_buffer_capacity,
         stats_with_min_max.iter().map(|s| s.max_bytes()).collect(),
-    );
+    )?;
 
     match data_type {
         DataType::Boolean => {
@@ -935,7 +935,7 @@ fn arrow_array_from_bytes(
     data_type: DataType,
     capacity: usize,
     byte_arrays: Vec<&[u8]>,
-) -> Arc<dyn Array> {
+) -> Result<Arc<dyn Array>, ArrowError> {
     let mut buffer = MutableBuffer::new(capacity);
 
     for arr in byte_arrays.iter() {
@@ -946,9 +946,9 @@ fn arrow_array_from_bytes(
         .len(byte_arrays.len())
         .add_buffer(buffer.into());
 
-    let data = builder.build();
+    let data = builder.build()?;
 
-    make_array(data)
+    Ok(make_array(data))
 }
 
 fn create_add(
