@@ -75,8 +75,8 @@ fn build_coercion_node(r#type: &DeltaDataType) -> Option<CoercionNode> {
 pub(crate) fn coerce(value: &mut Value, coercion_tree: &CoercionTree) {
     if let Some(context) = value.as_object_mut() {
         for (field_name, coercion) in coercion_tree.root.iter() {
-            if let Some(mut value) = context.get_mut(field_name) {
-                apply_coercion(&mut value, coercion);
+            if let Some(value) = context.get_mut(field_name) {
+                apply_coercion(value, coercion);
             }
         }
     }
@@ -100,8 +100,8 @@ fn apply_coercion(value: &mut Value, node: &CoercionNode) {
             for (name, node) in tree.root.iter() {
                 let fields = value.as_object_mut();
                 if let Some(fields) = fields {
-                    if let Some(mut value) = fields.get_mut(name) {
-                        apply_coercion(&mut value, node);
+                    if let Some(value) = fields.get_mut(name) {
+                        apply_coercion(value, node);
                     }
                 }
             }
