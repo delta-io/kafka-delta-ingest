@@ -987,16 +987,9 @@ enum RebalanceSignal {
 }
 
 /// Contains the partition to offset map for all partitions assigned to the consumer.
+#[derive(Default)]
 struct PartitionAssignment {
     assignment: HashMap<DataTypePartition, Option<DataTypeOffset>>,
-}
-
-impl Default for PartitionAssignment {
-    fn default() -> Self {
-        Self {
-            assignment: HashMap::new(),
-        }
-    }
 }
 
 impl PartitionAssignment {

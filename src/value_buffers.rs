@@ -3,19 +3,10 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 /// Provides a single interface into the multiple [`ValueBuffer`] instances used to buffer data for each assigned partition.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct ValueBuffers {
     buffers: HashMap<DataTypePartition, ValueBuffer>,
     len: usize,
-}
-
-impl Default for ValueBuffers {
-    fn default() -> Self {
-        Self {
-            buffers: HashMap::new(),
-            len: 0,
-        }
-    }
 }
 
 impl ValueBuffers {
