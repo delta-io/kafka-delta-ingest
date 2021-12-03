@@ -99,7 +99,7 @@ async fn test_delta_partitions() {
     tx.add_actions(result.iter().cloned().map(Action::add).collect());
     let version = tx.commit(None).await.unwrap();
 
-    deltalake::checkpoints::create_checkpoint_from_table(&table)
+    deltalake::checkpoints::create_checkpoint(&table)
         .await
         .unwrap();
 
