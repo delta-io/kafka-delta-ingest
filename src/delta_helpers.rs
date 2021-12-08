@@ -65,7 +65,7 @@ pub(crate) async fn try_create_checkpoint(
 
         let removed = deltalake::checkpoints::cleanup_metadata(table).await?;
         if removed > 0 {
-            log::info!("Metadata cleanup, removed {} obsolete logs.", version);
+            log::info!("Metadata cleanup, removed {} obsolete logs.", removed);
         }
 
         if version_updated {
