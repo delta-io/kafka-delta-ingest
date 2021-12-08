@@ -1,5 +1,9 @@
 //! Implementations supporting the kafka-delta-ingest daemon
 
+//! ## Feature flags
+//!
+//! - `dynamic-linking`: Use the `dynamic-linking` feature of the `rdkafka` crate and link to the system's version of librdkafka instead of letting the `rdkafka` crate builds its own librdkafka.
+
 #![deny(warnings)]
 #![deny(missing_docs)]
 
