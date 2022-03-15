@@ -42,7 +42,11 @@ RUST_LOG=debug cargo run ingest web_requests ./tests/data/web_requests \
   -o earliest
 ```
 
-To clean data from previous local runs, execute `./bin/clean-example-data.sh`. You'll need to do this if you destroy your Kafka container between runs since your delta log directory will be out of sync with Kafka offsets.
+Notes:
+* The AWS_* environment variables are for S3 and are required by the delta-rs library.
+** Above, AWS_ENDPOINT_URL points to localstack.
+* The Kafka broker is assumed to be at localhost:9092, use -k to override.
+* To clean data from previous local runs, execute `./bin/clean-example-data.sh`. You'll need to do this if you destroy your Kafka container between runs since your delta log directory will be out of sync with Kafka offsets.
 
 ==== Example Data
 
@@ -100,5 +104,3 @@ Make sure the docker-compose setup has been ran, and execute `cargo test` to run
 == Get Involved
 
 Join link:https://dbricks.co/delta-users-slack[#kafka-delta-ingest in the Delta Lake Slack workspace]
-
-
