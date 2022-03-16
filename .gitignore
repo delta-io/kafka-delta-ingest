@@ -1,3 +1,5 @@
 /target
 
 tests/json/*.json
+
+.idea
