@@ -27,6 +27,7 @@
 //! ```
 
 #![deny(warnings)]
+#![allow(deprecated)]
 #![deny(missing_docs)]
 
 #[macro_use]
@@ -131,7 +132,6 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
         )
     )
     .setting(AppSettings::SubcommandRequiredElseHelp)
-    .setting(AppSettings::DisableVersionForSubcommands)
     .get_matches();
 
     match matches.subcommand() {
