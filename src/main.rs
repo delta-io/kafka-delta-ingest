@@ -27,6 +27,7 @@
 //! ```
 
 #![deny(warnings)]
+#![allow(deprecated)]
 #![deny(missing_docs)]
 
 #[macro_use]
