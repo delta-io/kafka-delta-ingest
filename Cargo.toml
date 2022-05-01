@@ -35,7 +35,8 @@ uuid = { version = "0.8", features = ["serde", "v4"] }
 arrow  = "6"
 parquet = "6"
 
-deltalake = { git = "https://github.com/delta-io/delta-rs.git", rev = "cba4e3d316c56c65dc1cb660dc7e6d380ddd3a6b", features = ["s3"] }
+deltalake = { git = "https://github.com/delta-io/delta-rs.git", rev = "6ea048077b8d6bfcf987fa0fb125b1e59e0728a8", features = ["s3", "azure"] }
+dynamodb_lock = { git = "https://github.com/delta-io/delta-rs.git", rev = "6ea048077b8d6bfcf987fa0fb125b1e59e0728a8" }
 
 # sentry
 sentry = { version = "0.23.0", optional = true }
