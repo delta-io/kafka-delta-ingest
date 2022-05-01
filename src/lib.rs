@@ -53,7 +53,7 @@ use crate::{
 };
 use delta_helpers::*;
 use deltalake::checkpoints::CheckpointError;
-use deltalake::storage::s3::dynamodb_lock::DynamoError;
+use dynamodb_lock::DynamoError;
 use deltalake::storage::StorageError;
 use std::ops::Add;
 
