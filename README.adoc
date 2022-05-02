@@ -43,6 +43,7 @@ RUST_LOG=debug cargo run ingest web_requests ./tests/data/web_requests \
 ```
 
 Notes:
+
 * The AWS_* environment variables are for S3 and are required by the delta-rs library.
 ** Above, AWS_ENDPOINT_URL points to localstack.
 * The Kafka broker is assumed to be at localhost:9092, use -k to override.
@@ -79,6 +80,63 @@ NOTE: URLs sampled for the test data are sourced from Wikipedia's list of most p
 * List delta log files - `ls tests/data/web_requests/_delta_log`
 * Show some parquet data (using link:https://pypi.org/project/parquet-tools/[parquet-tools])
 ** `parquet-tools show tests/data/web_requests/date=2021-03-24/<some file written by your example>`
+
+=== Using Azure Event Hubs
+
+Azure Event Hubs (with pricing tier "Standard" or higher) has a Kafka Surface that can be used with kafka-delta-ingest.
+
+Azure Event Hubs doesn't have a local emulator, so an actual Azure Event Hubs resource is required. As a result, there's no need for the docker-compose application described above.
+
+More info:
+
+* https://docs.microsoft.com/en-us/azure/event-hubs/event-hubs-create
+* https://docs.microsoft.com/en-us/azure/event-hubs/apache-kafka-migration-guide
+
+Notes:
+
+* You must create an Event Hub in your Event Hubs Namespace. The Event Hub name is the Kafka Topic name.
+* Using WSL 2 on Windows is recommended (OpenSSL should work out of the box).
+
+==== Starting Worker Processes
+
+1. Compile: `cargo build`
+2. Run kafka-delta-ingest against the web_requests example topic and table (customize arguments as desired):
+
+```bash
+export AZURE_STORAGE_ACCOUNT_NAME={MY_ACCOUNT_NAME}
+export AZURE_STORAGE_ACCOUNT_KEY={MY_KEY}
+export AZURE_STORAGE_FILESYSTEM={MY_FILESYSTEM}
+export AZURE_STORAGE_DELTA_TABLE_PATH={MY_DELTA_TABLE_PATH}
+export TABLE_LOCATION=adls2://$AZURE_STORAGE_ACCOUNT_NAME/$AZURE_STORAGE_FILESYSTEM/$AZURE_STORAGE_DELTA_TABLE_PATH
+export AZURE_EVENT_HUBS_NAMESPACE_NAME={MY_NAMESPACE}
+export KAFKA_TOPIC={MY_TOPIC}
+export APP_ID={MY_APP_ID}
+
+RUST_LOG=debug cargo run ingest $KAFKA_TOPIC $TABLE_LOCATION \
+  --allowed_latency 60 \
+  --kafka $AZURE_EVENT_HUBS_NAMESPACE_NAME.servicebus.windows.net:9093 \
+  --Kafka 'security.protocol=SASL_SSL' \
+  --Kafka 'sasl.mechanism=PLAIN' \
+  --Kafka 'sasl.username=$ConnectionString' \
+  --Kafka 'sasl.password={MY_CONNECTION_STRING}' \
+  --app_id $APP_ID \
+  --transform 'date: substr(meta.producer.timestamp, `0`, `10`)' \
+              'meta.kafka.offset: kafka.offset' \
+              'meta.kafka.partition: kafka.partition' \
+              'meta.kafka.topic: kafka.topic' \
+  --auto_offset_reset earliest
+```
+Notes:
+
+* The AZURE_STORAGE_* environment variables are for Azure Data Lake Storage Gen2 and are required by the delta-rs library.
+** The AZURE_STORAGE_ACCOUNT_NAME environment variable should be just the account name, not the FQDN.
+** The AZURE_STORAGE_ACCOUNT_KEY environment variable should be just the key, not the connection string.
+* The AZURE_EVENT_HUBS_* environment variables are used in the cargo command.
+** The AZURE_EVENT_HUBS_NAMESPACE_NAME environment variable should be just the namespace name, not the FQDN.
+** The AZURE_EVENT_HUBS_CONNECTION_STRING environment variable should be the full connection string, not just the key.
+* The `username` in the `sasl.jaas.config` setting is the literal string `$ConnectionString` and not a placeholder.
+* The `sasl.jaas.config` value ends in a semicolon and is single quoted.
+* To clean data from previous local runs, execute `./bin/clean-example-data.sh`. You'll need to do this if you destroy your Kafka container between runs since your delta log directory will be out of sync with Kafka offsets.
 
 == Kafka SSL
 
