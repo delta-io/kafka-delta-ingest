@@ -49,6 +49,23 @@ Notes:
 * The Kafka broker is assumed to be at localhost:9092, use -k to override.
 * To clean data from previous local runs, execute `./bin/clean-example-data.sh`. You'll need to do this if you destroy your Kafka container between runs since your delta log directory will be out of sync with Kafka offsets.
 
+==== Kafka SSL
+
+In case you have Kafka topics secured by SSL client certificates, you can specify these secrets as environment variables.
+
+For the cert chain include the PEM content as an environment variable named `KAFKA_DELTA_INGEST_CERT`.
+For the cert private key include the PEM content as an environment variable named `KAFKA_DELTA_INGEST_KEY`.
+
+These will be set as the `ssl.certificate.pem` and `ssl.key.pem` Kafka settings respectively.
+
+Make sure to provide the additional option:
+
+```
+-K security.protocol=SSL
+```
+
+when invoking the cli command as well.
+
 ==== Example Data
 
 A tarball containing 100K line-delimited JSON messages is included in `tests/json/web_requests-100K.json.tar.gz`. Running `./bin/extract-example-json.sh` will unpack this to the expected location.
