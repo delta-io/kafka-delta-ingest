@@ -110,6 +110,7 @@ More info:
 * https://docs.microsoft.com/en-us/azure/event-hubs/apache-kafka-migration-guide
 * https://docs.microsoft.com/en-us/azure/event-hubs/apache-kafka-troubleshooting-guide
 * https://docs.microsoft.com/en-us/azure/event-hubs/apache-kafka-configurations#librdkafka-configuration-properties
+* https://github.com/Azure/azure-event-hubs-for-kafka/blob/master/CONFIGURATION.md#librdkafka-configuration-properties
 * https://github.com/edenhill/librdkafka/wiki/Using-SASL-with-librdkafka
 * https://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md
 * https://github.com/edenhill/librdkafka/issues/3109
