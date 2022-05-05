@@ -148,7 +148,7 @@ RUST_LOG=debug cargo run ingest web_requests $LOCAL_FS_TABLE_LOCATION \
   --Kafka 'metadata.max.age.ms=180000' \
   --Kafka 'heartbeat.interval.ms=3000' \
   --Kafka 'session.timeout.ms=30000' \
-  --Kafka 'debug=broker,security,protocol'
+  --Kafka 'debug=broker,security,protocol' \
   --app_id web_requests \
   --transform 'date: substr(meta.producer.timestamp, `0`, `10`)' \
               'meta.kafka.offset: kafka.offset' \
