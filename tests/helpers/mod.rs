@@ -1,7 +1,7 @@
 use chrono::Local;
 use deltalake::action::{Action, Add, MetaData, Protocol, Remove, Txn};
 use kafka_delta_ingest::{start_ingest, IngestOptions};
-use parquet::util::cursor::SliceableCursor;
+use parquet::file::serialized_reader::SliceableCursor;
 use parquet::{
     file::reader::{FileReader, SerializedFileReader},
     record::RowAccessor,
