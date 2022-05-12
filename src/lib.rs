@@ -53,8 +53,8 @@ use crate::{
 };
 use delta_helpers::*;
 use deltalake::checkpoints::CheckpointError;
-use dynamodb_lock::DynamoError;
 use deltalake::storage::StorageError;
+use dynamodb_lock::DynamoError;
 use std::ops::Add;
 
 /// Type alias for Kafka partition
