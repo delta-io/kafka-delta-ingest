@@ -1119,12 +1119,12 @@ fn kafka_client_config_from_options(opts: &IngestOptions) -> ClientConfig {
 async fn dead_letter_queue_from_options(
     opts: &IngestOptions,
 ) -> Result<Box<dyn DeadLetterQueue>, DeadLetterQueueError> {
-    Ok(dead_letters::dlq_from_opts(DeadLetterQueueOptions {
+    dead_letters::dlq_from_opts(DeadLetterQueueOptions {
         delta_table_uri: opts.dlq_table_uri.clone(),
         dead_letter_transforms: opts.dlq_transforms.clone(),
         write_checkpoints: opts.write_checkpoints,
     })
-    .await?)
+    .await
 }
 
 /// Creates a vec of partition numbers from a topic partition list.

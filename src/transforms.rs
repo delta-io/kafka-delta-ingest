@@ -309,10 +309,8 @@ fn set_value(object: &mut Map<String, Value>, path: &ValuePath, path_index: usiz
                 if path_index == path.len() - 1 {
                     // this is the leaf property - set value on the current object in context.
                     object.insert(property.to_string(), value);
-                } else if let Some(next_o) = object
-                    .get_mut(property)
-                    .map(|v| v.as_object_mut())
-                    .flatten()
+                } else if let Some(next_o) =
+                    object.get_mut(property).and_then(|v| v.as_object_mut())
                 {
                     // the next object already exists on the object. recurse.
                     set_value(next_o, path, path_index + 1, value);
