@@ -123,37 +123,38 @@ Notes:
 *** See: https://github.com/delta-io/delta-rs/blob/14a783e7e9af09914f667c7e1717b5e55aa73ede/rust/build.rs#L3-L15
 *** Ubuntu 18.04 uses GLIBC 2.27 (check with `ldd --version`)
 *** Ubuntu 20.04 uses GLIBC 2.31 (check with `ldd --version`)
+* Executing kafka-delta-ingest directly on WSL2/Ubuntu 20.04 isn't stable
+** A Dockerfile is provided to run kafka-delta-ingest on Windows
+*** Tested with Docker Desktop using the link:https://docs.docker.com/desktop/windows/wsl/[WSL2-based engine].
+
 
 ==== Starting Worker Processes
 
-1. Compile: `cargo build`
+1. Create Docker image: `docker build -t kafka-delta-ingest:v0.1.0 . -f Dockerfile.Debian`
 2. Run kafka-delta-ingest against the web_requests example topic and table (customize arguments as desired):
 
 ```bash
-export AZURE_STORAGE_ACCOUNT_NAME={MY_ACCOUNT_NAME}
-export AZURE_STORAGE_ACCOUNT_KEY={MY_KEY}
-export AZURE_STORAGE_FILESYSTEM={MY_FILESYSTEM}
-export AZURE_STORAGE_DELTA_TABLE_PATH={MY_DELTA_TABLE_PATH}
-export ADLS_GEN2_TABLE_LOCATION=adls2://$AZURE_STORAGE_ACCOUNT_NAME/$AZURE_STORAGE_FILESYSTEM/$AZURE_STORAGE_DELTA_TABLE_PATH
-export LOCAL_FS_TABLE_LOCATION=./tests/data/web_requests
-
-RUST_LOG=debug cargo run ingest web_requests $LOCAL_FS_TABLE_LOCATION \
+docker run -it --network=host \
+  -e SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+  -e AZURE_STORAGE_ACCOUNT_NAME={MY_STG_ACCOUNT_NAME} \
+  -e 'AZURE_STORAGE_ACCOUNT_KEY={MY_STG_ACCOUNT_KEY}' \
+  kafka-delta-ingest:v0.1.0 \
+  ingest web_requests adls2://{MY_STG_ACCOUNT_NAME}/{MY_FILESYSTEM}/web_requests \
   --allowed_latency 5 \
-  --kafka {MY_NAMESPACE_NAME}.servicebus.windows.net:9093 \
-  --Kafka 'security.protocol=SASL_SSL' \
-  --Kafka 'sasl.mechanism=PLAIN' \
+  --kafka {MY_EH_NAMESPACE_NAME}.servicebus.windows.net:9093 \
+  --Kafka security.protocol=SASL_SSL \
+  --Kafka sasl.mechanism=PLAIN \
   --Kafka 'sasl.username=$ConnectionString' \
-  --Kafka 'sasl.password=Endpoint=sb://{MY_NAMESPACE_NAME}.servicebus.windows.net/;SharedAccessKeyName={MY_KEY_NAME};SharedAccessKey={MY_KEY}' \
-  --Kafka 'socket.keepalive.enable=true' \
-  --Kafka 'metadata.max.age.ms=180000' \
-  --Kafka 'heartbeat.interval.ms=3000' \
-  --Kafka 'session.timeout.ms=30000' \
-  --Kafka 'debug=broker,security,protocol' \
+  --Kafka 'sasl.password=Endpoint=sb://{MY_EH_NAMESPACE_NAME}.servicebus.windows.net/;SharedAccessKeyName={MY_EH_KEY_NAME};SharedAccessKey={MY_EH_KEY}' \
+  --Kafka socket.keepalive.enable=true \
+  --Kafka metadata.max.age.ms=180000 \
+  --Kafka heartbeat.interval.ms=3000 \
+  --Kafka session.timeout.ms=30000 \
   --app_id web_requests \
   --transform 'date: substr(meta.producer.timestamp, `0`, `10`)' \
-              'meta.kafka.offset: kafka.offset' \
-              'meta.kafka.partition: kafka.partition' \
-              'meta.kafka.topic: kafka.topic' \
+  --transform 'meta.kafka.offset: kafka.offset' \
+  --transform 'meta.kafka.partition: kafka.partition' \
+  --transform 'meta.kafka.topic: kafka.topic' \
   --auto_offset_reset earliest
 ```
 
@@ -163,14 +164,12 @@ Notes:
 ** The AZURE_STORAGE_ACCOUNT_NAME environment variable should be just the account name, not the FQDN.
 ** The AZURE_STORAGE_ACCOUNT_KEY environment variable should be just the key, not the connection string.
 * In the cargo command:
-** Replace MY_NAMESPACE_NAME with just the namespace name, not the FQDN, of your Azure Event Hubs Namespace.
-** Replace MY_KEY_NAME and MY_KEY with suitable values from your Azure Event Hubs Namespace.
+** Replace {MY_EH_NAMESPACE_NAME} with just the namespace name, not the FQDN, of your Azure Event Hubs Namespace.
+** Replace {MY_EH_KEY_NAME} and {MY_EH_KEY} with suitable values from your Azure Event Hubs Namespace.
 ** The `sasl.username` is the literal string `$ConnectionString` and not a placeholder.
 ** The following `--Kafka` arguments are taken from link:https://docs.microsoft.com/en-us/azure/event-hubs/apache-kafka-configurations#librdkafka-configuration-properties[here]:
 *** `-X socket.keepalive.enable=true -X metadata.max.age.ms=180000 -X heartbeat.interval.ms=3000 -X session.timeout.ms=30000`
-** Remove `--Kafka 'debug=broker,security,protocol'` for a cleaner console output.
-** Replace $LOCAL_FS_TABLE_LOCATION with $ADLS_GEN2_TABLE_LOCATION to write to ADLS Gen2 (must prepare the file system to have the _delta_log directory and the first Delta transaction containing the schema).
-* To clean data from previous local runs, execute `./bin/clean-example-data.sh`. You'll need to do this if you destroy your Kafka container between runs since your delta log directory will be out of sync with Kafka offsets.
+* The Delta table must have the `_delta_log` directory and the first Delta transaction containing the schema.
 
 ==== Sending data to Event Hubs
 
