@@ -5,6 +5,7 @@ use chrono::DateTime;
 use serde_json::{json, Value};
 
 #[tokio::test]
+#[ignore]
 async fn coercions_tests() {
     let (topic, table, producer, kdi, token, rt) = helpers::create_and_run_kdi(
         "coercions",
