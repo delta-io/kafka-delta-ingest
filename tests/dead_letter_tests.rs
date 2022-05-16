@@ -25,6 +25,7 @@ struct TestMsg {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_dlq() {
     helpers::init_logger();
 

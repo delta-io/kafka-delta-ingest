@@ -29,6 +29,7 @@ const TOTAL_MESSAGES_RECEIVED: usize = TOTAL_MESSAGES_SENT - 60;
 const FEEDS: usize = 3;
 
 #[tokio::test(flavor = "multi_thread")]
+#[ignore]
 async fn feed_load_test() {
     helpers::init_logger();
 
