@@ -333,9 +333,22 @@ pub async fn start_ingest(
     let mut last_buffer_lag_report: Option<Instant> = None;
 
     // The run loop
-    while let Some(message) = consumer.stream().next().await {
+    loop {
+        // Determine whether the latency timer has already elapsed and this iteration will flush 
+        // -- or -- 
+        // Set a timeout on consume so we can flush if allowed latency expires before the next message
+        let elapsed_secs = ingest_processor.latency_timer.elapsed().as_secs();
+
+        let consume_result = if elapsed_secs >= ingest_processor.opts.allowed_latency {
+            Ok(consumer.stream().next().await)
+        } else {
+            let remaining_secs = ingest_processor.opts.allowed_latency - elapsed_secs;
+            let timeout_secs = std::time::Duration::from_secs(remaining_secs);
+            tokio::time::timeout(timeout_secs, consumer.stream().next()).await
+        };
+
         // Check for rebalance signal - skip the message if there is one.
-        // After seek - we will re-consume the message and see it again.
+        // After seek - Some worker will re-consume the message and see it again.
         // See also `handle_rebalance` function.
         if let Err(e) = handle_rebalance(
             rebalance_signal.clone(),
@@ -352,15 +365,30 @@ pub async fn start_ingest(
             }
         }
 
-        // Process the message if there wasn't a rebalance signal
-        let message = message?;
-        if let Err(e) = ingest_processor.process_message(message).await {
-            match e {
-                IngestError::AlreadyProcessedPartitionOffset { partition, offset } => {
-                    debug!("Skipping message with partition {}, offset {} on topic {} because it was already processed", partition, offset, topic);
-                    continue;
+        // If the consume result includes a message - process as usual.
+        // If latency timer expired instead - there's no message to process, but we need to run all
+        // of our flush checks.
+        match consume_result {
+            Ok(Some(message)) => {
+                // Process the message if there wasn't a rebalance signal
+                let message = message?;
+                if let Err(e) = ingest_processor.process_message(message).await {
+                    match e {
+                        IngestError::AlreadyProcessedPartitionOffset { partition, offset } => {
+                            debug!("Skipping message with partition {}, offset {} on topic {} because it was already processed", partition, offset, topic);
+                            continue;
+                        }
+                        _ => return Err(e),
+                    }
                 }
-                _ => return Err(e),
+            }
+            Err(_) => {
+                log::info!("Latency timer expired.");
+            }
+            // Never seen this case actually happen.
+            Ok(None) => {
+                log::warn!("Message consumed is `None`");
+                return Ok(());
             }
         }
 
@@ -417,8 +445,6 @@ pub async fn start_ingest(
             return Ok(());
         }
     }
-
-    Ok(())
 }
 
 /// Handles a [`RebalanceSignal`] if one exists.
