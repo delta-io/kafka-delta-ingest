@@ -30,7 +30,7 @@ use rdkafka::{
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
@@ -340,10 +340,10 @@ pub async fn start_ingest(
         let elapsed_secs = ingest_processor.latency_timer.elapsed().as_secs();
 
         let consume_result = if elapsed_secs >= ingest_processor.opts.allowed_latency {
-            Ok(consumer.stream().next().await)
+            tokio::time::timeout(Duration::from_secs(0), consumer.stream().next()).await
         } else {
             let remaining_secs = ingest_processor.opts.allowed_latency - elapsed_secs;
-            let timeout_secs = std::time::Duration::from_secs(remaining_secs);
+            let timeout_secs = Duration::from_secs(remaining_secs);
             tokio::time::timeout(timeout_secs, consumer.stream().next()).await
         };
 
