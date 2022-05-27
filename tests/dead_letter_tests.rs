@@ -87,7 +87,7 @@ async fn test_dlq() {
 
     info!("Waiting for version 1 of dlq table");
     helpers::wait_until_version_created(&dlq_table, 1);
-    info!("Waiting for version 2 of data table");
+    info!("Waiting for version 1 of data table");
     helpers::wait_until_version_created(&table, 1);
 
     // 1 message with bad bytes

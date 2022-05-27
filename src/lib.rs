@@ -332,20 +332,13 @@ pub async fn start_ingest(
     // Initialize a timer for reporting buffer lag periodically
     let mut last_buffer_lag_report: Option<Instant> = None;
 
+    let mut consumed = 0u64;
+
     // The run loop
     loop {
-        // Determine whether the latency timer has already elapsed and this iteration will flush 
-        // -- or -- 
-        // Set a timeout on consume so we can flush if allowed latency expires before the next message
-        let elapsed_secs = ingest_processor.latency_timer.elapsed().as_secs();
-
-        let consume_result = if elapsed_secs >= ingest_processor.opts.allowed_latency {
-            tokio::time::timeout(Duration::from_secs(0), consumer.stream().next()).await
-        } else {
-            let remaining_secs = ingest_processor.opts.allowed_latency - elapsed_secs;
-            let timeout_secs = Duration::from_secs(remaining_secs);
-            tokio::time::timeout(timeout_secs, consumer.stream().next()).await
-        };
+        // Consume the next message from the stream.
+        // Timeout if the next message is not received before the next flush interval.
+        let consume_result = tokio::time::timeout(ingest_processor.consume_timeout_duration(), consumer.stream().next()).await;
 
         // Check for rebalance signal - skip the message if there is one.
         // After seek - Some worker will re-consume the message and see it again.
@@ -365,11 +358,21 @@ pub async fn start_ingest(
             }
         }
 
+        let mut latency_timer_expired = false;
+
         // If the consume result includes a message - process as usual.
         // If latency timer expired instead - there's no message to process, but we need to run all
         // of our flush checks.
         match consume_result {
             Ok(Some(message)) => {
+                // Startup takes a few minutes, so we set the latency timer
+                // after receiving the first message
+                if consumed == 0 {
+                    ingest_processor.latency_timer = Instant::now();
+                }
+
+                consumed += 1;
+
                 // Process the message if there wasn't a rebalance signal
                 let message = message?;
                 if let Err(e) = ingest_processor.process_message(message).await {
@@ -384,6 +387,7 @@ pub async fn start_ingest(
             }
             Err(_) => {
                 log::info!("Latency timer expired.");
+                latency_timer_expired = true;
             }
             // Never seen this case actually happen.
             Ok(None) => {
@@ -438,6 +442,10 @@ pub async fn start_ingest(
                 }
             }
             ingest_metrics.delta_write_completed(&timer);
+        }
+
+        if latency_timer_expired {
+            ingest_processor.latency_timer = Instant::now();
         }
 
         // Exit if the cancellation token is set.
@@ -619,6 +627,19 @@ impl IngestProcessor {
             opts,
             ingest_metrics,
         })
+    }
+
+    /// Returns the timeout duration to wait for the next message.
+    fn consume_timeout_duration(&self) -> Duration {
+        let elapsed_secs = self.latency_timer.elapsed().as_secs();
+
+        let timeout_secs = if elapsed_secs >= self.opts.allowed_latency {
+            0
+        } else {
+            self.opts.allowed_latency - elapsed_secs
+        };
+
+        Duration::from_secs(timeout_secs)
     }
 
     /// If `opts.seek_offsets` is set then it calls the `offsets::write_offsets_to_delta` function.
@@ -941,8 +962,9 @@ impl IngestProcessor {
     fn should_complete_record_batch(&self) -> bool {
         let elapsed_millis = self.latency_timer.elapsed().as_millis();
 
-        let should = self.value_buffers.len() == self.opts.max_messages_per_batch
-            || elapsed_millis >= (self.opts.allowed_latency * 1000) as u128;
+        let should = self.value_buffers.len() > 0 &&
+            (self.value_buffers.len() == self.opts.max_messages_per_batch || 
+             elapsed_millis >= (self.opts.allowed_latency * 1000) as u128);
 
         debug!(
             "Should complete record batch - latency test: {} >= {}",
@@ -962,8 +984,9 @@ impl IngestProcessor {
     fn should_complete_file(&self) -> bool {
         let elapsed_secs = self.latency_timer.elapsed().as_secs();
 
-        let should = self.delta_writer.buffer_len() >= self.opts.min_bytes_per_file
-            || elapsed_secs >= self.opts.allowed_latency;
+        let should = self.delta_writer.buffer_len() > 0 && 
+            (self.delta_writer.buffer_len() >= self.opts.min_bytes_per_file || 
+             elapsed_secs >= self.opts.allowed_latency);
 
         debug!(
             "Should complete file - latency test: {} >= {}",
