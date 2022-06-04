@@ -5,11 +5,13 @@ use deltalake;
 use log::info;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use serial_test::serial;
 use tokio::time::{sleep, Duration};
 
 use kafka_delta_ingest::IngestOptions;
 
 #[tokio::test]
+#[serial]
 async fn test_flush_when_latency_expires() {
     let (topic, table, producer, kdi, token, rt) = helpers::create_and_run_kdi(
         "flush_when_latency_expires",
@@ -60,6 +62,7 @@ async fn test_flush_when_latency_expires() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_dont_write_an_empty_buffer() {
     let (topic, table, producer, kdi, token, rt) = helpers::create_and_run_kdi(
         "dont_write_an_empty_buffer",
@@ -103,6 +106,7 @@ async fn test_dont_write_an_empty_buffer() {
 }
 
 #[tokio::test]
+#[serial]
 async fn test_flush_on_size_without_latency_expiration() {
     let (topic, table, producer, kdi, token, rt) = helpers::create_and_run_kdi(
         "flush_on_size_without_latency_expiration",
