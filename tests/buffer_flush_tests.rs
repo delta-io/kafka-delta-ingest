@@ -12,24 +12,25 @@ use kafka_delta_ingest::IngestOptions;
 #[tokio::test]
 async fn test_flush_when_latency_expires() {
     let (topic, table, producer, kdi, token, rt) = helpers::create_and_run_kdi(
-            "flush_when_latency_expires",
-            json!({
-                "id": "integer",
-                "date": "string",
-            }),
-            vec!["date"],
-            1,
-            Some(IngestOptions {
-                app_id: "flush_when_latency_expires".to_string(),
-                // buffer for 5 seconds before flush
-                allowed_latency: 5,
-                // large value - avoid flushing on num messages
-                max_messages_per_batch: 5000,
-                // large value - avoid flushing on file size
-                min_bytes_per_file: 1000000,
-                ..Default::default()
-            })
-        ).await;
+        "flush_when_latency_expires",
+        json!({
+            "id": "integer",
+            "date": "string",
+        }),
+        vec!["date"],
+        1,
+        Some(IngestOptions {
+            app_id: "flush_when_latency_expires".to_string(),
+            // buffer for 5 seconds before flush
+            allowed_latency: 5,
+            // large value - avoid flushing on num messages
+            max_messages_per_batch: 5000,
+            // large value - avoid flushing on file size
+            min_bytes_per_file: 1000000,
+            ..Default::default()
+        }),
+    )
+    .await;
 
     for m in create_generator(1).take(10) {
         info!("Writing test message");
@@ -61,20 +62,21 @@ async fn test_flush_when_latency_expires() {
 #[tokio::test]
 async fn test_dont_write_an_empty_buffer() {
     let (topic, table, producer, kdi, token, rt) = helpers::create_and_run_kdi(
-            "dont_write_an_empty_buffer",
-            json!({
-                "id": "integer",
-                "date": "string",
-            }),
-            vec!["date"],
-            1,
-            Some(IngestOptions {
-                app_id: "dont_write_an_empty_buffer".to_string(),
-                // buffer for 5 seconds before flush
-                allowed_latency: 5,
-                ..Default::default()
-            })
-        ).await;
+        "dont_write_an_empty_buffer",
+        json!({
+            "id": "integer",
+            "date": "string",
+        }),
+        vec!["date"],
+        1,
+        Some(IngestOptions {
+            app_id: "dont_write_an_empty_buffer".to_string(),
+            // buffer for 5 seconds before flush
+            allowed_latency: 5,
+            ..Default::default()
+        }),
+    )
+    .await;
     // write one version so we can make sure the stream is up and running.
 
     for m in create_generator(1).take(10) {
@@ -90,7 +92,7 @@ async fn test_dont_write_an_empty_buffer() {
 
     // verify that an empty version _was not_ created.
     // i.e. we should still be at version 1
-    
+
     let t = deltalake::open_table(&table).await.unwrap();
 
     assert_eq!(1, t.version);
@@ -103,24 +105,25 @@ async fn test_dont_write_an_empty_buffer() {
 #[tokio::test]
 async fn test_flush_on_size_without_latency_expiration() {
     let (topic, table, producer, kdi, token, rt) = helpers::create_and_run_kdi(
-            "flush_on_size_without_latency_expiration",
-            json!({
-                "id": "integer",
-                "date": "string",
-            }),
-            vec!["date"],
-            1,
-            Some(IngestOptions {
-                app_id: "flush_on_size_without_latency_expiration".to_string(),
-                // buffer for an hour
-                allowed_latency: 3600,
-                // create a record batch when we have 10 messages
-                max_messages_per_batch: 10,
-                // tiny buffer size for write flush
-                min_bytes_per_file: 20,
-                ..Default::default()
-            })
-        ).await;
+        "flush_on_size_without_latency_expiration",
+        json!({
+            "id": "integer",
+            "date": "string",
+        }),
+        vec!["date"],
+        1,
+        Some(IngestOptions {
+            app_id: "flush_on_size_without_latency_expiration".to_string(),
+            // buffer for an hour
+            allowed_latency: 3600,
+            // create a record batch when we have 10 messages
+            max_messages_per_batch: 10,
+            // tiny buffer size for write flush
+            min_bytes_per_file: 20,
+            ..Default::default()
+        }),
+    )
+    .await;
 
     for m in create_generator(1).take(10) {
         info!("Writing test message");
@@ -147,6 +150,6 @@ struct TestMsg {
 fn create_generator(staring_id: u64) -> impl Iterator<Item = TestMsg> {
     std::iter::successors(Some(staring_id), |n| Some(*n + 1)).map(|n| TestMsg {
         id: n,
-        date: "2022-06-03".to_string()
+        date: "2022-06-03".to_string(),
     })
 }

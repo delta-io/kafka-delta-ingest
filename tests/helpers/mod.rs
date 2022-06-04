@@ -338,7 +338,10 @@ pub async fn read_table_content_as<T: DeserializeOwned>(table_uri: &str) -> Vec<
         .collect()
 }
 
-pub async fn read_table_content_at_version_as<T: DeserializeOwned>(table_uri: &str, version: DeltaDataTypeVersion) -> Vec<T> {
+pub async fn read_table_content_at_version_as<T: DeserializeOwned>(
+    table_uri: &str,
+    version: DeltaDataTypeVersion,
+) -> Vec<T> {
     read_table_content_at_version_as_jsons(table_uri, version)
         .await
         .iter()
@@ -353,14 +356,22 @@ pub async fn read_table_content_as_jsons(table_uri: &str) -> Vec<Value> {
     json_listify_table_content(table, backend).await
 }
 
-pub async fn read_table_content_at_version_as_jsons(table_uri: &str, version: DeltaDataTypeVersion) -> Vec<Value> {
-    let table = deltalake::open_table_with_version(table_uri, version).await.unwrap();
+pub async fn read_table_content_at_version_as_jsons(
+    table_uri: &str,
+    version: DeltaDataTypeVersion,
+) -> Vec<Value> {
+    let table = deltalake::open_table_with_version(table_uri, version)
+        .await
+        .unwrap();
     let backend = deltalake::get_backend_for_uri(&table_uri).unwrap();
 
     json_listify_table_content(table, backend).await
 }
 
-async fn json_listify_table_content(table: DeltaTable, backend: Box<dyn StorageBackend>) -> Vec<Value> {
+async fn json_listify_table_content(
+    table: DeltaTable,
+    backend: Box<dyn StorageBackend>,
+) -> Vec<Value> {
     let tmp = format!(".test-{}.tmp", Uuid::new_v4());
     let mut list = Vec::new();
     for file in table.get_file_uris() {
