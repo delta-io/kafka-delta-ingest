@@ -332,6 +332,7 @@ pub async fn start_ingest(
     // Initialize a timer for reporting buffer lag periodically
     let mut last_buffer_lag_report: Option<Instant> = None;
 
+    // Counter for how many messages have been consumed since startup.
     let mut consumed = 0u64;
 
     // The run loop
@@ -358,19 +359,22 @@ pub async fn start_ingest(
             }
         }
 
+        // Initialize a flag which indicates whether the latency
+        // timer has expired in this iteration of the run loop.
         let mut latency_timer_expired = false;
 
-        // If the consume result includes a message - process as usual.
-        // If latency timer expired instead - there's no message to process, but we need to run all
-        // of our flush checks.
+        // If the consume result includes a message, process it.
+        // If latency timer expired instead - there's no message to process, 
+        // but we need to run flush checks.
         match consume_result {
             Ok(Some(message)) => {
-                // Startup takes a few minutes, so we set the latency timer
-                // after receiving the first message
+                // Startup can take significant time,
+                // so re-initialize the latency timer after consuming the first message.
                 if consumed == 0 {
                     ingest_processor.latency_timer = Instant::now();
                 }
 
+                // Increment the consumed message counter.
                 consumed += 1;
 
                 // Process the message if there wasn't a rebalance signal
@@ -387,6 +391,8 @@ pub async fn start_ingest(
             }
             Err(_) => {
                 log::info!("Latency timer expired.");
+                // Set the latency timer expired flag to indicate that
+                // that the latency timer should be reset after flush checks.
                 latency_timer_expired = true;
             }
             // Never seen this case actually happen.
@@ -444,6 +450,9 @@ pub async fn start_ingest(
             ingest_metrics.delta_write_completed(&timer);
         }
 
+        // If the latency timer expired on this iteration,
+        // Reset it to now so we don't run flush checks again 
+        // until the next appropriate interval.
         if latency_timer_expired {
             ingest_processor.latency_timer = Instant::now();
         }
@@ -1204,3 +1213,4 @@ where
         })
         .collect()
 }
+
