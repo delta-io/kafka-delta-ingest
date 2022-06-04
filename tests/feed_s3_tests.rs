@@ -235,4 +235,3 @@ async fn wait_until_all_messages_received(table: &str) {
         );
     }
 }
-
