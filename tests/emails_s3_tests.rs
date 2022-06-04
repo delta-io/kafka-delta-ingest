@@ -70,15 +70,6 @@ async fn run_emails_s3_tests(initiate_rebalance: bool) {
         w
     };
 
-    // once we send our expected messages, it's time to send dummy ones so the run_loop will pick
-    // up the cancellation token state change. It's started on dedicated thread with `is_running`
-    // mutex to dictate when exactly to stop it
-    let dummy_messages_token = Arc::new(CancellationToken::new());
-    let dummy_messages_handle = {
-        let f = send_messages_until_stopped(scope.topic.clone(), dummy_messages_token.clone());
-        tokio::spawn(async move { f.await })
-    };
-
     // this will end up with more app_ids than actual,
     // since we're not sure which partitions will get each worker
     let partitions = create_partitions_app_ids(TEST_PARTITIONS);
@@ -96,10 +87,6 @@ async fn run_emails_s3_tests(initiate_rebalance: bool) {
 
     let w2_result = w2.await;
     println!("Worker 2 finished - {:?}", w2_result);
-
-    // it's safe now to stop sending dummy messages
-    dummy_messages_token.cancel();
-    dummy_messages_handle.await.unwrap();
 
     scope.validate_data().await;
     scope.shutdown();
@@ -261,20 +248,6 @@ async fn prepare_table(topic: &str) -> String {
     .unwrap();
 
     format!("s3://{}/{}", TEST_S3_BUCKET, topic)
-}
-
-async fn send_messages_until_stopped(topic: String, token: Arc<CancellationToken>) {
-    let producer = helpers::create_producer();
-    println!("Sending dummy messages to trigger workers shutdown...");
-
-    loop {
-        if token.is_cancelled() {
-            println!("Sending dummy messages is stopped...");
-            return;
-        }
-        helpers::send_json(&producer, &topic, &json!({})).await;
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
 }
 
 fn create_partitions_app_ids(num_p: i32) -> Vec<String> {
