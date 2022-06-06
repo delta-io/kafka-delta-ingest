@@ -72,7 +72,6 @@ async fn feed_load_test() {
     let mut feed_b_ids = f_b.await.unwrap();
     let mut feed_c_ids = f_c.await.unwrap();
 
-    let (msg_handle, msg_token) = run_empty_messages(producer.clone(), &topic);
     wait_until_all_messages_received(&table).await;
     workers.iter().for_each(|w| w.1.cancel());
 
@@ -81,8 +80,6 @@ async fn feed_load_test() {
         kdi.await.unwrap();
         rt.shutdown_background();
     }
-    msg_token.cancel();
-    msg_handle.await.unwrap();
 
     println!("verifying results...");
 
@@ -237,25 +234,4 @@ async fn wait_until_all_messages_received(table: &str) {
             values, TOTAL_MESSAGES_RECEIVED
         );
     }
-}
-
-fn run_empty_messages(
-    producer: Arc<FutureProducer>,
-    topic: &str,
-) -> (JoinHandle<()>, Arc<CancellationToken>) {
-    let token = Arc::new(CancellationToken::new());
-    let producer = producer.clone();
-    let cloned_token = token.clone();
-    let topic = topic.to_string();
-    let handle = tokio::spawn(async move {
-        let topic = topic;
-        loop {
-            if cloned_token.is_cancelled() {
-                return;
-            }
-            helpers::send_json(&producer, &topic, &json!("{}")).await;
-            tokio::time::sleep(Duration::from_millis(1000)).await;
-        }
-    });
-    (handle, token)
 }

@@ -73,7 +73,7 @@ impl Playground {
         helpers::create_topic(&topic, 1).await;
 
         let ingest_options = IngestOptions {
-            app_id: "schema_update".to_string(),
+            app_id: "playground".to_string(),
             allowed_latency: 5,
             max_messages_per_batch: MAX_MESSAGES_PER_BATCH,
             min_bytes_per_file: 20,

@@ -30,7 +30,7 @@ use rdkafka::{
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
@@ -332,10 +332,21 @@ pub async fn start_ingest(
     // Initialize a timer for reporting buffer lag periodically
     let mut last_buffer_lag_report: Option<Instant> = None;
 
+    // Counter for how many messages have been consumed since startup.
+    let mut consumed = 0u64;
+
     // The run loop
-    while let Some(message) = consumer.stream().next().await {
+    loop {
+        // Consume the next message from the stream.
+        // Timeout if the next message is not received before the next flush interval.
+        let consume_result = tokio::time::timeout(
+            ingest_processor.consume_timeout_duration(),
+            consumer.stream().next(),
+        )
+        .await;
+
         // Check for rebalance signal - skip the message if there is one.
-        // After seek - we will re-consume the message and see it again.
+        // After seek - Some worker will re-consume the message and see it again.
         // See also `handle_rebalance` function.
         if let Err(e) = handle_rebalance(
             rebalance_signal.clone(),
@@ -352,15 +363,46 @@ pub async fn start_ingest(
             }
         }
 
-        // Process the message if there wasn't a rebalance signal
-        let message = message?;
-        if let Err(e) = ingest_processor.process_message(message).await {
-            match e {
-                IngestError::AlreadyProcessedPartitionOffset { partition, offset } => {
-                    debug!("Skipping message with partition {}, offset {} on topic {} because it was already processed", partition, offset, topic);
-                    continue;
+        // Initialize a flag which indicates whether the latency
+        // timer has expired in this iteration of the run loop.
+        let mut latency_timer_expired = false;
+
+        // If the consume result includes a message, process it.
+        // If latency timer expired instead - there's no message to process,
+        // but we need to run flush checks.
+        match consume_result {
+            Ok(Some(message)) => {
+                // Startup can take significant time,
+                // so re-initialize the latency timer after consuming the first message.
+                if consumed == 0 {
+                    ingest_processor.latency_timer = Instant::now();
                 }
-                _ => return Err(e),
+
+                // Increment the consumed message counter.
+                consumed += 1;
+
+                // Process the message if there wasn't a rebalance signal
+                let message = message?;
+                if let Err(e) = ingest_processor.process_message(message).await {
+                    match e {
+                        IngestError::AlreadyProcessedPartitionOffset { partition, offset } => {
+                            debug!("Skipping message with partition {}, offset {} on topic {} because it was already processed", partition, offset, topic);
+                            continue;
+                        }
+                        _ => return Err(e),
+                    }
+                }
+            }
+            Err(_) => {
+                log::info!("Latency timer expired.");
+                // Set the latency timer expired flag to indicate that
+                // that the latency timer should be reset after flush checks.
+                latency_timer_expired = true;
+            }
+            // Never seen this case actually happen.
+            Ok(None) => {
+                log::warn!("Message consumed is `None`");
+                return Ok(());
             }
         }
 
@@ -412,13 +454,18 @@ pub async fn start_ingest(
             ingest_metrics.delta_write_completed(&timer);
         }
 
+        // If the latency timer expired on this iteration,
+        // Reset it to now so we don't run flush checks again
+        // until the next appropriate interval.
+        if latency_timer_expired {
+            ingest_processor.latency_timer = Instant::now();
+        }
+
         // Exit if the cancellation token is set.
         if cancellation_token.is_cancelled() {
             return Ok(());
         }
     }
-
-    Ok(())
 }
 
 /// Handles a [`RebalanceSignal`] if one exists.
@@ -593,6 +640,19 @@ impl IngestProcessor {
             opts,
             ingest_metrics,
         })
+    }
+
+    /// Returns the timeout duration to wait for the next message.
+    fn consume_timeout_duration(&self) -> Duration {
+        let elapsed_secs = self.latency_timer.elapsed().as_secs();
+
+        let timeout_secs = if elapsed_secs >= self.opts.allowed_latency {
+            0
+        } else {
+            self.opts.allowed_latency - elapsed_secs
+        };
+
+        Duration::from_secs(timeout_secs)
     }
 
     /// If `opts.seek_offsets` is set then it calls the `offsets::write_offsets_to_delta` function.
@@ -915,8 +975,9 @@ impl IngestProcessor {
     fn should_complete_record_batch(&self) -> bool {
         let elapsed_millis = self.latency_timer.elapsed().as_millis();
 
-        let should = self.value_buffers.len() == self.opts.max_messages_per_batch
-            || elapsed_millis >= (self.opts.allowed_latency * 1000) as u128;
+        let should = self.value_buffers.len() > 0
+            && (self.value_buffers.len() == self.opts.max_messages_per_batch
+                || elapsed_millis >= (self.opts.allowed_latency * 1000) as u128);
 
         debug!(
             "Should complete record batch - latency test: {} >= {}",
@@ -936,8 +997,9 @@ impl IngestProcessor {
     fn should_complete_file(&self) -> bool {
         let elapsed_secs = self.latency_timer.elapsed().as_secs();
 
-        let should = self.delta_writer.buffer_len() >= self.opts.min_bytes_per_file
-            || elapsed_secs >= self.opts.allowed_latency;
+        let should = self.delta_writer.buffer_len() > 0
+            && (self.delta_writer.buffer_len() >= self.opts.min_bytes_per_file
+                || elapsed_secs >= self.opts.allowed_latency);
 
         debug!(
             "Should complete file - latency test: {} >= {}",
