@@ -1157,6 +1157,20 @@ fn kafka_client_config_from_options(opts: &IngestOptions) -> ClientConfig {
     if let Ok(key_pem) = std::env::var("KAFKA_DELTA_INGEST_KEY") {
         kafka_client_config.set("ssl.key.pem", key_pem);
     }
+    if let Ok(scram_json) = std::env::var("KAFKA_DELTA_INGEST_SCRAM_JSON") {
+        let value: Value = serde_json::from_str(scram_json.as_str())
+            .expect("KAFKA_DELTA_INGEST_SCRAM_JSON should be valid JSON");
+
+        let username = value["username"]
+            .as_str()
+            .expect("'username' must be present in KAFKA_DELTA_INGEST_SCRAM_JSON");
+        let password = value["password"]
+            .as_str()
+            .expect("'password' must be present in KAFKA_DELTA_INGEST_SCRAM_JSON");
+
+        kafka_client_config.set("sasl.username", username);
+        kafka_client_config.set("sasl.password", password);
+    }
 
     let auto_offset_reset = match opts.auto_offset_reset {
         AutoOffsetReset::Earliest => "earliest",
