@@ -394,7 +394,7 @@ pub async fn start_ingest(
                 }
             }
             Err(_) => {
-                log::info!("Latency timer expired.");
+                log::debug!("Latency timer expired.");
                 // Set the latency timer expired flag to indicate that
                 // that the latency timer should be reset after flush checks.
                 latency_timer_expired = true;
