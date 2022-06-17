@@ -1106,7 +1106,7 @@ impl ConsumerContext for KafkaContext {
     fn pre_rebalance(&self, rebalance: &Rebalance) {
         let rebalance_signal = self.rebalance_signal.clone();
         match rebalance {
-            Rebalance::Revoke => {
+            Rebalance::Revoke(_) => {
                 info!("PRE_REBALANCE - Revoke");
                 let _ = tokio::spawn(async move {
                     rebalance_signal
@@ -1127,7 +1127,7 @@ impl ConsumerContext for KafkaContext {
     fn post_rebalance(&self, rebalance: &Rebalance) {
         let rebalance_signal = self.rebalance_signal.clone();
         match rebalance {
-            Rebalance::Revoke => {
+            Rebalance::Revoke(_) => {
                 debug!("POST_REBALANCE - Revoke");
             }
             Rebalance::Assign(tpl) => {
