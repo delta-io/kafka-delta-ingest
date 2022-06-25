@@ -20,6 +20,7 @@ use std::io::prelude::*;
 use std::io::{BufReader, Cursor};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -27,6 +28,8 @@ use uuid::Uuid;
 
 pub const TEST_BROKER: &str = "0.0.0.0:9092";
 pub const LOCALSTACK_ENDPOINT: &str = "http://0.0.0.0:4566";
+
+const TEST_TIMEOUT_SECONDS: i64 = 60;
 
 pub async fn create_topic(topic: &str, num_partitions: i32) {
     let admin_client: AdminClient<_> = ClientConfig::new()
@@ -65,7 +68,10 @@ pub async fn send_json(producer: &FutureProducer, topic: &str, json: &Value) -> 
     let json = serde_json::to_string(json).unwrap();
 
     let record: FutureRecord<String, String> = FutureRecord::to(topic).payload(&json);
-    producer.send(record, Timeout::Never).await.unwrap()
+    producer
+        .send(record, producer_send_timeout())
+        .await
+        .unwrap()
 }
 
 pub async fn send_kv_json(
@@ -77,12 +83,15 @@ pub async fn send_kv_json(
     let json = serde_json::to_string(json).unwrap();
 
     let record: FutureRecord<String, String> = FutureRecord::to(topic).payload(&json).key(&key);
-    producer.send(record, Timeout::Never).await.unwrap()
+    producer
+        .send(record, producer_send_timeout())
+        .await
+        .unwrap()
 }
 
 pub async fn send_bytes(producer: &FutureProducer, topic: &str, bytes: &Vec<u8>) {
     let record: FutureRecord<String, Vec<u8>> = FutureRecord::to(topic).payload(&bytes);
-    let _ = producer.send(record, Timeout::Never).await;
+    let _ = producer.send(record, producer_send_timeout()).await;
 }
 
 // Example parquet read is taken from https://docs.rs/parquet/4.1.0/parquet/arrow/index.html#example-of-reading-parquet-file-into-arrow-record-batch
@@ -309,25 +318,36 @@ pub fn init_logger() {
         .try_init();
 }
 
+pub fn wait_until_version_created(table: &str, version: i64) {
+    let path = format!("{}/_delta_log/{:020}.json", table, version);
+    wait_until_file_created(Path::new(&path));
+}
+
 pub fn wait_until_file_created(path: &Path) {
+    wait_on_predicate(&mut || path.exists());
+}
+
+pub fn wait_on_predicate<F>(predicate: &mut F)
+where
+    F: FnMut() -> bool,
+{
     let start_time = Local::now();
+
     loop {
-        if path.exists() {
+        let done = predicate();
+
+        if done {
             return;
         }
 
         let now = Local::now();
         let poll_time = now - start_time;
-
-        if poll_time > chrono::Duration::seconds(180) {
-            panic!("File was not created before timeout");
+        if poll_time > chrono::Duration::seconds(TEST_TIMEOUT_SECONDS) {
+            panic!("Predicate was not completed before timeout");
         }
-    }
-}
 
-pub fn wait_until_version_created(table: &str, version: i64) {
-    let path = format!("{}/_delta_log/{:020}.json", table, version);
-    wait_until_file_created(Path::new(&path));
+        std::thread::sleep(Duration::from_secs(1));
+    }
 }
 
 pub async fn read_table_content_as<T: DeserializeOwned>(table_uri: &str) -> Vec<T> {
@@ -482,4 +502,8 @@ fn parse_json_field<T: DeserializeOwned>(value: &Value, key: &str) -> Option<T> 
         .as_object()
         .and_then(|v| v.get(key))
         .and_then(|v| serde_json::from_value::<T>(v.clone()).ok())
+}
+
+fn producer_send_timeout() -> Timeout {
+    Timeout::After(Duration::from_secs(5))
 }

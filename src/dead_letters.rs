@@ -1,9 +1,7 @@
-use crate::transforms::Transformer;
 use async_trait::async_trait;
 use chrono::prelude::*;
 use core::fmt::Debug;
-use deltalake::{dynamo_lock_options, DeltaTable, DeltaTableError};
-use log::{error, info, warn};
+use deltalake::{dynamo_lock_options, DeltaTable};
 use maplit::hashmap;
 use parquet::errors::ParquetError;
 use rdkafka::message::BorrowedMessage;
@@ -11,13 +9,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::{transforms::TransformError, writer::*};
-use deltalake::checkpoints::CheckpointError;
-
-mod env_vars {
-    pub(crate) const DEAD_LETTER_DYNAMO_LOCK_PARTITION_KEY_VALUE: &str =
-        "DEAD_LETTER_DYNAMO_LOCK_PARTITION_KEY_VALUE";
-}
+use crate::{
+    delta_helpers,
+    errors::{DeadLetterQueueError, TransformError},
+    settings::{self, IngestOptions},
+    transforms::Transformer,
+    writer::DataWriter,
+};
 
 /// Struct that represents a dead letter record.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -37,7 +35,7 @@ pub struct DeadLetter {
 impl DeadLetter {
     /// Creates a dead letter from bytes that failed deserialization.
     /// `json_string` will always be `None`.
-    pub(crate) fn from_failed_deserialization(bytes: &[u8], err: serde_json::Error) -> Self {
+    pub fn from_failed_deserialization(bytes: &[u8], err: serde_json::Error) -> Self {
         let timestamp = Utc::now();
         Self {
             base64_bytes: Some(base64::encode(bytes)),
@@ -49,7 +47,7 @@ impl DeadLetter {
 
     /// Creates a dead letter from a failed transform.
     /// `base64_bytes` will always be `None`.
-    pub(crate) fn from_failed_transform(value: &Value, err: TransformError) -> Self {
+    pub fn from_failed_transform(value: &Value, err: TransformError) -> Self {
         let timestamp = Utc::now();
         Self {
             base64_bytes: None,
@@ -62,7 +60,7 @@ impl DeadLetter {
     /// Creates a dead letter from a record that fails on parquet write.
     /// `base64_bytes` will always be `None`.
     /// `json_string` will contain the stringified JSON that was not writeable to parquet.
-    pub(crate) fn from_failed_parquet_row(value: &Value, err: ParquetError) -> Self {
+    pub fn from_failed_parquet_row(value: &Value, err: ParquetError) -> Self {
         let timestamp = Utc::now();
         Self {
             base64_bytes: None,
@@ -75,7 +73,7 @@ impl DeadLetter {
     /// Creates a vector of tuples where the first element is the
     /// stringified JSON value that was not writeable to parquet and
     /// the second element is the `ParquetError` that occurred for that record when attempting the write.
-    pub(crate) fn vec_from_failed_parquet_rows(failed: Vec<(Value, ParquetError)>) -> Vec<Self> {
+    pub fn vec_from_failed_parquet_rows(failed: Vec<(Value, ParquetError)>) -> Vec<Self> {
         failed
             .iter()
             .map(|(v, e)| Self::from_failed_parquet_row(v, e.to_owned()))
@@ -83,53 +81,8 @@ impl DeadLetter {
     }
 }
 
-/// Error returned when a dead letter write fails.
-#[derive(thiserror::Error, Debug)]
-pub enum DeadLetterQueueError {
-    /// Error returned when JSON serialization of a [DeadLetter] fails.
-    #[error("JSON serialization failed: {source}")]
-    SerdeJson {
-        #[from]
-        source: serde_json::Error,
-    },
-
-    /// Error returned when a write to the dead letter delta table used by [DeltaSinkDeadLetterQueue] fails.
-    #[error("Write failed: {source}")]
-    Writer {
-        #[from]
-        source: DataWriterError,
-    },
-
-    /// Error returned by the internal dead letter transformer.
-    #[error("TransformError: {source}")]
-    Transform {
-        #[from]
-        source: TransformError,
-    },
-
-    /// Error occurred when writing a delta log checkpoint.
-    #[error("CheckpointErrorError error: {source}")]
-    CheckpointErrorError {
-        /// The wrapped [`CheckpointError`]
-        #[from]
-        source: CheckpointError,
-    },
-
-    /// DeltaTable returned an error.
-    #[error("DeltaTable interaction failed: {source}")]
-    DeltaTable {
-        /// The wrapped [`DeltaTableError`]
-        #[from]
-        source: DeltaTableError,
-    },
-
-    /// Error returned when the DeltaSinkDeadLetterQueue is used but no table uri is specified.
-    #[error("No table_uri for DeltaSinkDeadLetterQueue")]
-    NoTableUri,
-}
-
-/// Options that should be passed to `dlq_from_opts` to create the desired [DeadLetterQueue] instance.
-pub(crate) struct DeadLetterQueueOptions {
+/// Config for the [`DeadLetterQueue`]
+pub struct DeadLetterQueueConfig {
     /// Table URI of the delta table to write dead letters to. Implies usage of the DeltaSinkDeadLetterQueue.
     pub delta_table_uri: Option<String>,
     /// A list of transforms to apply to dead letters before writing to delta.
@@ -147,7 +100,7 @@ pub(crate) struct DeadLetterQueueOptions {
 /// The [LoggingDeadLetterQueue] is intended for local development only
 /// and is not provided by the [dlq_from_opts] factory method.
 #[async_trait]
-pub(crate) trait DeadLetterQueue: Send + Sync {
+pub trait DeadLetterQueue: Send + Sync {
     /// Writes one [DeadLetter] to the [DeadLetterQueue].
     async fn write_dead_letter(
         &mut self,
@@ -163,15 +116,21 @@ pub(crate) trait DeadLetterQueue: Send + Sync {
     ) -> Result<(), DeadLetterQueueError>;
 }
 
-/// Factory method for creating a [DeadLetterQueue] based on the passed options.
+/// Returns a [`DeadLetterQueue`] implementation based on the passed options.
 /// The default implementation is [NoopDeadLetterQueue].
 /// To opt-in for the [DeltaSinkDeadLetterQueue], the `delta_table_uri` should be set in options.
-pub(crate) async fn dlq_from_opts(
-    options: DeadLetterQueueOptions,
+pub async fn dlq_from_opts(
+    options: &IngestOptions,
 ) -> Result<Box<dyn DeadLetterQueue>, DeadLetterQueueError> {
-    if options.delta_table_uri.is_some() {
+    let settings = DeadLetterQueueConfig {
+        delta_table_uri: options.dlq_table_uri.clone(),
+        dead_letter_transforms: options.dlq_transforms.clone(),
+        write_checkpoints: options.write_checkpoints,
+    };
+
+    if settings.delta_table_uri.is_some() {
         Ok(Box::new(
-            DeltaSinkDeadLetterQueue::from_options(options).await?,
+            DeltaSinkDeadLetterQueue::from_options(settings).await?,
         ))
     } else {
         Ok(Box::new(NoopDeadLetterQueue {}))
@@ -179,9 +138,10 @@ pub(crate) async fn dlq_from_opts(
 }
 
 /// Default implementation of [DeadLetterQueue] which does nothing.
-/// This is used as the default to avoid forcing users to setup additional infrastructure for capturing dead letters.
-/// and avoid any risk of exposing PII in logs,
-pub(crate) struct NoopDeadLetterQueue {}
+/// This is used as the default to avoid forcing users to setup
+/// additional infrastructure for capturing dead letters
+/// and avoid any risk of exposing sensitive info in logs,
+pub struct NoopDeadLetterQueue {}
 
 #[async_trait]
 impl DeadLetterQueue for NoopDeadLetterQueue {
@@ -195,9 +155,8 @@ impl DeadLetterQueue for NoopDeadLetterQueue {
 }
 
 /// Implementation of the [DeadLetterQueue] trait that writes dead letter content as warn logs.
-/// This implementation is currently only intended for debug development usage.
-/// Be mindful of your PII when using this implementation.
-pub(crate) struct LoggingDeadLetterQueue {}
+/// This implementation is only intended for debugging.
+pub struct LoggingDeadLetterQueue {}
 
 #[async_trait]
 impl DeadLetterQueue for LoggingDeadLetterQueue {
@@ -206,7 +165,7 @@ impl DeadLetterQueue for LoggingDeadLetterQueue {
         dead_letters: Vec<DeadLetter>,
     ) -> Result<(), DeadLetterQueueError> {
         for dead_letter in dead_letters {
-            warn!("DeadLetter: {:?}", dead_letter);
+            log::warn!("DeadLetter: {:?}", dead_letter);
         }
 
         Ok(())
@@ -232,7 +191,7 @@ impl DeadLetterQueue for LoggingDeadLetterQueue {
 /// ```
 ///
 /// A dead letter transform with key: `date` and value: `substr(epoch_micros_to_iso8601(timestamp),`0`,`10`)` should be provided to generate the `date` field.
-pub(crate) struct DeltaSinkDeadLetterQueue {
+pub struct DeltaSinkDeadLetterQueue {
     table: DeltaTable,
     delta_writer: DataWriter,
     transformer: Transformer,
@@ -240,16 +199,16 @@ pub(crate) struct DeltaSinkDeadLetterQueue {
 }
 
 impl DeltaSinkDeadLetterQueue {
-    pub(crate) async fn from_options(
-        options: DeadLetterQueueOptions,
+    pub async fn from_options(
+        options: DeadLetterQueueConfig,
     ) -> Result<Self, DeadLetterQueueError> {
         match &options.delta_table_uri {
             Some(table_uri) => {
                 let opts = hashmap! {
-                    dynamo_lock_options::DYNAMO_LOCK_PARTITION_KEY_VALUE.to_string() => std::env::var(env_vars::DEAD_LETTER_DYNAMO_LOCK_PARTITION_KEY_VALUE)
+                    dynamo_lock_options::DYNAMO_LOCK_PARTITION_KEY_VALUE.to_string() => std::env::var(settings::DEAD_LETTER_DYNAMO_LOCK_PARTITION_KEY_VALUE_VAR_NAME)
                     .unwrap_or_else(|_| "kafka_delta_ingest-dead_letters".to_string()),
                 };
-                let table = crate::delta_helpers::load_table(table_uri, opts.clone()).await?;
+                let table = delta_helpers::load_table(table_uri, opts.clone()).await?;
                 let delta_writer = DataWriter::for_table(&table, opts)?;
 
                 Ok(Self {
@@ -293,10 +252,10 @@ impl DeadLetterQueue for DeltaSinkDeadLetterQueue {
             .await?;
 
         if self.write_checkpoints {
-            crate::delta_helpers::try_create_checkpoint(&mut self.table, version).await?;
+            delta_helpers::try_create_checkpoint(&mut self.table, version).await?;
         }
 
-        info!(
+        log::info!(
             "Inserted {} dead letters to {}",
             dead_letters.len(),
             self.table.table_uri

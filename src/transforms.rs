@@ -5,31 +5,9 @@ use jmespatch::{
 };
 use rdkafka::Message;
 use serde_json::{Map, Value};
-use std::collections::HashMap;
-use std::convert::TryFrom;
-use std::sync::Arc;
+use std::{collections::HashMap, convert::TryFrom, sync::Arc};
 
-/// Error thrown by [`Transformer`].
-#[derive(thiserror::Error, Debug)]
-pub enum TransformError {
-    /// The value to transform is not a JSON object.
-    #[error("Unable to mutate non-object value {value}")]
-    ValueNotAnObject { value: Value },
-
-    /// JMESPath query expression failed when querying the source value.
-    #[error("JmespathError: {source}")]
-    JmesPath {
-        #[from]
-        source: JmespathError,
-    },
-
-    /// A serde json error occurred when processing the transform.
-    #[error("serde_json::Error: {source}")]
-    Json {
-        #[from]
-        source: serde_json::Error,
-    },
-}
+use crate::errors::TransformError;
 
 // Error thrown from custom functions registered in the jmespath Runtime
 struct InvalidTypeError {
@@ -329,7 +307,7 @@ fn set_value(object: &mut Map<String, Value>, path: &ValuePath, path_index: usiz
 }
 
 /// Transforms JSON values deserialized from a Kafka topic.
-pub(crate) struct Transformer {
+pub struct Transformer {
     transforms: Vec<(ValuePath, MessageTransform)>,
 }
 
@@ -346,7 +324,7 @@ impl Transformer {
 
     /// Transforms a [`Value`] according to the list of transforms used to create the [`Transformer`].
     /// The optional `kafka_message` must be provided to include well known Kafka properties in the value.
-    pub(crate) fn transform<M>(
+    pub fn transform<M>(
         &self,
         value: &mut Value,
         kafka_message: Option<&M>,

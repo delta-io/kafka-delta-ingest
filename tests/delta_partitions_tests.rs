@@ -55,8 +55,8 @@ async fn test_delta_partitions() {
         TestMsg::new_color_null(9),
     ];
 
-    delta_writer.write(msgs_to_values(batch1)).await.unwrap();
-    delta_writer.write(msgs_to_values(batch2)).await.unwrap();
+    delta_writer.write(msgs_to_values(batch1)).unwrap();
+    delta_writer.write(msgs_to_values(batch2)).unwrap();
 
     let result = delta_writer
         .write_parquet_files(&table.table_uri)

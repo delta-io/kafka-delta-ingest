@@ -1,10 +1,13 @@
 use crate::{DataTypeOffset, DataTypePartition};
-use deltalake::action::{Action, Add, Txn};
-use deltalake::checkpoints::CheckpointError;
-use deltalake::{DeltaDataTypeVersion, DeltaTable, DeltaTableError};
+use deltalake::{
+    action::{Action, Add, Txn},
+    checkpoints::CheckpointError,
+    DeltaDataTypeVersion, DeltaTable, DeltaTableError,
+};
 use std::collections::HashMap;
 
-pub(crate) async fn load_table(
+/// Returns a [`DeltaTable`] loaded from the given table_uri.
+pub async fn load_table(
     table_uri: &str,
     options: HashMap<String, String>,
 ) -> Result<DeltaTable, DeltaTableError> {
@@ -20,7 +23,8 @@ pub(crate) async fn load_table(
     Ok(table)
 }
 
-pub(crate) fn build_actions(
+/// Returns the list of actions to include in the delta log.
+pub fn build_actions(
     partition_offsets: &HashMap<DataTypePartition, DataTypeOffset>,
     app_id: &str,
     mut add: Vec<Add>,
@@ -34,7 +38,8 @@ pub(crate) fn build_actions(
         .collect()
 }
 
-pub(crate) fn create_txn_action(txn_app_id: String, offset: DataTypeOffset) -> Action {
+/// Creates a `txn` action for the given app id and offsest.
+pub fn create_txn_action(txn_app_id: String, offset: DataTypeOffset) -> Action {
     Action::txn(Txn {
         app_id: txn_app_id,
         version: offset,
@@ -47,7 +52,8 @@ pub(crate) fn create_txn_action(txn_app_id: String, offset: DataTypeOffset) -> A
     })
 }
 
-pub(crate) async fn try_create_checkpoint(
+/// Creates a checkpoint at the specified version for the given [`DeltaTable`].
+pub async fn try_create_checkpoint(
     table: &mut DeltaTable,
     version: DeltaDataTypeVersion,
 ) -> Result<(), CheckpointError> {
@@ -75,12 +81,13 @@ pub(crate) async fn try_create_checkpoint(
     Ok(())
 }
 
-pub(crate) fn txn_app_id_for_partition(app_id: &str, partition: DataTypePartition) -> String {
+/// Returns the formatted appId to include in `txn` actions.
+pub fn txn_app_id_for_partition(app_id: &str, partition: DataTypePartition) -> String {
     format!("{}-{}", app_id, partition)
 }
 
 /// Returns the last transaction version for the given transaction id recorded in the delta table.
-pub(crate) fn last_txn_version(table: &DeltaTable, txn_id: &str) -> Option<DeltaDataTypeVersion> {
+pub fn last_txn_version(table: &DeltaTable, txn_id: &str) -> Option<DeltaDataTypeVersion> {
     table
         .get_app_transaction_version()
         .get(txn_id)

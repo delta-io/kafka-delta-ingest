@@ -119,10 +119,6 @@ async fn test_dlq() {
 
     token.cancel();
 
-    for m in bad_bytes_generator.clone().take(1) {
-        helpers::send_bytes(&producer, &data_topic, &m).await;
-    }
-
     kdi.await.unwrap();
     rt.shutdown_background();
 

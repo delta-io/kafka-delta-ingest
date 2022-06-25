@@ -20,6 +20,8 @@ use rusoto_core::Region;
 use rusoto_s3::{CopyObjectRequest, S3};
 use tokio::task::JoinHandle;
 
+const TIMEOUT_SECONDS: i64 = 120;
+
 const TEST_S3_ENDPOINT: &str = "http://localhost:4566";
 const TEST_S3_BUCKET: &str = "tests";
 const TEST_APP_ID: &str = "emails_test";
@@ -103,6 +105,7 @@ impl TestScope {
 
         println!("Topic: {}", &topic);
         println!("Table: {}", &table);
+
         helpers::create_topic(topic.as_str(), TEST_PARTITIONS).await;
 
         Self {
@@ -189,6 +192,8 @@ impl TestScope {
     async fn wait_on_total_offset(&self, apps: Vec<String>, offset: i32) {
         let mut table = deltalake::open_table(&self.table).await.unwrap();
         let expected_total = offset - TEST_PARTITIONS;
+        let start_time = Local::now();
+
         loop {
             table.update().await.unwrap();
             let mut total = 0;
@@ -204,6 +209,12 @@ impl TestScope {
                 self.workers_token.cancel();
                 println!("All messages are in delta");
                 return;
+            }
+
+            let now = Local::now();
+            let poll_time = now - start_time;
+            if poll_time > chrono::Duration::seconds(TIMEOUT_SECONDS) {
+                panic!("Total offsets were not written before timeout.");
             }
 
             println!("Expecting offsets in delta {}/{}...", total, expected_total);

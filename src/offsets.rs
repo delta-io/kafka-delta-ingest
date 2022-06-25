@@ -1,24 +1,11 @@
-use crate::delta_helpers::*;
-use crate::{DataTypeOffset, DataTypePartition};
-use deltalake::action::Action;
-use deltalake::{DeltaTable, DeltaTableError};
-use log::{error, info};
+use deltalake::{action::Action, DeltaTable, DeltaTableError};
 
-/// Errors returned by `write_offsets_to_delta` function.
-#[derive(thiserror::Error, Debug)]
-pub enum WriteOffsetsError {
-    /// Error returned when stored offsets in delta table are lower than provided seek offsets.
-    #[error("Stored offsets are lower than provided: {0}")]
-    InconsistentStoredOffsets(String),
-
-    /// Error from [`deltalake::DeltaTable`]
-    #[error("DeltaTable interaction failed: {source}")]
-    DeltaTable {
-        /// Wrapped [`deltalake::DeltaTableError`]
-        #[from]
-        source: DeltaTableError,
-    },
-}
+use crate::{
+    delta_helpers,
+    errors::WriteOffsetsError,
+    kafka::{DataTypeOffset, DataTypePartition},
+    settings,
+};
 
 /// Write provided seeking offsets as a new delta log version with a set of `txn` actions.
 /// The `txn` id for each partition is constructed as `<app_id>-<partition>` and used across
@@ -29,7 +16,7 @@ pub enum WriteOffsetsError {
 /// But, if stored offsets are lower then the `InconsistentStoredOffsets` is returned since it
 /// could break the data integrity.
 /// Hence, one is advised to supply the new `app_id` if skipping offsets is what required.
-pub(crate) async fn write_offsets_to_delta(
+pub async fn write_offsets_to_delta(
     table: &mut DeltaTable,
     app_id: &str,
     offsets: &[(DataTypePartition, DataTypeOffset)],
@@ -40,11 +27,11 @@ pub(crate) async fn write_offsets_to_delta(
         .collect::<Vec<String>>()
         .join(",");
 
-    info!("Writing offsets [{}]", offsets_as_str);
+    log::info!("Writing offsets [{}]", offsets_as_str);
 
     let mapped_offsets: Vec<(String, DataTypeOffset)> = offsets
         .iter()
-        .map(|(p, o)| (txn_app_id_for_partition(app_id, *p), *o))
+        .map(|(p, o)| (delta_helpers::txn_app_id_for_partition(app_id, *p), *o))
         .collect();
 
     if is_safe_to_commit_transactions(table, &mapped_offsets) {
@@ -67,7 +54,7 @@ pub(crate) async fn write_offsets_to_delta(
 
         if conflict_offsets.is_empty() {
             // there's no conflicted offsets in delta, e.g. it's either missing or is higher than seek offset
-            info!("The provided offsets are already applied.");
+            log::info!("The provided offsets are already applied.");
             Ok(())
         } else {
             let partitions = conflict_offsets
@@ -76,7 +63,7 @@ pub(crate) async fn write_offsets_to_delta(
                 .collect::<Vec<&str>>()
                 .join(",");
 
-            error!(
+            log::error!(
                 "Stored offsets for partitions [{}] are lower than seek offsets.",
                 partitions
             );
@@ -104,7 +91,7 @@ async fn commit_partition_offsets(
 ) -> Result<(), DeltaTableError> {
     let actions: Vec<Action> = offsets
         .iter()
-        .map(|(txn_id, offset)| create_txn_action(txn_id.to_string(), *offset))
+        .map(|(txn_id, offset)| delta_helpers::create_txn_action(txn_id.to_string(), *offset))
         .collect();
 
     let mut tx = table.create_transaction(None);
@@ -126,17 +113,18 @@ async fn commit_partition_offsets(
             .await
         {
             Ok(v) => {
-                info!(
+                log::info!(
                     "Delta version {} completed with new txn offsets {}.",
-                    v, offsets_as_str
+                    v,
+                    offsets_as_str
                 );
                 return Ok(());
             }
             Err(e) => match e {
                 DeltaTableError::VersionAlreadyExists(_)
-                    if attempt_number > crate::DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS + 1 =>
+                    if attempt_number > settings::DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS + 1 =>
                 {
-                    error!("Transaction attempt failed. Attempts exhausted beyond max_retry_commit_attempts of {} so failing", crate::DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS);
+                    log::error!("Transaction attempt failed. Attempts exhausted beyond max_retry_commit_attempts of {} so failing", settings::DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS);
                     return Err(e);
                 }
                 DeltaTableError::VersionAlreadyExists(_) => {

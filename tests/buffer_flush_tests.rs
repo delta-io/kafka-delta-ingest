@@ -80,8 +80,8 @@ async fn test_dont_write_an_empty_buffer() {
         }),
     )
     .await;
-    // write one version so we can make sure the stream is up and running.
 
+    // write one version so we can make sure the stream is up and running.
     for m in create_generator(1).take(10) {
         info!("Writing test message");
         helpers::send_json(&producer, &topic, &serde_json::to_value(m).unwrap()).await;

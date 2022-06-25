@@ -1,9 +1,13 @@
-use deltalake::{Schema as DeltaSchema, SchemaDataType as DeltaDataType};
-
 use chrono::prelude::*;
+use deltalake::{Schema as DeltaSchema, SchemaDataType as DeltaDataType};
 use serde_json::Value;
-use std::collections::HashMap;
-use std::str::FromStr;
+use std::{collections::HashMap, str::FromStr};
+
+/// A tree of coercions that can be walked along with a [`Value`] to apply coercions.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoercionTree {
+    root: HashMap<String, CoercionNode>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 #[allow(unused)]
@@ -21,17 +25,12 @@ enum Coercion {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct CoercionTree {
-    root: HashMap<String, CoercionNode>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct CoercionArray {
+struct CoercionArray {
     element: CoercionNode,
 }
 
 /// Returns a [`CoercionTree`] so the schema can be walked efficiently level by level when performing conversions.
-pub(crate) fn create_coercion_tree(schema: &DeltaSchema) -> CoercionTree {
+pub fn create_coercion_tree(schema: &DeltaSchema) -> CoercionTree {
     let mut root = HashMap::new();
 
     for field in schema.get_fields() {
@@ -72,7 +71,7 @@ fn build_coercion_node(r#type: &DeltaDataType) -> Option<CoercionNode> {
 
 /// Applies all data coercions specified by the [`CoercionTree`] to the [`Value`].
 /// Though it does not currently, this function should approximate or improve on the coercions applied by [Spark's `from_json`](https://spark.apache.org/docs/latest/api/sql/index.html#from_json)
-pub(crate) fn coerce(value: &mut Value, coercion_tree: &CoercionTree) {
+pub fn coerce(value: &mut Value, coercion_tree: &CoercionTree) {
     if let Some(context) = value.as_object_mut() {
         for (field_name, coercion) in coercion_tree.root.iter() {
             if let Some(value) = context.get_mut(field_name) {
@@ -143,9 +142,7 @@ fn string_to_timestamp(string: &str) -> Option<Value> {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
-    // use maplit::hashmap;
     use serde_json::json;
 
     lazy_static! {

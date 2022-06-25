@@ -1,33 +1,22 @@
 use dipstick::*;
-use log::error;
-use std::convert::TryInto;
-use std::time::Instant;
+use std::{convert::TryInto, time::Instant};
 
-/// The environment variable used to specify how many metrics should be written to the metrics queue before flushing to statsd.
-const METRICS_INPUT_QUEUE_SIZE_VAR_NAME: &str = "KDI_METRICS_INPUT_QUEUE_SIZE";
-/// The environment variable used to specify a prefix for metrics.
-const METRICS_PREFIX_VAR_NAME: &str = "KDI_METRICS_PREFIX";
-
-/// The default input queue size for sending metrics to statsd.
-const DEFAULT_INPUT_QUEUE_SIZE: usize = 100;
-
-/// Error returned when there is a failure in [`IngestMetrics`].
-#[derive(thiserror::Error, Debug)]
-pub enum IngestMetricsError {
-    /// Error returned when the environment variable provided for METRICS_INPUT_QUEUE_SIZE could not be parsed
-    #[error("Could not parse {0} provided in METRICS_INPUT_QUEUE_SIZE env variable")]
-    InvalidMetricsInputQueueSize(String),
-}
+use crate::{
+    errors::IngestMetricsError,
+    settings::{
+        DEFAULT_INPUT_QUEUE_SIZE, METRICS_INPUT_QUEUE_SIZE_VAR_NAME, METRICS_PREFIX_VAR_NAME,
+    },
+};
 
 /// Wraps a [`dipstick::queue::InputQueueScope`] to provide a higher level API for recording metrics.
 #[derive(Clone)]
-pub(crate) struct IngestMetrics {
+pub struct IngestMetrics {
     metrics: InputQueueScope,
 }
 
 impl IngestMetrics {
     /// Creates an instance of [`IngestMetrics`] for sending metrics to statsd.
-    pub(crate) fn new(endpoint: &str) -> Result<Self, IngestMetricsError> {
+    pub fn new(endpoint: &str) -> Result<Self, IngestMetricsError> {
         let metrics = create_queue(endpoint)?;
 
         Ok(Self { metrics })
@@ -195,7 +184,7 @@ impl IngestMetrics {
                 .timer(stat_string.as_str())
                 .interval_us(duration);
         } else {
-            error!("Failed to report timer to statsd with an i64 that couldn't fit into u64.");
+            log::error!("Failed to report timer to statsd with an i64 that couldn't fit into u64.");
         }
     }
 
@@ -219,7 +208,7 @@ impl IngestMetrics {
 }
 
 /// Stat types for the various metrics reported by the application
-#[derive(Debug, Display, Hash, PartialEq, Eq)]
+#[derive(Display, Hash, PartialEq, Eq)]
 enum StatType {
     //
     // counters

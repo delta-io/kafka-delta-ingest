@@ -1,22 +1,26 @@
-use crate::{DataTypeOffset, DataTypePartition, IngestError};
 use serde_json::Value;
 use std::collections::HashMap;
 
+use crate::{
+    errors::MessageProcessingError,
+    kafka::{DataTypeOffset, DataTypePartition},
+};
+
 /// Provides a single interface into the multiple [`ValueBuffer`] instances used to buffer data for each assigned partition.
 #[derive(Debug, Default)]
-pub(crate) struct ValueBuffers {
+pub struct ValueBuffers {
     buffers: HashMap<DataTypePartition, ValueBuffer>,
     len: usize,
 }
 
 impl ValueBuffers {
     /// Adds a value to in-memory buffers and tracks the partition and offset.
-    pub(crate) fn add(
+    pub fn add(
         &mut self,
         partition: DataTypePartition,
         offset: DataTypeOffset,
         value: Value,
-    ) -> Result<(), IngestError> {
+    ) -> Result<(), MessageProcessingError> {
         let buffer = self
             .buffers
             .entry(partition)
@@ -26,7 +30,7 @@ impl ValueBuffers {
         // hence we protect the buffer from dupes by filtering out the already processed offsets.
         // Having this guarantees the at-most-once rule.
         if offset <= buffer.last_offset {
-            return Err(IngestError::AlreadyProcessedPartitionOffset { partition, offset });
+            return Err(MessageProcessingError::AlreadyProcessedOffset { partition, offset });
         }
 
         buffer.add(value, offset);
@@ -35,12 +39,12 @@ impl ValueBuffers {
     }
 
     /// Returns the total number of items stored across each partition specific [`ValueBuffer`].
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.len
     }
 
     /// Returns values, partition offsets and partition counts currently held in buffer and resets buffers to empty.
-    pub(crate) fn consume(&mut self) -> ConsumedBuffers {
+    pub fn consume(&mut self) -> ConsumedBuffers {
         let mut partition_offsets = HashMap::new();
         let mut partition_counts = HashMap::new();
 
@@ -68,7 +72,7 @@ impl ValueBuffers {
     }
 
     /// Clears all value buffers currently held in memory.
-    pub(crate) fn reset(&mut self) {
+    pub fn reset(&mut self) {
         self.len = 0;
         self.buffers.clear();
     }
@@ -85,7 +89,7 @@ struct ValueBuffer {
 
 impl ValueBuffer {
     /// Creates a new [`ValueBuffer`] to store messages from a Kafka partition.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             // The -1 means that it has no stored offset and anything that is firstly passed
             // will be accepted, since message offsets starts with 0.
@@ -97,13 +101,13 @@ impl ValueBuffer {
     }
 
     /// Adds the value to buffer and stores its offset as the `last_offset` of the buffer.
-    pub(crate) fn add(&mut self, value: Value, offset: DataTypeOffset) {
+    pub fn add(&mut self, value: Value, offset: DataTypeOffset) {
         self.last_offset = offset;
         self.values.push(value);
     }
 
     /// Consumes and returns the buffer and last offset so it may be written to delta and clears internal state.
-    pub(crate) fn consume(&mut self) -> Option<(Vec<Value>, DataTypeOffset)> {
+    pub fn consume(&mut self) -> Option<(Vec<Value>, DataTypeOffset)> {
         if !self.values.is_empty() {
             assert!(self.last_offset >= 0);
             Some((std::mem::take(&mut self.values), self.last_offset))
@@ -114,13 +118,14 @@ impl ValueBuffer {
 }
 
 /// A struct that wraps the data consumed from [`ValueBuffers`] before writing to a [`arrow::record_batch::RecordBatch`].
-pub(crate) struct ConsumedBuffers {
+pub struct ConsumedBuffers {
     /// The vector of [`Value`] instances consumed.
-    pub(crate) values: Vec<Value>,
+    pub values: Vec<Value>,
     /// A [`HashMap`] from partition to last offset represented by the consumed buffers.
-    pub(crate) partition_offsets: HashMap<DataTypePartition, DataTypeOffset>,
+    pub partition_offsets: HashMap<DataTypePartition, DataTypeOffset>,
     /// A [`HashMap`] from partition to number of messages consumed for each partition.
-    pub(crate) partition_counts: HashMap<DataTypePartition, usize>,
+    #[allow(dead_code)]
+    pub partition_counts: HashMap<DataTypePartition, usize>,
 }
 
 #[cfg(test)]
@@ -190,9 +195,13 @@ mod tests {
     fn value_buffers_conflict_offsets_test() {
         let mut buffers = ValueBuffers::default();
 
-        let verify_error = |res: Result<(), IngestError>, o: i64| {
+        let verify_error = |res: Result<(), MessageProcessingError>, o: i64| {
             match res.err().unwrap() {
-                IngestError::AlreadyProcessedPartitionOffset { partition, offset } => {
+                // IngestError::AlreadyProcessedPartitionOffset { partition, offset } => {
+                //     assert_eq!(partition, 0);
+                //     assert_eq!(offset, o);
+                // }
+                MessageProcessingError::AlreadyProcessedOffset { partition, offset } => {
                     assert_eq!(partition, 0);
                     assert_eq!(offset, o);
                 }
@@ -234,7 +243,7 @@ mod tests {
         );
     }
 
-    fn add(buffers: &mut ValueBuffers, offset: i64) -> Result<(), IngestError> {
+    fn add(buffers: &mut ValueBuffers, offset: i64) -> Result<(), MessageProcessingError> {
         buffers.add(0, offset, Value::Number(offset.into()))
     }
 }
