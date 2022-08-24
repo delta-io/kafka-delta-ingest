@@ -101,7 +101,7 @@ when invoking the cli command as well.
 
 When writing to S3, you may experience an error like `source: StorageError { source: S3Generic("dynamodb locking is not enabled") }`.
 
-A locking mechanism is need to prevent unsafe concurrent writes to a delta lake directory, and DynamoDB is an option for this. To use DynamoDB, set the AWS_S3_LOCKING_PROVIDER` variable to `dynamodb` and create a table named `delta_rs_lock_table` in Dynamo. An example DynamoDB table creation snippet using the aws CLI follows, and should be customized for your environment's needs (e.g. read/write capacity modes).
+A locking mechanism is need to prevent unsafe concurrent writes to a delta lake directory, and DynamoDB is an option for this. To use DynamoDB, set the `AWS_S3_LOCKING_PROVIDER` variable to `dynamodb` and create a table named `delta_rs_lock_table` in Dynamo. An example DynamoDB table creation snippet using the aws CLI follows, and should be customized for your environment's needs (e.g. read/write capacity modes):
 
 
 ```bash
