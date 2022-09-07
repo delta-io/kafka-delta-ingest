@@ -106,7 +106,6 @@ Azure Event Hubs doesn't have a local emulator, so an actual Azure Event Hubs re
 
 More info:
 
-* https://docs.microsoft.com/en-us/azure/event-hubs/event-hubs-create
 * https://docs.microsoft.com/en-us/azure/event-hubs/apache-kafka-migration-guide
 * https://docs.microsoft.com/en-us/azure/event-hubs/apache-kafka-troubleshooting-guide
 * https://docs.microsoft.com/en-us/azure/event-hubs/apache-kafka-configurations#librdkafka-configuration-properties
@@ -115,61 +114,72 @@ More info:
 * https://github.com/edenhill/librdkafka/blob/master/CONFIGURATION.md
 * https://github.com/edenhill/librdkafka/issues/3109
 
-Notes:
-
-* You must create an Event Hub, which is similar to a Kafka topic, in your Event Hubs Namespace. The Event Hub name is the Kafka topic name.
-* Using WSL2 on Windows is recommended (OpenSSL should work out of the box).
-** Using Ubuntu 20.04 is recommended, otherwise renaming temporary Delta transaction files during transaction commit will fail when using the local file system.
-*** See: https://github.com/delta-io/delta-rs/blob/14a783e7e9af09914f667c7e1717b5e55aa73ede/rust/build.rs#L3-L15
-*** Ubuntu 18.04 uses GLIBC 2.27 (check with `ldd --version`)
-*** Ubuntu 20.04 uses GLIBC 2.31 (check with `ldd --version`)
-* Executing kafka-delta-ingest directly on WSL2/Ubuntu 20.04 isn't stable
-** A Dockerfile is provided to run kafka-delta-ingest on Windows
-*** Tested with Docker Desktop using the link:https://docs.docker.com/desktop/windows/wsl/[WSL2-based engine].
-
 
 ==== Starting Worker Processes
 
-1. Create Docker image: `docker build -t kafka-delta-ingest:v0.1.0 . -f Dockerfile.Debian`
-2. Run kafka-delta-ingest against the web_requests example topic and table (customize arguments as desired):
+1. link:https://docs.microsoft.com/en-us/azure/event-hubs/event-hubs-create[Create] an Azure Event Hubs Namespace and within it, an Event Hub (which corresponds to a Kafka topic).
 
-```bash
-docker run -it --network=host \
-  -e SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
-  -e AZURE_STORAGE_ACCOUNT_NAME={MY_STG_ACCOUNT_NAME} \
-  -e 'AZURE_STORAGE_ACCOUNT_KEY={MY_STG_ACCOUNT_KEY}' \
-  kafka-delta-ingest:v0.1.0 \
-  ingest web_requests adls2://{MY_STG_ACCOUNT_NAME}/{MY_FILESYSTEM}/web_requests \
-  --allowed_latency 5 \
-  --kafka {MY_EH_NAMESPACE_NAME}.servicebus.windows.net:9093 \
-  --Kafka security.protocol=SASL_SSL \
-  --Kafka sasl.mechanism=PLAIN \
-  --Kafka 'sasl.username=$ConnectionString' \
-  --Kafka 'sasl.password=Endpoint=sb://{MY_EH_NAMESPACE_NAME}.servicebus.windows.net/;SharedAccessKeyName={MY_EH_KEY_NAME};SharedAccessKey={MY_EH_KEY}' \
-  --Kafka socket.keepalive.enable=true \
-  --Kafka metadata.max.age.ms=180000 \
-  --Kafka heartbeat.interval.ms=3000 \
-  --Kafka session.timeout.ms=30000 \
-  --app_id web_requests \
-  --transform 'date: substr(meta.producer.timestamp, `0`, `10`)' \
-  --transform 'meta.kafka.offset: kafka.offset' \
-  --transform 'meta.kafka.partition: kafka.partition' \
-  --transform 'meta.kafka.topic: kafka.topic' \
+2. Set these environment variables, they are required by the delta-rs library:
+* `AZURE_STORAGE_ACCOUNT_NAME` (just the storage account name, not the FQDN)
+* `AZURE_STORAGE_ACCOUNT_KEY` (just the key, not the connection string)
+
+3. Create the `_delta_log` directory in the `web_requests` directory in Azure Storage and upload the link:https://github.com/delta-io/kafka-delta-ingest/blob/main/tests/data/web_requests/_delta_log/00000000000000000000.json[first Delta transaction containing the schema] to this directory.
+
+4. In the docker command below, replace the following placeholders with your values:
+* `AZURE_STORAGE_ACCOUNT_NAME` (just the storage account name, not the FQDN)
+* `AZURE_STORAGE_ACCOUNT_KEY` (just the key, not the connection string)
+* `EVENTHUBS_NAMESPACE_NAME` (just the namespace name, not the FQDN)
+* `EVENTHUBS_KEY_NAME`
+* `EVENTHUBS_KEY`
+
+5. Build the docker image
+
+```
+docker build -t kdi:0.1 . -f Dockerfile-Debian
+```
+
+Notes:
+
+* If this takes a long time, make sure that docker has enough memory
+
+6. Execute this docker command to run kafka-delta-ingest
+
+```
+docker run -it --network=host ^
+  -e RUST_LOG="debug" ^
+  -e SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt ^
+  -e AZURE_STORAGE_ACCOUNT_NAME={AZURE_STORAGE_ACCOUNT_NAME} ^
+  -e "AZURE_STORAGE_ACCOUNT_KEY={AZURE_STORAGE_ACCOUNT_KEY}" ^
+  kdi:0.1 ^
+  ingest web_requests adls2://{AZURE_STORAGE_ACCOUNT_NAME}/{FILESYSTEM_NAME}/web_requests ^
+  --allowed_latency 5 ^
+  --kafka thovoll-kdi-eh.servicebus.windows.net:9093 ^
+  --Kafka security.protocol=SASL_SSL ^
+  --Kafka sasl.mechanism=PLAIN ^
+  --Kafka sasl.username=$ConnectionString ^
+  --Kafka sasl.password=Endpoint=sb://{EVENTHUBS_NAMESPACE_NAME}.servicebus.windows.net/;SharedAccessKeyName={EVENTHUBS_KEY_NAME};SharedAccessKey={EVENTHUBS_KEY} ^
+  --Kafka socket.keepalive.enable=true ^
+  --Kafka metadata.max.age.ms=180000 ^
+  --Kafka heartbeat.interval.ms=3000 ^
+  --Kafka session.timeout.ms=30000 ^
+  --Kafka debug=broker,security,protocol ^
+  --app_id web_requests ^
+  --transform "date: substr(meta.producer.timestamp, `0`, `10`)" ^
+  --transform "meta.kafka.offset: kafka.offset" ^
+  --transform "meta.kafka.partition: kafka.partition" ^
+  --transform "meta.kafka.topic: kafka.topic" ^
   --auto_offset_reset earliest
 ```
 
 Notes:
 
-* The following environment variables are required by the delta-rs library:
-** The AZURE_STORAGE_ACCOUNT_NAME environment variable should be just the account name, not the FQDN.
-** The AZURE_STORAGE_ACCOUNT_KEY environment variable should be just the key, not the connection string.
-* In the cargo command:
-** Replace {MY_EH_NAMESPACE_NAME} with just the namespace name, not the FQDN, of your Azure Event Hubs Namespace.
-** Replace {MY_EH_KEY_NAME} and {MY_EH_KEY} with suitable values from your Azure Event Hubs Namespace.
+* In the docker command:
 ** The `sasl.username` is the literal string `$ConnectionString` and not a placeholder.
 ** The following `--Kafka` arguments are taken from link:https://docs.microsoft.com/en-us/azure/event-hubs/apache-kafka-configurations#librdkafka-configuration-properties[here]:
-*** `-X socket.keepalive.enable=true -X metadata.max.age.ms=180000 -X heartbeat.interval.ms=3000 -X session.timeout.ms=30000`
-* The Delta table must have the `_delta_log` directory and the first Delta transaction containing the schema.
+*** `socket.keepalive.enable=true`
+*** `metadata.max.age.ms=180000`
+*** `heartbeat.interval.ms=3000`
+*** `session.timeout.ms=30000`
 
 ==== Sending data to Event Hubs
 
@@ -195,11 +205,20 @@ The following payload should be sent for the web_requests Delta table:
 ==== Verifying data from Event Hub using kcat
 
 kcat can be run on Windows via docker using this command, which will print the last message (-o -1).
-Attention: Make sure to replace XXX with the shared access key of your Event Hub.
+
+Make sure to first replace the following placeholders:
+
+* `EVENTHUBS_NAMESPACE_NAME` (just the namespace name, not the FQDN)
+* `EVENTHUBS_KEY_NAME`
+* `EVENTHUBS_KEY`
+
 ```
-docker run -it --network=host edenhill/kcat:1.7.1 -C -o -1 -b thovoll-kdi-eh.servicebus.windows.net:9093 -t web_requests -X security.protocol=SASL_SSL -X sasl.mechanism=PLAIN -X sasl.username=$ConnectionString -X sasl.password=Endpoint=sb://thovoll-kdi-eh.servicebus.windows.net/;SharedAccessKeyName=KafkaSurfaceManageSharedAccessKey;SharedAccessKey=XXX -X socket.keepalive.enable=true -X metadata.max.age.ms=180000 -X heartbeat.interval.ms=3000 -X session.timeout.ms=30000
+docker run -it --network=host edenhill/kcat:1.7.1 -C -o -1 -b {EVENTHUBS_NAMESPACE_NAME}.servicebus.windows.net:9093 -t web_requests -X security.protocol=SASL_SSL -X sasl.mechanism=PLAIN -X sasl.username=$ConnectionString -X sasl.password=Endpoint=sb://{EVENTHUBS_NAMESPACE_NAME}.servicebus.windows.net/;SharedAccessKeyName={EVENTHUBS_KEY_NAME};SharedAccessKey={EVENTHUBS_KEY} -X socket.keepalive.enable=true -X metadata.max.age.ms=180000 -X heartbeat.interval.ms=3000 -X session.timeout.ms=30000
 ```
-The following configuration settings in the command above are taken from link:https://docs.microsoft.com/en-us/azure/event-hubs/apache-kafka-configurations#librdkafka-configuration-properties[here]:
+
+Notes:
+
+* The following configuration settings in the command above are taken from link:https://docs.microsoft.com/en-us/azure/event-hubs/apache-kafka-configurations#librdkafka-configuration-properties[here]:
 `-X socket.keepalive.enable=true -X metadata.max.age.ms=180000 -X heartbeat.interval.ms=3000 -X session.timeout.ms=30000`
 
 == Kafka SSL
@@ -237,6 +256,12 @@ aws dynamodb create-table --table-name delta_rs_lock_table \
 ```
 
 For more information, see link:https://github.com/delta-io/delta-rs/tree/dbc2994c5fddfd39fc31a8f9202df74788f59a01/dynamodb_lock[DynamoDB lock].
+==== Verifying data in Azure Storage
+
+Use the Azure Portal to browse the file system:
+
+* Data files: `web_requests/date=2021-03-24`
+* Delta log files: `web_requests/_delta_log`
 
 == Developing
 
