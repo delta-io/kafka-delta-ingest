@@ -23,7 +23,7 @@ wait_for "S3" "aws s3api list-buckets --endpoint-url=$ENDPOINT"
 
 echo "Create delta table in S3"
 aws s3api create-bucket --bucket tests --endpoint-url=$ENDPOINT > /dev/null 2>&1
-aws s3 sync /data/emails s3://tests/emails/ --delete --endpoint-url=$ENDPOINT
+aws s3 sync /data/bull-databricks s3://tests/bull-databricks/ --delete --endpoint-url=$ENDPOINT
 
 wait_for "DynamoDB" "aws dynamodb list-tables --endpoint-url=$ENDPOINT"
 

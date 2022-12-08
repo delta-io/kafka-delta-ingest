@@ -92,7 +92,7 @@ The configuration is applied when offsets are not found in delta table or not sp
             (@arg MIN_BYTES_PER_FILE: -b --min_bytes_per_file +takes_value default_value("134217728") 
              "The target minimum file size (in bytes) for each Delta file. File size may be smaller than this value if ALLOWED_LATENCY does not allow enough time to accumulate the specified number of bytes.")
 
-            (@arg TRANSFORM: -t --transform +multiple_occurrences +multiple_values +takes_value validator(parse_transform)
+            (@arg TRANSFORM: -t --transform +multiple_occurrences +multiple_values +takes_value default_value("date: substr(item_timestamp, `0`, `10`)") validator(parse_transform)
             r#"A list of transforms to apply to each Kafka message. 
 Each transform should follow the pattern: "PROPERTY: SOURCE". For example: 
 
@@ -131,7 +131,7 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
         )
     )
     .setting(AppSettings::SubcommandRequiredElseHelp)
-    .setting(AppSettings::DisableVersionForSubcommands)
+    .setting(AppSettings::DisableVersionFlag)
     .get_matches();
 
     match matches.subcommand() {

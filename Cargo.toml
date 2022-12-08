@@ -32,7 +32,7 @@ tokio-stream = { version = "0", features = ["fs"] }
 tokio-util = "0.6.3"
 uuid = { version = "0.8", features = ["serde", "v4"] }
 
-arrow  = "6"
+arrow = "6"
 parquet = "6"
 
 deltalake = { git = "https://github.com/delta-io/delta-rs.git", rev = "cba4e3d316c56c65dc1cb660dc7e6d380ddd3a6b", features = ["s3"] }
@@ -43,6 +43,9 @@ sentry = { version = "0.23.0", optional = true }
 [features]
 sentry-ext = ["sentry"]
 dynamic-linking = [ "rdkafka/dynamic-linking" ]
+
+[patch.crates-io]
+arrow = { git = "https://github.com/GamCap/arrow-rs.git" }
 
 [dev-dependencies]
 utime = "0.3"
