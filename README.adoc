@@ -97,6 +97,25 @@ Make sure to provide the additional option:
 
 when invoking the cli command as well.
 
+== Writing to S3
+
+When writing to S3, you may experience an error like `source: StorageError { source: S3Generic("dynamodb locking is not enabled") }`.
+
+A locking mechanism is need to prevent unsafe concurrent writes to a delta lake directory, and DynamoDB is an option for this. To use DynamoDB, set the `AWS_S3_LOCKING_PROVIDER` variable to `dynamodb` and create a table named `delta_rs_lock_table` in Dynamo. An example DynamoDB table creation snippet using the aws CLI follows, and should be customized for your environment's needs (e.g. read/write capacity modes):
+
+
+```bash
+aws dynamodb create-table --table-name delta_rs_lock_table \
+    --attribute-definitions \
+        AttributeName=key,AttributeType=S \
+    --key-schema \
+        AttributeName=key,KeyType=HASH \
+    --provisioned-throughput \
+        ReadCapacityUnits=10,WriteCapacityUnits=10
+```
+
+For more information, see link:https://github.com/delta-io/delta-rs/tree/dbc2994c5fddfd39fc31a8f9202df74788f59a01/dynamodb_lock[DynamoDB lock].
+
 == Developing
 
 Make sure the docker-compose setup has been ran, and execute `cargo test` to run unit and integration tests.
