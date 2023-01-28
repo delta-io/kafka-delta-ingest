@@ -96,7 +96,7 @@ impl IngestMetrics {
 
     /// records a guage for delta file size.
     pub fn delta_file_size(&self, size: i64) {
-        self.record_stat(StatType::DeltaAddFileSize, size as i64);
+        self.record_stat(StatType::DeltaAddFileSize, size);
     }
 
     /// records total, max, and min consumer lag for offsets held in buffer.
