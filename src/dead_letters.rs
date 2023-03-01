@@ -251,7 +251,7 @@ impl DeltaSinkDeadLetterQueue {
                     .unwrap_or_else(|_| "kafka_delta_ingest-dead_letters".to_string()),
                 };
                 let table = crate::delta_helpers::load_table(table_uri, opts.clone()).await?;
-                let delta_writer = DataWriter::for_table(&table, opts)?;
+                let delta_writer = DataWriter::for_table(&table, opts, None)?;
 
                 Ok(Self {
                     table,

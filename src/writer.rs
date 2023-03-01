@@ -25,7 +25,11 @@ use parquet::{
     basic::{Compression, LogicalType, TimestampType},
     errors::ParquetError,
     file::{
-        metadata::RowGroupMetaData, properties::WriterProperties, statistics::Statistics,
+        metadata::RowGroupMetaData,
+        properties::{
+            WriterProperties,
+         },
+        statistics::Statistics,
         writer::InMemoryWriteableCursor,
     },
     schema::types::{ColumnDescriptor, SchemaDescriptor},
@@ -156,6 +160,20 @@ pub(crate) struct DataArrowWriter {
     partition_values: HashMap<String, Option<String>>,
     null_counts: NullCounts,
     buffered_record_batch_count: usize,
+}
+
+/// Settings for file writers
+pub struct DataWriterProperties {
+    /// The maximum row group size in order to force the parquet writer to flush
+    pub max_row_group_size: usize
+}
+
+impl Default for DataWriterProperties {
+    fn default() -> Self {
+        DataWriterProperties {
+            max_row_group_size: 5000,
+        }
+    }
 }
 
 impl DataArrowWriter {
@@ -303,6 +321,7 @@ impl DataWriter {
     pub fn for_table(
         table: &DeltaTable,
         options: HashMap<String, String>,
+        props: Option<DataWriterProperties>
     ) -> Result<DataWriter, DataWriterError> {
         let storage = get_backend_for_uri_with_options(&table.table_uri, options)?;
 
@@ -313,7 +332,13 @@ impl DataWriter {
         let partition_columns = metadata.partition_columns.clone();
 
         // Initialize writer properties for the underlying arrow writer
-        let writer_properties = WriterProperties::builder()
+        let builder = props
+            .map_or(
+                WriterProperties::builder(),
+                |x| WriterProperties::builder()
+                .set_max_row_group_size(x.max_row_group_size));
+        
+        let writer_properties = builder
             // NOTE: Consider extracting config for writer properties and setting more than just compression
             .set_compression(Compression::SNAPPY)
             .build();
@@ -1064,7 +1089,7 @@ mod tests {
         let table = crate::delta_helpers::load_table(table_path.to_str().unwrap(), HashMap::new())
             .await
             .unwrap();
-        let mut writer = DataWriter::for_table(&table, HashMap::new()).unwrap();
+        let mut writer = DataWriter::for_table(&table, HashMap::new(), None).unwrap();
 
         writer.write(JSON_ROWS.clone()).await.unwrap();
         let add = writer.write_parquet_files(&table.table_uri).await.unwrap();

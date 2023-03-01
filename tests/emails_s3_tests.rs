@@ -136,6 +136,7 @@ impl TestScope {
 
     fn create_options(&self, name: &str) -> IngestOptions {
         env::set_var("AWS_S3_LOCKING_PROVIDER", "dynamodb");
+        env::set_var("AWS_REGION", "us-east-2");
         env::set_var("DYNAMO_LOCK_TABLE_NAME", "locks");
         env::set_var("DYNAMO_LOCK_OWNER_NAME", name);
         env::set_var("DYNAMO_LOCK_PARTITION_KEY_VALUE", "emails_s3_tests");
