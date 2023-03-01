@@ -63,7 +63,7 @@ async fn test_start_from_explicit() {
     );
 
     // Wait for the rebalance assignment
-    std::thread::sleep(std::time::Duration::from_secs(3));
+    std::thread::sleep(std::time::Duration::from_secs(8));
 
     // Send messages to Kafka before starting kafka-delta-ingest
     for m in create_generator(11).take(5) {
@@ -203,7 +203,7 @@ async fn test_start_from_latest() {
     }
 
     // Wait for the rebalance assignment so the position of latest is clear.
-    std::thread::sleep(std::time::Duration::from_secs(3));
+    std::thread::sleep(std::time::Duration::from_secs(8));
 
     // These 10 messages should be in the delta log
     for m in create_generator(7).take(10) {
