@@ -28,12 +28,12 @@ use rdkafka::{
     ClientContext, Message, Offset, TopicPartitionList,
 };
 use serde_json::Value;
-use writer::DataWriterProperties;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
+use writer::DataWriterProperties;
 
 mod coercions;
 mod dead_letters;
@@ -627,10 +627,11 @@ impl IngestProcessor {
         let coercion_tree = coercions::create_coercion_tree(&table.get_metadata()?.schema);
         let delta_writer = DataWriter::for_table(
             &table,
-             HashMap::new(),
-            Some(DataWriterProperties{
+            HashMap::new(),
+            Some(DataWriterProperties {
                 max_row_group_size: opts.max_messages_per_batch,
-            }))?;
+            }),
+        )?;
 
         Ok(IngestProcessor {
             topic,

@@ -25,11 +25,7 @@ use parquet::{
     basic::{Compression, LogicalType, TimestampType},
     errors::ParquetError,
     file::{
-        metadata::RowGroupMetaData,
-        properties::{
-            WriterProperties,
-         },
-        statistics::Statistics,
+        metadata::RowGroupMetaData, properties::WriterProperties, statistics::Statistics,
         writer::InMemoryWriteableCursor,
     },
     schema::types::{ColumnDescriptor, SchemaDescriptor},
@@ -165,7 +161,7 @@ pub(crate) struct DataArrowWriter {
 /// Settings for file writers
 pub struct DataWriterProperties {
     /// The maximum row group size in order to force the parquet writer to flush
-    pub max_row_group_size: usize
+    pub max_row_group_size: usize,
 }
 
 impl Default for DataWriterProperties {
@@ -321,7 +317,7 @@ impl DataWriter {
     pub fn for_table(
         table: &DeltaTable,
         options: HashMap<String, String>,
-        props: Option<DataWriterProperties>
+        props: Option<DataWriterProperties>,
     ) -> Result<DataWriter, DataWriterError> {
         let storage = get_backend_for_uri_with_options(&table.table_uri, options)?;
 
@@ -332,12 +328,10 @@ impl DataWriter {
         let partition_columns = metadata.partition_columns.clone();
 
         // Initialize writer properties for the underlying arrow writer
-        let builder = props
-            .map_or(
-                WriterProperties::builder(),
-                |x| WriterProperties::builder()
-                .set_max_row_group_size(x.max_row_group_size));
-        
+        let builder = props.map_or(WriterProperties::builder(), |x| {
+            WriterProperties::builder().set_max_row_group_size(x.max_row_group_size)
+        });
+
         let writer_properties = builder
             // NOTE: Consider extracting config for writer properties and setting more than just compression
             .set_compression(Compression::SNAPPY)
