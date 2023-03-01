@@ -2,26 +2,35 @@
 version: '3.9'
 services:
   kafka:
-    image: wurstmeister/kafka
+    image: confluentinc/cp-kafka:latest
     depends_on: 
       - zookeeper
     ports:
       - "9092:9092"
     environment:
+      ALLOW_PLAINTEXT_LISTENER: yes
+      KAFKA_BROKER_ID: "1"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
       KAFKA_ADVERTISED_HOST_NAME: localhost
       KAFKA_CREATE_TOPICS: "example:3:1,web_requests:3:1"
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
     healthcheck:
       test: ["CMD", "bash", "-c", "unset", "JMX_PORT", ";", "kafka-topics.sh", "--zookeeper", "zookeeper:2181", "--list"]
 
   zookeeper:
-    image: wurstmeister/zookeeper
+    image: confluentinc/cp-zookeeper:latest
+    environment:
+      ZOOKEEPER_CLIENT_PORT: "2181"
     privileged: true
     ports:
       - "2181:2181"
 
   localstack:
-    image: localstack/localstack:0.12.11
+    image: localstack/localstack:0.13.1
     ports: 
       - "4566:4566"
     environment:
@@ -34,7 +43,7 @@ services:
       test: [ "CMD", "curl", "-f", "http://localhost:4566/health" ]
 
   setup:
-    image: localstack/localstack:0.12.11
+    image: localstack/localstack:0.13.1
     depends_on: 
       - kafka
       - localstack
@@ -42,5 +51,5 @@ services:
     command:
       - /localstack-setup_emails.sh
     volumes:
-      - "./bin/localstack-setup_emails.sh:/localstack-setup_emails.sh"
+      - ./bin/localstack-setup_emails.sh:/localstack-setup_emails.sh
       - "./tests/data/emails/:/data/emails"
