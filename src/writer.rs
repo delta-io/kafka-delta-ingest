@@ -700,7 +700,7 @@ fn apply_null_counts_for_column(
                 ColumnCountStat::Column(map) => {
                     apply_null_counts(
                         partition_columns,
-                        as_struct_array(column),
+                        as_struct_array(*column),
                         map,
                         nest_level + 1,
                     );
