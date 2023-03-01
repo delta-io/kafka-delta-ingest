@@ -28,6 +28,7 @@ use rdkafka::{
     ClientContext, Message, Offset, TopicPartitionList,
 };
 use serde_json::Value;
+use writer::DataWriterProperties;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -624,7 +625,12 @@ impl IngestProcessor {
         let transformer = Transformer::from_transforms(&opts.transforms)?;
         let table = delta_helpers::load_table(table_uri, HashMap::new()).await?;
         let coercion_tree = coercions::create_coercion_tree(&table.get_metadata()?.schema);
-        let delta_writer = DataWriter::for_table(&table, HashMap::new())?;
+        let delta_writer = DataWriter::for_table(
+            &table,
+             HashMap::new(),
+            Some(DataWriterProperties{
+                max_row_group_size: opts.max_messages_per_batch,
+            }))?;
 
         Ok(IngestProcessor {
             topic,
