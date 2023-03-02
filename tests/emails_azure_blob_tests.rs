@@ -7,6 +7,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
+use azure_storage::{shared_access_signature::SasProtocol, prelude::BlobSasPermissions};
+use time::OffsetDateTime;
 use tokio::runtime::Runtime;
 
 use chrono::prelude::*;
@@ -16,11 +18,8 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use kafka_delta_ingest::{start_ingest, IngestOptions};
-use rusoto_core::Region;
-use rusoto_s3::{CopyObjectRequest, S3};
 use tokio::task::JoinHandle;
 
-const TEST_S3_ENDPOINT: &str = "http://localhost:4566";
 const TEST_S3_BUCKET: &str = "tests";
 const TEST_APP_ID: &str = "emails_test";
 const TEST_BROKER: &str = "0.0.0.0:9092";
@@ -33,13 +32,13 @@ const WORKER_2: &str = "WORKER-2";
 
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
-async fn when_both_workers_started_simultaneously() {
+async fn when_both_workers_started_simultaneously_azure() {
     run_emails_s3_tests(false).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
-async fn when_rebalance_happens() {
+async fn when_rebalance_happens_azure() {
     run_emails_s3_tests(true).await;
 }
 
@@ -123,7 +122,7 @@ impl TestScope {
         let rt = self.runtime.get(name).unwrap();
         let topic = self.topic.clone();
         let table = self.table.clone();
-        let options = self.create_options(name);
+        let options = self.create_options();
         let token = self.workers_token.clone();
         rt.spawn(async move {
             let res = start_ingest(topic, table, options, token.clone()).await;
@@ -134,16 +133,16 @@ impl TestScope {
         })
     }
 
-    fn create_options(&self, name: &str) -> IngestOptions {
-        env::set_var("AWS_S3_LOCKING_PROVIDER", "dynamodb");
-        env::set_var("AWS_REGION", "us-east-2");
-        env::set_var("AWS_STORAGE_ALLOW_HTTP", "true");
-        env::set_var("DYNAMO_LOCK_TABLE_NAME", "locks");
-        env::set_var("DYNAMO_LOCK_OWNER_NAME", name);
-        env::set_var("DYNAMO_LOCK_PARTITION_KEY_VALUE", "emails_s3_tests");
-        env::set_var("DYNAMO_LOCK_REFRESH_PERIOD_MILLIS", "100");
-        env::set_var("DYNAMO_LOCK_ADDITIONAL_TIME_TO_WAIT_MILLIS", "100");
-        env::set_var("DYNAMO_LOCK_LEASE_DURATION", "2");
+    fn create_options(&self) -> IngestOptions {
+        env::set_var("AZURE_STORAGE_USE_EMULATOR", "true");
+        env::set_var("AZURE_ACCOUNT_NAME", "devstoreaccount1");
+        env::set_var("AZURE_ACCESS_KEY", "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==");
+        env::set_var("AZURE_STORAGE_CONTAINER_NAME", "tests");
+        env::set_var("AZURE_STORAGE_ALLOW_HTTP", "1");
+        env::set_var("AZURITE_BLOB_STORAGE_URL", "http://127.0.0.1:10000");
+        env::set_var(
+            "AZURE_STORAGE_CONNECTION_STRING", 
+            "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://localhost:10000/devstoreaccount1;QueueEndpoint=http://localhost:10001/devstoreaccount1;");
 
         let mut additional_kafka_settings = HashMap::new();
         additional_kafka_settings.insert("auto.offset.reset".to_string(), "earliest".to_string());
@@ -228,28 +227,37 @@ impl TestScope {
 }
 
 async fn prepare_table(topic: &str) -> String {
-    env::set_var("AWS_ENDPOINT_URL", helpers::LOCALSTACK_ENDPOINT);
-    env::set_var("AWS_ACCESS_KEY_ID", "test");
-    env::set_var("AWS_SECRET_ACCESS_KEY", "test");
-
-    let s3 = rusoto_s3::S3Client::new(Region::Custom {
-        name: "custom".to_string(),
-        endpoint: TEST_S3_ENDPOINT.to_string(),
-    });
-
-    s3.copy_object(CopyObjectRequest {
-        bucket: TEST_S3_BUCKET.to_string(),
-        key: format!("{}/_delta_log/00000000000000000000.json", topic),
-        copy_source: format!(
-            "/{}/emails/_delta_log/00000000000000000000.json",
-            TEST_S3_BUCKET
-        ),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
-
-    format!("s3://{}/{}", TEST_S3_BUCKET, topic)
+    env::set_var("AZURE_USE_EMULATOR", "true");
+    env::set_var("AZURE_STORAGE_ALLOW_HTTP", "1");
+    env::set_var("AZURITE_BLOB_STORAGE_URL", "http://localhost:10000");
+    env::set_var(
+        "AZURE_STORAGE_CONNECTION_STRING", 
+        "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://localhost:10000/devstoreaccount1;QueueEndpoint=http://localhost:10001/devstoreaccount1;");
+    let container_client = azure_storage_blobs::prelude::ClientBuilder::emulator().container_client(TEST_S3_BUCKET);
+    let source_blob = container_client.blob_client(format!("emails/_delta_log/00000000000000000000.json"));
+    let sas_url = {
+        let now = OffsetDateTime::now_utc();
+        let later = now + time::Duration::hours(1);
+        let sas = source_blob
+            .shared_access_signature(
+                BlobSasPermissions{
+                    read: true,
+                    ..Default::default()
+                },
+                later,
+            )
+            .unwrap()
+            .start(now)
+            .protocol(SasProtocol::HttpHttps);
+        source_blob.generate_signed_blob_url(&sas).unwrap()
+    };
+    container_client
+        .blob_client(format!("{}/_delta_log/00000000000000000000.json", topic))
+        .copy_from_url(sas_url)
+        .await
+        .unwrap();
+    
+    format!("az://{}/{}", TEST_S3_BUCKET, topic)
 }
 
 fn create_partitions_app_ids(num_p: i32) -> Vec<String> {

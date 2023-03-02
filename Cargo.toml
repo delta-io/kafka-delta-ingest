@@ -53,6 +53,10 @@ utime = "0.3"
 serial_test = "*"
 tempfile = "3"
 parquet = { version = "32", features = ["cli"] }
+azure_core = "0.10.0"
+azure_storage = "0.10.0"
+azure_storage_blobs = "0.10.0"
+time = "0.3.20"
 
 [profile.release]
 lto = true
