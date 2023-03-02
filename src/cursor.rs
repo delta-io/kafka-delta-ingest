@@ -82,8 +82,8 @@ impl Seek for SliceableCursor {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
         let new_pos = match pos {
             SeekFrom::Start(pos) => pos as i64,
-            SeekFrom::End(pos) => self.inner.len() as i64 + pos as i64,
-            SeekFrom::Current(pos) => self.pos as i64 + pos as i64,
+            SeekFrom::End(pos) => self.inner.len() as i64 + pos,
+            SeekFrom::Current(pos) => self.pos as i64 + pos,
         };
 
         if new_pos < 0 {
