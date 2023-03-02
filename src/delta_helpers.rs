@@ -8,14 +8,7 @@ pub(crate) async fn load_table(
     table_uri: &str,
     options: HashMap<String, String>,
 ) -> Result<DeltaTable, DeltaTableError> {
-    let backend = deltalake::get_backend_for_uri_with_options(table_uri, options)?;
-    let mut table = DeltaTable::new(
-        table_uri,
-        backend,
-        deltalake::DeltaTableConfig {
-            require_tombstones: true,
-        },
-    )?;
+    let mut table = deltalake::open_table_with_storage_options(table_uri, options).await?;
     table.load().await?;
     Ok(table)
 }
@@ -52,7 +45,7 @@ pub(crate) async fn try_create_checkpoint(
     version: DeltaDataTypeVersion,
 ) -> Result<(), CheckpointError> {
     if version % 10 == 0 {
-        let table_version = table.version;
+        let table_version = table.version();
         // if there's new version right after current commit, then we need to reset
         // the table right back to version to create the checkpoint
         let version_updated = table_version != version;

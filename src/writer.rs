@@ -1,5 +1,4 @@
 //! High-level writer implementations for [`deltalake`].
-
 use arrow::{
     array::{
         as_boolean_array, as_primitive_array, as_struct_array, make_array, Array, ArrayData,
@@ -9,35 +8,36 @@ use arrow::{
     datatypes::Schema as ArrowSchema,
     datatypes::*,
     error::ArrowError,
-    json::reader::Decoder,
+    json::reader::{Decoder, DecoderOptions},
     record_batch::*,
 };
+
 use deltalake::{
     action::{Action, Add, ColumnCountStat, ColumnValueStat, Stats},
-    get_backend_for_uri_with_options,
-    writer::time_utils::timestamp_to_delta_stats_string,
     DeltaDataTypeLong, DeltaDataTypeVersion, DeltaTable, DeltaTableError, DeltaTableMetaData,
-    Schema, StorageBackend, StorageError, UriError,
+    Schema, storage::{DeltaObjectStore}, time_utils::timestamp_to_delta_stats_string, ObjectStoreError, DeltaResult,
 };
-use log::{info, warn};
+use log::{info, warn, error};
 use parquet::{
     arrow::ArrowWriter,
-    basic::{Compression, LogicalType, TimestampType},
+    basic::{Compression, LogicalType},
     errors::ParquetError,
     file::{
         metadata::RowGroupMetaData, properties::WriterProperties, statistics::Statistics,
-        writer::InMemoryWriteableCursor,
     },
     schema::types::{ColumnDescriptor, SchemaDescriptor},
 };
-use parquet_format::FileMetaData;
+use parquet::format::FileMetaData;
 use serde_json::{Number, Value};
-use std::collections::HashMap;
+use std::{collections::HashMap, env};
 use std::convert::TryFrom;
 use std::io::Write;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use url::Url;
 use uuid::Uuid;
+
+use crate::cursor::InMemoryWriteableCursor;
 
 const NULL_PARTITION_VALUE_DATA_PATH: &str = "__HIVE_DEFAULT_PARTITION__";
 
@@ -92,17 +92,17 @@ pub enum DataWriterError {
     /// Invalid table paths was specified for the delta table.
     #[error("Invalid table path: {}", .source)]
     UriError {
-        /// The wrapped [`UriError`].
+        /// The wrapped [`url::ParseError`].
         #[from]
-        source: UriError,
+        source: url::ParseError,
     },
 
     /// deltalake storage backend returned an error.
     #[error("Storage interaction failed: {source}")]
     Storage {
-        /// The wrapped [`StorageError`]
+        /// The wrapped [`ObjectStoreError`]
         #[from]
-        source: StorageError,
+        source: ObjectStoreError,
     },
 
     /// DeltaTable returned an error.
@@ -140,7 +140,7 @@ pub enum DataWriterError {
 
 /// Writes messages to a delta lake table.
 pub struct DataWriter {
-    storage: Box<dyn StorageBackend>,
+    storage: DeltaObjectStore,
     arrow_schema_ref: Arc<arrow::datatypes::Schema>,
     writer_properties: WriterProperties,
     partition_columns: Vec<String>,
@@ -241,6 +241,7 @@ impl DataArrowWriter {
         let current_cursor_bytes = self.cursor.data();
 
         let result = self.arrow_writer.write(&record_batch);
+        self.arrow_writer.flush()?;
 
         match result {
             Ok(_) => {
@@ -319,11 +320,11 @@ impl DataWriter {
         options: HashMap<String, String>,
         props: Option<DataWriterProperties>,
     ) -> Result<DataWriter, DataWriterError> {
-        let storage = get_backend_for_uri_with_options(&table.table_uri, options)?;
+        let storage = load_object_store_from_uri(table.table_uri().as_str(), Some(options))?;
 
         // Initialize an arrow schema ref from the delta table schema
         let metadata = table.get_metadata()?;
-        let arrow_schema = <ArrowSchema as TryFrom<&Schema>>::try_from(&metadata.schema)?;
+        let arrow_schema = ArrowSchema::try_from(&metadata.schema)?;
         let arrow_schema_ref = Arc::new(arrow_schema);
         let partition_columns = metadata.partition_columns.clone();
 
@@ -399,15 +400,11 @@ impl DataWriter {
         }
 
         if !partial_writes.is_empty() {
-            let sample = partial_writes.first().map(|t| t.to_owned());
-            if let Some((_, e)) = sample {
-                return Err(DataWriterError::PartialParquetWrite {
-                    skipped_values: partial_writes,
-                    sample_error: e,
-                });
-            } else {
-                unreachable!()
-            }
+            let sample = partial_writes[0].1.to_string();
+            return Err(DataWriterError::PartialParquetWrite {
+                skipped_values: partial_writes,
+                sample_error: ParquetError::General(sample),
+            });
         }
 
         Ok(())
@@ -422,7 +419,7 @@ impl DataWriter {
     /// Writes the existing parquet bytes to storage and resets internal state to handle another file.
     pub async fn write_parquet_files(
         &mut self,
-        table_uri: &str,
+        _: &str,
     ) -> Result<Vec<Add>, DataWriterError> {
         let writers = std::mem::take(&mut self.arrow_writers);
         let mut actions = Vec::new();
@@ -435,14 +432,13 @@ impl DataWriter {
             let obj_bytes = writer.cursor.data();
             let file_size = obj_bytes.len() as i64;
 
-            let storage_path = self.storage.join_path(table_uri, path.as_str());
-
             //
             // TODO: Wrap in retry loop to handle temporary network errors
             //
 
             self.storage
-                .put_obj(&storage_path, obj_bytes.as_slice())
+                .storage_backend()
+                .put(&deltalake::Path::parse(&path).unwrap(), bytes::Bytes::copy_from_slice(obj_bytes.as_slice()))
                 .await?;
 
             // Replace self null_counts with an empty map. Use the other for stats.
@@ -560,10 +556,10 @@ impl DataWriter {
         values: Vec<Value>,
     ) -> Result<DeltaDataTypeVersion, DataWriterError> {
         self.write(values).await?;
-        let mut adds = self.write_parquet_files(&table.table_uri).await?;
+        let mut adds = self.write_parquet_files(&table.table_uri()).await?;
         let mut tx = table.create_transaction(None);
         tx.add_actions(adds.drain(..).map(Action::add).collect());
-        let version = tx.commit(None).await?;
+        let version = tx.commit(None, None).await?;
 
         Ok(version)
     }
@@ -576,10 +572,35 @@ pub fn record_batch_from_json(
 ) -> Result<RecordBatch, DataWriterError> {
     let row_count = json_buffer.len();
     let mut value_iter = json_buffer.iter().map(|j| Ok(j.to_owned()));
-    let decoder = Decoder::new(arrow_schema_ref, row_count, None);
+    let decoder = Decoder::new(arrow_schema_ref, DecoderOptions::new().with_batch_size(row_count));
     decoder
         .next_batch(&mut value_iter)?
         .ok_or(DataWriterError::EmptyRecordBatch)
+}
+
+/// Creates an object store from a uri while normalizing file system paths
+pub fn load_object_store_from_uri(path: &str, options: Option<HashMap<String, String>>) -> DeltaResult<DeltaObjectStore> {
+    match Url::parse(path) {
+        Ok(table_uri) => DeltaObjectStore::try_new(table_uri, options.unwrap_or(HashMap::new())),
+        Err(url::ParseError::RelativeUrlWithoutBase) => {
+            match std::path::Path::new(path).is_absolute() {
+                true => load_table_from_file_uri(path, options),
+                false => {
+                    let result = env::current_dir()?.join(path).to_str().unwrap_or(path).to_string();
+                    load_table_from_file_uri(result.as_str(), options)
+                },
+            }
+        },
+        Err(e) => {
+            error!("unable to parse table uri: {}", e);
+            return DeltaResult::Err(DeltaTableError::InvalidTableLocation(path.to_string()));
+        }
+    }
+}
+
+fn load_table_from_file_uri(absolute_path: &str, options: Option<HashMap<String, String>>) -> DeltaResult<DeltaObjectStore> {
+    let url = Url::from_file_path(absolute_path).unwrap();
+    DeltaObjectStore::try_new(url, options.unwrap_or(HashMap::new()))
 }
 
 type BadValue = (Value, ParquetError);
@@ -695,7 +716,7 @@ fn apply_null_counts(
                 return;
             }
 
-            apply_null_counts_for_column(partition_columns, null_counts, nest_level, column, field);
+            apply_null_counts_for_column(partition_columns, null_counts, nest_level, &column, field);
         });
 }
 
@@ -887,10 +908,13 @@ fn min_and_max_from_parquet_statistics(
             let max = arrow::compute::max(max_array);
 
             match column_descr.logical_type().as_ref() {
-                Some(LogicalType::TIMESTAMP(TimestampType { unit, .. })) => {
-                    let min = min.map(|n| Value::String(timestamp_to_delta_stats_string(n, unit)));
-                    let max = max.map(|n| Value::String(timestamp_to_delta_stats_string(n, unit)));
-
+                Some(LogicalType::Timestamp{ unit, .. }) => {
+                    let max = max
+                        .and_then(|n| timestamp_to_delta_stats_string(n, unit))
+                        .and_then(|s| Some(Value::String(s)));
+                    let min = min
+                        .and_then(|n| timestamp_to_delta_stats_string(n, unit))
+                        .and_then(|s| Some(Value::String(s)));
                     Ok((min, max))
                 }
                 _ => {
@@ -929,7 +953,7 @@ fn min_and_max_from_parquet_statistics(
 
 #[inline]
 fn is_utf8(opt: Option<LogicalType>) -> bool {
-    matches!(opt.as_ref(), Some(LogicalType::STRING(_)))
+    matches!(opt.as_ref(), Some(LogicalType::String))
 }
 
 fn min_max_strings_from_stats(
@@ -1086,7 +1110,7 @@ mod tests {
         let mut writer = DataWriter::for_table(&table, HashMap::new(), None).unwrap();
 
         writer.write(JSON_ROWS.clone()).await.unwrap();
-        let add = writer.write_parquet_files(&table.table_uri).await.unwrap();
+        let add = writer.write_parquet_files(&table.table_uri()).await.unwrap();
         assert_eq!(add.len(), 1);
         let stats = add[0].get_stats().unwrap().unwrap();
 

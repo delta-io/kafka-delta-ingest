@@ -59,7 +59,7 @@ async fn test_delta_partitions() {
     delta_writer.write(msgs_to_values(batch2)).await.unwrap();
 
     let result = delta_writer
-        .write_parquet_files(&table.table_uri)
+        .write_parquet_files(&table.table_uri())
         .await
         .unwrap();
 
@@ -97,14 +97,14 @@ async fn test_delta_partitions() {
 
     let mut tx = table.create_transaction(None);
     tx.add_actions(result.iter().cloned().map(Action::add).collect());
-    let version = tx.commit(None).await.unwrap();
+    let version = tx.commit(None, None).await.unwrap();
 
     deltalake::checkpoints::create_checkpoint(&table)
         .await
         .unwrap();
 
     let table = deltalake::open_table(&table_path).await.unwrap();
-    assert_eq!(table.version, version);
+    assert_eq!(table.version(), version);
 
     std::fs::remove_dir_all(&table_path).unwrap();
 }

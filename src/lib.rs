@@ -42,7 +42,10 @@ mod metrics;
 mod offsets;
 mod transforms;
 mod value_buffers;
+/// Doc
 pub mod writer;
+/// Doc
+pub mod cursor;
 
 use crate::offsets::WriteOffsetsError;
 use crate::value_buffers::{ConsumedBuffers, ValueBuffers};
@@ -54,8 +57,6 @@ use crate::{
 };
 use delta_helpers::*;
 use deltalake::checkpoints::CheckpointError;
-use deltalake::storage::StorageError;
-use dynamodb_lock::DynamoError;
 use std::ops::Add;
 
 /// Type alias for Kafka partition
@@ -629,7 +630,7 @@ impl IngestProcessor {
             &table,
             HashMap::new(),
             Some(DataWriterProperties {
-                max_row_group_size: opts.max_messages_per_batch,
+                max_row_group_size: 1_000_000,
             }),
         )?;
 
@@ -770,7 +771,7 @@ impl IngestProcessor {
         if values.is_empty() {
             return Ok(());
         }
-
+        
         match self.delta_writer.write(values).await {
             Err(DataWriterError::PartialParquetWrite {
                 skipped_values,
@@ -810,7 +811,7 @@ impl IngestProcessor {
         // TODO: remove it if we got conflict error? or it'll be considered as tombstone
         let add = self
             .delta_writer
-            .write_parquet_files(&self.table.table_uri)
+            .write_parquet_files(&self.table.table_uri())
             .await?;
         // Record file sizes
         for a in add.iter() {
@@ -825,7 +826,7 @@ impl IngestProcessor {
                 self.opts.app_id.as_str(),
                 add,
             ));
-            tx.prepare_commit(None).await?
+            tx.prepare_commit(None, None).await?
         };
 
         loop {
@@ -845,7 +846,7 @@ impl IngestProcessor {
 
                 return Err(IngestError::DeltaSchemaChanged);
             }
-            let version = self.table.version + 1;
+            let version = self.table.version() + 1;
             let commit_result = self
                 .table
                 .try_commit_transaction(&prepared_commit, version)
@@ -884,11 +885,9 @@ impl IngestProcessor {
                         attempt_number += 1;
                         warn!("Transaction attempt failed. Incrementing attempt number to {} and retrying", attempt_number);
                     }
-                    DeltaTableError::StorageError {
-                        source:
-                            StorageError::DynamoDb {
-                                source: DynamoError::NonAcquirableLock,
-                            },
+                    // if store == "DeltaS3ObjectStore"
+                    DeltaTableError::GenericError{
+                        source: _,
                     } => {
                         error!("Delta write failed.. DeltaTableError: {}", e);
                         return Err(IngestError::InconsistentState(

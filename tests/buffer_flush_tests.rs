@@ -98,7 +98,7 @@ async fn test_dont_write_an_empty_buffer() {
 
     let t = deltalake::open_table(&table).await.unwrap();
 
-    assert_eq!(1, t.version);
+    assert_eq!(1, t.version());
 
     token.cancel();
     kdi.await.unwrap();

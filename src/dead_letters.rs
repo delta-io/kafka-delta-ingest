@@ -63,7 +63,7 @@ impl DeadLetter {
     /// Creates a dead letter from a record that fails on parquet write.
     /// `base64_bytes` will always be `None`.
     /// `json_string` will contain the stringified JSON that was not writeable to parquet.
-    pub(crate) fn from_failed_parquet_row(value: &Value, err: ParquetError) -> Self {
+    pub(crate) fn from_failed_parquet_row(value: &Value, err: &ParquetError) -> Self {
         let timestamp = Utc::now();
         Self {
             base64_bytes: None,
@@ -79,7 +79,7 @@ impl DeadLetter {
     pub(crate) fn vec_from_failed_parquet_rows(failed: Vec<(Value, ParquetError)>) -> Vec<Self> {
         failed
             .iter()
-            .map(|(v, e)| Self::from_failed_parquet_row(v, e.to_owned()))
+            .map(|(v, e)| Self::from_failed_parquet_row(v, e))
             .collect()
     }
 }
@@ -300,7 +300,7 @@ impl DeadLetterQueue for DeltaSinkDeadLetterQueue {
         info!(
             "Inserted {} dead letters to {}",
             dead_letters.len(),
-            self.table.table_uri
+            self.table.table_uri(),
         );
 
         Ok(())
