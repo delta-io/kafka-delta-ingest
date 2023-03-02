@@ -90,7 +90,7 @@ pub async fn send_bytes(producer: &FutureProducer, topic: &str, bytes: &Vec<u8>)
 
 // Example parquet read is taken from https://docs.rs/parquet/4.1.0/parquet/arrow/index.html#example-of-reading-parquet-file-into-arrow-record-batch
 // TODO Research whether it's possible to read parquet data from bytes but not from file
-pub async fn read_files_from_s3(table: &DeltaTable) -> Vec<i32> {
+pub async fn read_files_from_store(table: &DeltaTable) -> Vec<i32> {
     let table_uri = table.table_uri();
     let s3 = load_object_store_from_uri(&table_uri, None).unwrap();
     let paths = table.get_files();
@@ -410,11 +410,11 @@ pub async fn inspect_table(path: &str) {
     for (k, v) in table.get_app_transaction_version().iter() {
         println!("  {}: {}", k, v);
     }
-    let s3 = load_object_store_from_uri(path, None).unwrap();
+    let store = load_object_store_from_uri(path, None).unwrap();
 
     for version in 1..=table.version() {
         let log_path = format!("{}/_delta_log/{:020}.json", path, version);
-        let get_result = s3.storage_backend().get(&Path::parse(&log_path).unwrap()).await.unwrap();
+        let get_result = store.storage_backend().get(&Path::parse(&log_path).unwrap()).await.unwrap();
         let bytes = get_result.bytes().await.unwrap();
         let reader = BufReader::new(Cursor::new(bytes.chunk()));
 
@@ -430,7 +430,7 @@ pub async fn inspect_table(path: &str) {
                     let stats = a.get_stats().unwrap().unwrap();
                     println!("  Add: {}. Records: {}", &a.path, stats.num_records);
                     let full_path = format!("{}/{}", &path, &a.path);
-                    let parquet_bytes = s3.storage_backend().get(&Path::parse(&full_path).unwrap())
+                    let parquet_bytes = store.storage_backend().get(&Path::parse(&full_path).unwrap())
                         .await.unwrap().bytes().await.unwrap();
                     let reader =
                         SerializedFileReader::new(parquet_bytes).unwrap();
@@ -448,7 +448,7 @@ pub async fn inspect_table(path: &str) {
         if version % 10 == 0 {
             println!("Version: {}", version);
             let log_path = format!("{}/_delta_log/{:020}.checkpoint.parquet", path, version);
-            let bytes = s3.storage_backend().get(&Path::parse(&log_path).unwrap())
+            let bytes = store.storage_backend().get(&Path::parse(&log_path).unwrap())
                 .await.unwrap().bytes().await.unwrap();
             let reader = SerializedFileReader::new(bytes).unwrap();
             let mut i = 0;

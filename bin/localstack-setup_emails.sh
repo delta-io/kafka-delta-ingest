@@ -4,6 +4,7 @@ export AWS_ACCESS_KEY_ID=test
 export AWS_SECRET_ACCESS_KEY=test
 export AWS_DEFAULT_REGION=us-east-2
 export ENDPOINT=http://localstack:4566
+export AZURE_CONNECTION_STRING="DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;QueueEndpoint=http://azurite:10001/devstoreaccount1;"
 
 function wait_for() {
   retries=10
@@ -18,6 +19,10 @@ function wait_for() {
     retries=$((retries - 1))
   done
 }
+
+wait_for "Azurite" "az storage container list --connection-string ${AZURE_CONNECTION_STRING}"
+az storage container create -n tests --connection-string ${AZURE_CONNECTION_STRING}
+az storage blob upload-batch -d tests -s /data/emails -t block --overwrite --destination-path emails --connection-string ${AZURE_CONNECTION_STRING}
 
 wait_for "S3" "aws s3api list-buckets --endpoint-url=$ENDPOINT"
 

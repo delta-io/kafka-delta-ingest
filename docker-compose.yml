@@ -47,10 +47,13 @@ services:
     - "10000:10000"
     - "10001:10001"
   setup:
-    image: localstack/localstack:0.13.1
+    build:
+      context: .
+      dockerfile: Dockerfile.setup
     depends_on: 
       - kafka
       - localstack
+      - azurite
     entrypoint: "/bin/bash"
     command:
       - /localstack-setup_emails.sh
