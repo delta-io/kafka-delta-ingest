@@ -33,7 +33,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
-use writer::DataWriterProperties;
 
 mod coercions;
 mod dead_letters;
@@ -629,9 +628,6 @@ impl IngestProcessor {
         let delta_writer = DataWriter::for_table(
             &table,
             HashMap::new(),
-            Some(DataWriterProperties {
-                max_row_group_size: 1_000_000,
-            }),
         )?;
 
         Ok(IngestProcessor {
