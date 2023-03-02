@@ -8,6 +8,7 @@ edition = "2018"
 anyhow = "1"
 async-trait = "0.1"
 base64 = "0.13"
+bytes = "1"
 chrono = "0"
 clap = { version = "3", features = ["color"] }
 dipstick = "0.9"
@@ -32,15 +33,17 @@ tokio-stream = { version = "0", features = ["fs"] }
 tokio-util = "0.6.3"
 uuid = { version = "0.8", features = ["serde", "v4"] }
 
-arrow  = "9"
-parquet = "9"
+arrow  = "32"
+parquet = "32"
 
-deltalake = { git = "https://github.com/delta-io/delta-rs.git", rev = "6ea048077b8d6bfcf987fa0fb125b1e59e0728a8", features = ["s3", "azure"] }
-dynamodb_lock = { git = "https://github.com/delta-io/delta-rs.git", rev = "6ea048077b8d6bfcf987fa0fb125b1e59e0728a8" }
+deltalake = { git = "https://github.com/delta-io/delta-rs.git", rev = "8dcf46e614370b93a6d47402456621b713768674", features = ["s3", "azure"] }
+dynamodb_lock = { git = "https://github.com/delta-io/delta-rs.git", rev = "8dcf46e614370b93a6d47402456621b713768674" }
+# deltalake = { version = "0.7.0", features = ["s3", "azure"] }
+# dynamodb_lock = "0.4.3"
 
 # sentry
 sentry = { version = "0.23.0", optional = true }
-
+url = "2.3"
 [features]
 sentry-ext = ["sentry"]
 dynamic-linking = [ "rdkafka/dynamic-linking" ]
@@ -49,7 +52,7 @@ dynamic-linking = [ "rdkafka/dynamic-linking" ]
 utime = "0.3"
 serial_test = "*"
 tempfile = "3"
-parquet = { version = "9", features = ["cli"] }
+parquet = { version = "32", features = ["cli"] }
 
 [profile.release]
 lto = true

@@ -109,12 +109,12 @@ async fn commit_partition_offsets(
 
     let mut tx = table.create_transaction(None);
     tx.add_actions(actions);
-    let prepared_commit = tx.prepare_commit(None).await?;
+    let prepared_commit = tx.prepare_commit(None, None).await?;
 
     let mut attempt_number = 0;
     loop {
         table.update().await?;
-        let version = table.version + 1;
+        let version = table.version() + 1;
 
         if !is_safe_to_commit_transactions(table, &offsets) {
             // Partitions offsets have been committed by other writer, nothing to do here now
@@ -179,14 +179,14 @@ mod tests {
         let offsets = vec![(0, 5), (1, 10)];
 
         // Test successful write
-        assert_eq!(table.version, 0);
+        assert_eq!(table.version(), 0);
         write_offsets_to_delta(&mut table, "test", &offsets)
             .await
             .unwrap();
 
         // verify that txn action is written
         table.update().await.unwrap();
-        assert_eq!(table.version, 1);
+        assert_eq!(table.version(), 1);
         assert_eq!(
             table.get_app_transaction_version().get("test-0").unwrap(),
             &5
@@ -203,7 +203,7 @@ mod tests {
 
         // verify that txn action is not written
         table.update().await.unwrap();
-        assert_eq!(table.version, 1);
+        assert_eq!(table.version(), 1);
 
         // Test failed write (lower stored offsets)
         let offsets = vec![(0, 15)];
@@ -218,7 +218,7 @@ mod tests {
             "InconsistentStoredOffsets(\"[test-0:stored=5/seek=15]\")"
         );
 
-        std::fs::remove_dir_all(table.table_uri).unwrap();
+        std::fs::remove_dir_all(table.table_uri()).unwrap();
     }
 
     async fn create_table() -> DeltaTable {

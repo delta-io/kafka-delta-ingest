@@ -41,7 +41,11 @@ services:
       - HOST_TMP_FOLDER=${TMPDIR}
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:4566/health" ]
-
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    ports:
+    - "10000:10000"
+    - "10001:10001"
   setup:
     image: localstack/localstack:0.13.1
     depends_on: 
