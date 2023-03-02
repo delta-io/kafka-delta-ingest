@@ -227,12 +227,6 @@ impl TestScope {
 }
 
 async fn prepare_table(topic: &str) -> String {
-    env::set_var("AZURE_USE_EMULATOR", "true");
-    env::set_var("AZURE_STORAGE_ALLOW_HTTP", "1");
-    env::set_var("AZURITE_BLOB_STORAGE_URL", "http://localhost:10000");
-    env::set_var(
-        "AZURE_STORAGE_CONNECTION_STRING", 
-        "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://localhost:10000/devstoreaccount1;QueueEndpoint=http://localhost:10001/devstoreaccount1;");
     let container_client = azure_storage_blobs::prelude::ClientBuilder::emulator().container_client(TEST_S3_BUCKET);
     let source_blob = container_client.blob_client(format!("emails/_delta_log/00000000000000000000.json"));
     let sas_url = {
