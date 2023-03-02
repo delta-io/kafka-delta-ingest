@@ -158,20 +158,6 @@ pub(crate) struct DataArrowWriter {
     buffered_record_batch_count: usize,
 }
 
-/// Settings for file writers
-pub struct DataWriterProperties {
-    /// The maximum row group size in order to force the parquet writer to flush
-    pub max_row_group_size: usize,
-}
-
-impl Default for DataWriterProperties {
-    fn default() -> Self {
-        DataWriterProperties {
-            max_row_group_size: 5000,
-        }
-    }
-}
-
 impl DataArrowWriter {
     /// Writes the given JSON buffer and updates internal state accordingly.
     /// This method buffers the write stream internally so it can be invoked for many json buffers and flushed after the appropriate number of bytes has been written.
@@ -318,7 +304,6 @@ impl DataWriter {
     pub fn for_table(
         table: &DeltaTable,
         options: HashMap<String, String>,
-        props: Option<DataWriterProperties>,
     ) -> Result<DataWriter, DataWriterError> {
         let storage = load_object_store_from_uri(table.table_uri().as_str(), Some(options))?;
 
@@ -329,11 +314,7 @@ impl DataWriter {
         let partition_columns = metadata.partition_columns.clone();
 
         // Initialize writer properties for the underlying arrow writer
-        let builder = props.map_or(WriterProperties::builder(), |x| {
-            WriterProperties::builder().set_max_row_group_size(x.max_row_group_size)
-        });
-
-        let writer_properties = builder
+        let writer_properties = WriterProperties::builder()
             // NOTE: Consider extracting config for writer properties and setting more than just compression
             .set_compression(Compression::SNAPPY)
             .build();
@@ -1107,7 +1088,7 @@ mod tests {
         let table = crate::delta_helpers::load_table(table_path.to_str().unwrap(), HashMap::new())
             .await
             .unwrap();
-        let mut writer = DataWriter::for_table(&table, HashMap::new(), None).unwrap();
+        let mut writer = DataWriter::for_table(&table, HashMap::new()).unwrap();
 
         writer.write(JSON_ROWS.clone()).await.unwrap();
         let add = writer.write_parquet_files(&table.table_uri()).await.unwrap();
