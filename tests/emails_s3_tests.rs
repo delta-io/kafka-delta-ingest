@@ -126,8 +126,8 @@ impl TestScope {
         let options = self.create_options(name);
         let token = self.workers_token.clone();
         rt.spawn(async move {
-            let _ = start_ingest(topic, table, options, token.clone()).await;
-
+            let res = start_ingest(topic, table, options, token.clone()).await;
+            res.unwrap_or_else(|e| println!("AN ERROR OCCURED: {}", e));
             println!("Ingest process exited");
 
             token.cancel();
@@ -137,6 +137,7 @@ impl TestScope {
     fn create_options(&self, name: &str) -> IngestOptions {
         env::set_var("AWS_S3_LOCKING_PROVIDER", "dynamodb");
         env::set_var("AWS_REGION", "us-east-2");
+        env::set_var("AWS_STORAGE_ALLOW_HTTP", "true");
         env::set_var("DYNAMO_LOCK_TABLE_NAME", "locks");
         env::set_var("DYNAMO_LOCK_OWNER_NAME", name);
         env::set_var("DYNAMO_LOCK_PARTITION_KEY_VALUE", "emails_s3_tests");
@@ -214,7 +215,7 @@ impl TestScope {
 
     async fn validate_data(&self) {
         let table = deltalake::open_table(&self.table).await.unwrap();
-        let result = helpers::read_files_from_s3(table.get_file_uris().collect()).await;
+        let result = helpers::read_files_from_s3(&table).await;
         let r: Vec<i32> = (0..TEST_TOTAL_MESSAGES).collect();
         println!("Got messages {}/{}", result.len(), TEST_TOTAL_MESSAGES);
 
