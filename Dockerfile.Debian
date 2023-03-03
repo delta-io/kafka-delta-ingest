@@ -1,4 +1,4 @@
-FROM rust:1.60.0-bullseye as builder
+FROM rust:1.67.0-bullseye as builder
 WORKDIR /usr/src/kafka-delta-ingest
 COPY . .
 RUN cargo install --path .
