@@ -35,6 +35,8 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 mod coercions;
+/// Doc
+pub mod cursor;
 mod dead_letters;
 mod delta_helpers;
 mod metrics;
@@ -43,8 +45,6 @@ mod transforms;
 mod value_buffers;
 /// Doc
 pub mod writer;
-/// Doc
-pub mod cursor;
 
 use crate::offsets::WriteOffsetsError;
 use crate::value_buffers::{ConsumedBuffers, ValueBuffers};
@@ -625,10 +625,7 @@ impl IngestProcessor {
         let transformer = Transformer::from_transforms(&opts.transforms)?;
         let table = delta_helpers::load_table(table_uri, HashMap::new()).await?;
         let coercion_tree = coercions::create_coercion_tree(&table.get_metadata()?.schema);
-        let delta_writer = DataWriter::for_table(
-            &table,
-            HashMap::new(),
-        )?;
+        let delta_writer = DataWriter::for_table(&table, HashMap::new())?;
 
         Ok(IngestProcessor {
             topic,
@@ -767,7 +764,7 @@ impl IngestProcessor {
         if values.is_empty() {
             return Ok(());
         }
-        
+
         match self.delta_writer.write(values).await {
             Err(DataWriterError::PartialParquetWrite {
                 skipped_values,
@@ -882,9 +879,7 @@ impl IngestProcessor {
                         warn!("Transaction attempt failed. Incrementing attempt number to {} and retrying", attempt_number);
                     }
                     // if store == "DeltaS3ObjectStore"
-                    DeltaTableError::GenericError{
-                        source: _,
-                    } => {
+                    DeltaTableError::GenericError { source: _ } => {
                         error!("Delta write failed.. DeltaTableError: {}", e);
                         return Err(IngestError::InconsistentState(
                             "The remote dynamodb lock is non-acquirable!".to_string(),

@@ -39,9 +39,7 @@ impl SliceableCursor {
     /// Create a slice cursor using the same data as a current one.
     pub fn slice(&self, start: u64, length: usize) -> io::Result<Self> {
         let new_start = self.start + start;
-        if new_start >= self.inner.len() as u64
-            || new_start as usize + length > self.inner.len()
-        {
+        if new_start >= self.inner.len() as u64 || new_start as usize + length > self.inner.len() {
             return Err(Error::new(ErrorKind::InvalidInput, "out of bound"));
         }
         Ok(SliceableCursor {
@@ -240,8 +238,7 @@ mod tests {
         let mut cursor = get_u8_range();
         let res = cursor.seek(SeekFrom::End(-1000));
         let actual_error = res.expect_err("expected error").to_string();
-        let expected_error =
-            "Request out of bounds: cur position 0 + seek End(-1000) < 0: -744";
+        let expected_error = "Request out of bounds: cur position 0 + seek End(-1000) < 0: -744";
         assert_eq!(actual_error, expected_error);
     }
 }
