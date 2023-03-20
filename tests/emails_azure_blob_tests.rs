@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use azure_storage::{shared_access_signature::SasProtocol, prelude::BlobSasPermissions};
+use azure_storage::{prelude::BlobSasPermissions, shared_access_signature::SasProtocol};
 use time::OffsetDateTime;
 use tokio::runtime::Runtime;
 
@@ -227,14 +227,16 @@ impl TestScope {
 }
 
 async fn prepare_table(topic: &str) -> String {
-    let container_client = azure_storage_blobs::prelude::ClientBuilder::emulator().container_client(TEST_S3_BUCKET);
-    let source_blob = container_client.blob_client(format!("emails/_delta_log/00000000000000000000.json"));
+    let container_client =
+        azure_storage_blobs::prelude::ClientBuilder::emulator().container_client(TEST_S3_BUCKET);
+    let source_blob =
+        container_client.blob_client(format!("emails/_delta_log/00000000000000000000.json"));
     let sas_url = {
         let now = OffsetDateTime::now_utc();
         let later = now + time::Duration::hours(1);
         let sas = source_blob
             .shared_access_signature(
-                BlobSasPermissions{
+                BlobSasPermissions {
                     read: true,
                     ..Default::default()
                 },
@@ -250,7 +252,7 @@ async fn prepare_table(topic: &str) -> String {
         .copy_from_url(sas_url)
         .await
         .unwrap();
-    
+
     format!("az://{}/{}", TEST_S3_BUCKET, topic)
 }
 

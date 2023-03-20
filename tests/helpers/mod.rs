@@ -1,4 +1,3 @@
-
 use bytes::Buf;
 use chrono::Local;
 use deltalake::action::{Action, Add, MetaData, Protocol, Remove, Txn};
@@ -369,18 +368,19 @@ pub async fn read_table_content_at_version_as_jsons(
         .await
         .unwrap();
     let store = load_object_store_from_uri(table_uri, None).unwrap();
-    
+
     json_listify_table_content(table, store).await
 }
 
-async fn json_listify_table_content(
-    table: DeltaTable,
-    store: DeltaObjectStore,
-) -> Vec<Value> {
+async fn json_listify_table_content(table: DeltaTable, store: DeltaObjectStore) -> Vec<Value> {
     let tmp = format!(".test-{}.tmp", Uuid::new_v4());
     let mut list = Vec::new();
     for file in table.get_files() {
-        let get_result = store.storage_backend().get(&Path::from(file)).await.unwrap();
+        let get_result = store
+            .storage_backend()
+            .get(&Path::from(file))
+            .await
+            .unwrap();
         let bytes = get_result.bytes().await.unwrap();
         let mut file = File::create(&tmp).unwrap();
         file.write_all(bytes.chunk()).unwrap();
@@ -414,7 +414,11 @@ pub async fn inspect_table(path: &str) {
 
     for version in 1..=table.version() {
         let log_path = format!("{}/_delta_log/{:020}.json", path, version);
-        let get_result = store.storage_backend().get(&Path::parse(&log_path).unwrap()).await.unwrap();
+        let get_result = store
+            .storage_backend()
+            .get(&Path::parse(&log_path).unwrap())
+            .await
+            .unwrap();
         let bytes = get_result.bytes().await.unwrap();
         let reader = BufReader::new(Cursor::new(bytes.chunk()));
 
@@ -430,10 +434,15 @@ pub async fn inspect_table(path: &str) {
                     let stats = a.get_stats().unwrap().unwrap();
                     println!("  Add: {}. Records: {}", &a.path, stats.num_records);
                     let full_path = format!("{}/{}", &path, &a.path);
-                    let parquet_bytes = store.storage_backend().get(&Path::parse(&full_path).unwrap())
-                        .await.unwrap().bytes().await.unwrap();
-                    let reader =
-                        SerializedFileReader::new(parquet_bytes).unwrap();
+                    let parquet_bytes = store
+                        .storage_backend()
+                        .get(&Path::parse(&full_path).unwrap())
+                        .await
+                        .unwrap()
+                        .bytes()
+                        .await
+                        .unwrap();
+                    let reader = SerializedFileReader::new(parquet_bytes).unwrap();
                     for record in reader.get_row_iter(None).unwrap() {
                         println!("  - {}", record.to_json_value())
                     }
@@ -448,8 +457,14 @@ pub async fn inspect_table(path: &str) {
         if version % 10 == 0 {
             println!("Version: {}", version);
             let log_path = format!("{}/_delta_log/{:020}.checkpoint.parquet", path, version);
-            let bytes = store.storage_backend().get(&Path::parse(&log_path).unwrap())
-                .await.unwrap().bytes().await.unwrap();
+            let bytes = store
+                .storage_backend()
+                .get(&Path::parse(&log_path).unwrap())
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap();
             let reader = SerializedFileReader::new(bytes).unwrap();
             let mut i = 0;
             for record in reader.get_row_iter(None).unwrap() {
