@@ -584,7 +584,7 @@ pub fn load_object_store_from_uri(
         }
         Err(e) => {
             error!("unable to parse table uri: {}", e);
-            return DeltaResult::Err(DeltaTableError::InvalidTableLocation(path.to_string()));
+            DeltaResult::Err(DeltaTableError::InvalidTableLocation(path.to_string()))
         }
     }
 }

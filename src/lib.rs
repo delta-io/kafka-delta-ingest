@@ -1105,7 +1105,7 @@ impl ConsumerContext for KafkaContext {
         match rebalance {
             Rebalance::Revoke(_) => {
                 info!("PRE_REBALANCE - Revoke");
-                let _ = tokio::spawn(async move {
+                tokio::spawn(async move {
                     rebalance_signal
                         .write()
                         .await
@@ -1131,7 +1131,7 @@ impl ConsumerContext for KafkaContext {
                 let partitions = partition_vec_from_topic_partition_list(tpl);
                 info!("POST_REBALANCE - Assign {:?}", partitions);
 
-                let _ = tokio::spawn(async move {
+                tokio::spawn(async move {
                     rebalance_signal
                         .write()
                         .await
