@@ -138,6 +138,36 @@ pub enum DataWriterError {
     },
 }
 
+impl From<ParquetError> for Box<DataWriterError> {
+    fn from(value: ParquetError) -> Self {
+        Box::new(DataWriterError::Parquet { source: value })
+    }
+}
+
+impl From<ObjectStoreError> for Box<DataWriterError> {
+    fn from(value: ObjectStoreError) -> Self {
+        Box::new(DataWriterError::Storage { source: value })
+    }
+}
+
+impl From<ArrowError> for Box<DataWriterError> {
+    fn from(value: ArrowError) -> Self {
+        Box::new(DataWriterError::Arrow { source: value })
+    }
+}
+
+impl From<std::io::Error> for Box<DataWriterError> {
+    fn from(value: std::io::Error) -> Self {
+        Box::new(DataWriterError::Io { source: value })
+    }
+}
+
+impl From<DeltaTableError> for Box<DataWriterError> {
+    fn from(value: DeltaTableError) -> Self {
+        Box::new(DataWriterError::DeltaTable { source: value })
+    }
+}
+
 /// Writes messages to a delta lake table.
 pub struct DataWriter {
     storage: DeltaObjectStore,
@@ -166,25 +196,29 @@ impl DataArrowWriter {
         partition_columns: &[String],
         arrow_schema: Arc<ArrowSchema>,
         json_buffer: Vec<Value>,
-    ) -> Result<(), DataWriterError> {
+    ) -> Result<(), Box<DataWriterError>> {
         let record_batch = record_batch_from_json(arrow_schema.clone(), json_buffer.as_slice())?;
 
         if record_batch.schema() != arrow_schema {
-            return Err(DataWriterError::SchemaMismatch {
+            return Err(Box::new(DataWriterError::SchemaMismatch {
                 record_batch_schema: record_batch.schema(),
                 expected_schema: arrow_schema,
-            });
+            }));
         }
 
         let result = self
             .write_record_batch(partition_columns, record_batch)
             .await;
 
-        if let Err(DataWriterError::Parquet { source }) = result {
-            self.write_partial(partition_columns, arrow_schema, json_buffer, source)
-                .await
-        } else {
-            result
+        match result {
+            Err(e) => match *e {
+                DataWriterError::Parquet { source } => {
+                    self.write_partial(partition_columns, arrow_schema, json_buffer, source)
+                        .await
+                }
+                _ => Err(e),
+            },
+            Ok(_) => result,
         }
     }
 
@@ -194,7 +228,7 @@ impl DataArrowWriter {
         arrow_schema: Arc<ArrowSchema>,
         json_buffer: Vec<Value>,
         parquet_error: ParquetError,
-    ) -> Result<(), DataWriterError> {
+    ) -> Result<(), Box<DataWriterError>> {
         warn!("Failed with parquet error while writing record batch. Attempting quarantine of bad records.");
         let (good, bad) = quarantine_failed_parquet_rows(arrow_schema.clone(), json_buffer)?;
         let record_batch = record_batch_from_json(arrow_schema, good.as_slice())?;
@@ -205,10 +239,10 @@ impl DataArrowWriter {
             good.len(),
             bad.len()
         );
-        Err(DataWriterError::PartialParquetWrite {
+        Err(Box::new(DataWriterError::PartialParquetWrite {
             skipped_values: bad,
             sample_error: parquet_error,
-        })
+        }))
     }
 
     /// Writes the record batch in-memory and updates internal state accordingly.
@@ -217,7 +251,7 @@ impl DataArrowWriter {
         &mut self,
         partition_columns: &[String],
         record_batch: RecordBatch,
-    ) -> Result<(), DataWriterError> {
+    ) -> Result<(), Box<DataWriterError>> {
         if self.partition_values.is_empty() {
             let partition_values = extract_partition_values(partition_columns, &record_batch)?;
             self.partition_values = partition_values;
@@ -304,7 +338,7 @@ impl DataWriter {
     pub fn for_table(
         table: &DeltaTable,
         options: HashMap<String, String>,
-    ) -> Result<DataWriter, DataWriterError> {
+    ) -> Result<DataWriter, Box<DataWriterError>> {
         let storage = load_object_store_from_uri(table.table_uri().as_str(), Some(options))?;
 
         // Initialize an arrow schema ref from the delta table schema
@@ -334,7 +368,7 @@ impl DataWriter {
     pub fn update_schema(
         &mut self,
         metadata: &DeltaTableMetaData,
-    ) -> Result<bool, DataWriterError> {
+    ) -> Result<bool, Box<DataWriterError>> {
         let schema: ArrowSchema = <ArrowSchema as TryFrom<&Schema>>::try_from(&metadata.schema)?;
 
         let schema_updated = self.arrow_schema_ref.as_ref() != &schema
@@ -352,7 +386,7 @@ impl DataWriter {
     }
 
     /// Writes the given values to internal parquet buffers for each represented partition.
-    pub async fn write(&mut self, values: Vec<Value>) -> Result<(), DataWriterError> {
+    pub async fn write(&mut self, values: Vec<Value>) -> Result<(), Box<DataWriterError>> {
         let mut partial_writes: Vec<(Value, ParquetError)> = Vec::new();
         let arrow_schema = self.arrow_schema();
 
@@ -382,10 +416,10 @@ impl DataWriter {
 
         if !partial_writes.is_empty() {
             let sample = partial_writes[0].1.to_string();
-            return Err(DataWriterError::PartialParquetWrite {
+            return Err(Box::new(DataWriterError::PartialParquetWrite {
                 skipped_values: partial_writes,
                 sample_error: ParquetError::General(sample),
-            });
+            }));
         }
 
         Ok(())
@@ -398,7 +432,7 @@ impl DataWriter {
     }
 
     /// Writes the existing parquet bytes to storage and resets internal state to handle another file.
-    pub async fn write_parquet_files(&mut self, _: &str) -> Result<Vec<Add>, DataWriterError> {
+    pub async fn write_parquet_files(&mut self, _: &str) -> Result<Vec<Add>, Box<DataWriterError>> {
         let writers = std::mem::take(&mut self.arrow_writers);
         let mut actions = Vec::new();
 
@@ -460,7 +494,7 @@ impl DataWriter {
         &self,
         partition_cols: &[String],
         partition_values: &HashMap<String, Option<String>>,
-    ) -> Result<String, DataWriterError> {
+    ) -> Result<String, Box<DataWriterError>> {
         // TODO: what does 00000 mean?
         let first_part = "00000";
         let uuid_part = Uuid::new_v4();
@@ -500,7 +534,7 @@ impl DataWriter {
     fn divide_by_partition_values(
         &self,
         records: Vec<Value>,
-    ) -> Result<HashMap<String, Vec<Value>>, DataWriterError> {
+    ) -> Result<HashMap<String, Vec<Value>>, Box<DataWriterError>> {
         let mut partitioned_records: HashMap<String, Vec<Value>> = HashMap::new();
 
         for record in records {
@@ -516,7 +550,7 @@ impl DataWriter {
         Ok(partitioned_records)
     }
 
-    fn json_to_partition_values(&self, value: &Value) -> Result<String, DataWriterError> {
+    fn json_to_partition_values(&self, value: &Value) -> Result<String, Box<DataWriterError>> {
         if let Some(obj) = value.as_object() {
             let key: Vec<String> = self
                 .partition_columns
@@ -526,7 +560,7 @@ impl DataWriter {
             return Ok(key.join("/"));
         }
 
-        Err(DataWriterError::InvalidRecord(value.to_string()))
+        Err(Box::new(DataWriterError::InvalidRecord(value.to_string())))
     }
 
     /// Inserts the given values immediately into the delta table.
@@ -535,7 +569,7 @@ impl DataWriter {
         &mut self,
         table: &mut DeltaTable,
         values: Vec<Value>,
-    ) -> Result<DeltaDataTypeVersion, DataWriterError> {
+    ) -> Result<DeltaDataTypeVersion, Box<DataWriterError>> {
         self.write(values).await?;
         let mut adds = self.write_parquet_files(&table.table_uri()).await?;
         let mut tx = table.create_transaction(None);
@@ -550,7 +584,7 @@ impl DataWriter {
 pub fn record_batch_from_json(
     arrow_schema_ref: Arc<ArrowSchema>,
     json_buffer: &[Value],
-) -> Result<RecordBatch, DataWriterError> {
+) -> Result<RecordBatch, Box<DataWriterError>> {
     let row_count = json_buffer.len();
     let mut value_iter = json_buffer.iter().map(|j| Ok(j.to_owned()));
     let decoder = Decoder::new(
@@ -559,7 +593,7 @@ pub fn record_batch_from_json(
     );
     decoder
         .next_batch(&mut value_iter)?
-        .ok_or(DataWriterError::EmptyRecordBatch)
+        .ok_or(Box::new(DataWriterError::EmptyRecordBatch))
 }
 
 /// Creates an object store from a uri while normalizing file system paths
@@ -602,7 +636,7 @@ type BadValue = (Value, ParquetError);
 fn quarantine_failed_parquet_rows(
     arrow_schema: Arc<ArrowSchema>,
     values: Vec<Value>,
-) -> Result<(Vec<Value>, Vec<BadValue>), DataWriterError> {
+) -> Result<(Vec<Value>, Vec<BadValue>), Box<DataWriterError>> {
     let mut good: Vec<Value> = Vec::new();
     let mut bad: Vec<BadValue> = Vec::new();
 
@@ -623,13 +657,16 @@ fn quarantine_failed_parquet_rows(
 
 fn collect_partial_write_failure(
     partial_writes: &mut Vec<(Value, ParquetError)>,
-    writer_result: Result<(), DataWriterError>,
-) -> Result<(), DataWriterError> {
+    writer_result: Result<(), Box<DataWriterError>>,
+) -> Result<(), Box<DataWriterError>> {
     match writer_result {
-        Err(DataWriterError::PartialParquetWrite { skipped_values, .. }) => {
-            partial_writes.extend(skipped_values);
-            Ok(())
-        }
+        Err(e) => match *e {
+            DataWriterError::PartialParquetWrite { skipped_values, .. } => {
+                partial_writes.extend(skipped_values);
+                Ok(())
+            }
+            _ => Err(e),
+        },
         _ => writer_result,
     }
 }
@@ -1004,7 +1041,7 @@ fn create_add(
     path: String,
     size: i64,
     file_metadata: &FileMetaData,
-) -> Result<Add, DataWriterError> {
+) -> Result<Add, Box<DataWriterError>> {
     let (min_values, max_values) =
         min_max_values_from_file_metadata(partition_values, file_metadata)?;
 
@@ -1039,7 +1076,7 @@ fn create_add(
 fn extract_partition_values(
     partition_cols: &[String],
     record_batch: &RecordBatch,
-) -> Result<HashMap<String, Option<String>>, DataWriterError> {
+) -> Result<HashMap<String, Option<String>>, Box<DataWriterError>> {
     let mut partition_values = HashMap::new();
 
     for col_name in partition_cols.iter() {
@@ -1062,7 +1099,9 @@ fn extract_partition_values(
 // however, stats are optional and can be added later with `dataChange` false log entries, and it may be more appropriate to add stats _later_ to speed up the initial write.
 // a happy middle-road might be to compute stats for partition columns only on the initial write since we should validate partition values anyway, and compute additional stats later (at checkpoint time perhaps?).
 // also this does not currently support nested partition columns and many other data types.
-fn stringified_partition_value(arr: &Arc<dyn Array>) -> Result<Option<String>, DataWriterError> {
+fn stringified_partition_value(
+    arr: &Arc<dyn Array>,
+) -> Result<Option<String>, Box<DataWriterError>> {
     let data_type = arr.data_type();
 
     if arr.is_null(0) {

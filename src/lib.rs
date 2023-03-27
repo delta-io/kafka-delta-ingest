@@ -93,7 +93,7 @@ pub enum IngestError {
     Writer {
         /// Wrapped [`DataWriterError`]
         #[from]
-        source: DataWriterError,
+        source: Box<DataWriterError>,
     },
 
     /// Error occurred when writing a delta log checkpoint.
@@ -765,11 +765,12 @@ impl IngestProcessor {
             return Ok(());
         }
 
-        match self.delta_writer.write(values).await {
-            Err(DataWriterError::PartialParquetWrite {
+        if let Err(e) = self.delta_writer.write(values).await {
+            if let DataWriterError::PartialParquetWrite {
                 skipped_values,
                 sample_error,
-            }) => {
+            } = *e
+            {
                 warn!(
                     "Partial parquet write, skipped {} values, sample ParquetError {:?}",
                     skipped_values.len(),
@@ -778,16 +779,14 @@ impl IngestProcessor {
 
                 let dead_letters = DeadLetter::vec_from_failed_parquet_rows(skipped_values);
                 self.dlq.write_dead_letters(dead_letters).await?;
-            }
-            Err(e) => {
+            } else {
                 return Err(IngestError::DeltaWriteFailed {
                     ending_offsets: serde_json::to_string(&partition_offsets).unwrap(),
                     partition_counts: serde_json::to_string(&partition_counts).unwrap(),
-                    source: e,
+                    source: *e,
                 });
             }
-            _ => { /* ok - noop */ }
-        };
+        }
 
         Ok(())
     }

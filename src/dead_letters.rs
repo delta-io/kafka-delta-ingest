@@ -98,7 +98,7 @@ pub enum DeadLetterQueueError {
     #[error("Write failed: {source}")]
     Writer {
         #[from]
-        source: DataWriterError,
+        source: Box<DataWriterError>,
     },
 
     /// Error returned by the internal dead letter transformer.
