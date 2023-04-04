@@ -33,9 +33,6 @@ tokio-stream = { version = "0", features = ["fs"] }
 tokio-util = "0.6.3"
 uuid = { version = "0.8", features = ["serde", "v4"] }
 
-arrow  = "32"
-parquet = "32"
-
 deltalake = { git = "https://github.com/delta-io/delta-rs.git", rev = "8dcf46e614370b93a6d47402456621b713768674", features = ["s3", "azure"] }
 dynamodb_lock = { git = "https://github.com/delta-io/delta-rs.git", rev = "8dcf46e614370b93a6d47402456621b713768674" }
 # deltalake = { version = "0.7.0", features = ["s3", "azure"] }

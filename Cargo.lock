@@ -1966,7 +1966,6 @@ name = "kafka-delta-ingest"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "arrow",
  "async-trait",
  "azure_core",
  "azure_storage",
