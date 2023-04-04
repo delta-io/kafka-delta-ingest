@@ -1,5 +1,5 @@
 //! High-level writer implementations for [`deltalake`].
-use arrow::{
+use deltalake::arrow::{
     array::{
         as_boolean_array, as_primitive_array, as_struct_array, make_array, Array, ArrayData,
         StructArray,
@@ -12,6 +12,14 @@ use arrow::{
     record_batch::*,
 };
 
+use deltalake::parquet::format::FileMetaData;
+use deltalake::parquet::{
+    arrow::ArrowWriter,
+    basic::{Compression, LogicalType},
+    errors::ParquetError,
+    file::{metadata::RowGroupMetaData, properties::WriterProperties, statistics::Statistics},
+    schema::types::{ColumnDescriptor, SchemaDescriptor},
+};
 use deltalake::{
     action::{Action, Add, ColumnCountStat, ColumnValueStat, Stats},
     storage::DeltaObjectStore,
@@ -20,14 +28,6 @@ use deltalake::{
     DeltaTableMetaData, ObjectStoreError, Schema,
 };
 use log::{error, info, warn};
-use parquet::format::FileMetaData;
-use parquet::{
-    arrow::ArrowWriter,
-    basic::{Compression, LogicalType},
-    errors::ParquetError,
-    file::{metadata::RowGroupMetaData, properties::WriterProperties, statistics::Statistics},
-    schema::types::{ColumnDescriptor, SchemaDescriptor},
-};
 use serde_json::{Number, Value};
 use std::convert::TryFrom;
 use std::io::Write;
@@ -61,7 +61,7 @@ pub enum DataWriterError {
         /// The record batch schema.
         record_batch_schema: SchemaRef,
         /// The schema of the target delta table.
-        expected_schema: Arc<arrow::datatypes::Schema>,
+        expected_schema: Arc<deltalake::arrow::datatypes::Schema>,
     },
 
     /// An Arrow RecordBatch could not be created from the JSON buffer.
@@ -171,7 +171,7 @@ impl From<DeltaTableError> for Box<DataWriterError> {
 /// Writes messages to a delta lake table.
 pub struct DataWriter {
     storage: DeltaObjectStore,
-    arrow_schema_ref: Arc<arrow::datatypes::Schema>,
+    arrow_schema_ref: Arc<deltalake::arrow::datatypes::Schema>,
     writer_properties: WriterProperties,
     partition_columns: Vec<String>,
     arrow_writers: HashMap<String, DataArrowWriter>,
@@ -485,7 +485,7 @@ impl DataWriter {
 
     /// Returns the arrow schema representation of the delta table schema defined for the wrapped
     /// table.
-    pub fn arrow_schema(&self) -> Arc<arrow::datatypes::Schema> {
+    pub fn arrow_schema(&self) -> Arc<deltalake::arrow::datatypes::Schema> {
         self.arrow_schema_ref.clone()
     }
 
@@ -675,7 +675,7 @@ fn min_max_values_from_file_metadata(
     partition_values: &HashMap<String, Option<String>>,
     file_metadata: &FileMetaData,
 ) -> Result<MinAndMaxValues, ParquetError> {
-    let type_ptr = parquet::schema::types::from_thrift(file_metadata.schema.as_slice());
+    let type_ptr = deltalake::parquet::schema::types::from_thrift(file_metadata.schema.as_slice());
     let schema_descriptor = type_ptr.map(|type_| Arc::new(SchemaDescriptor::new(type_)))?;
 
     let mut min_values: HashMap<String, ColumnValueStat> = HashMap::new();
@@ -870,6 +870,8 @@ fn min_and_max_from_parquet_statistics(
     statistics: &[&Statistics],
     column_descr: Arc<ColumnDescriptor>,
 ) -> Result<(Option<Value>, Option<Value>), ParquetError> {
+    use deltalake::arrow::compute::*;
+
     let stats_with_min_max: Vec<&Statistics> = statistics
         .iter()
         .filter(|s| s.has_min_max_set())
@@ -919,30 +921,34 @@ fn min_and_max_from_parquet_statistics(
 
     match data_type {
         DataType::Boolean => {
-            let min = arrow::compute::min_boolean(as_boolean_array(&min_array));
+            let min = min_boolean(as_boolean_array(&min_array));
             let min = min.map(Value::Bool);
 
-            let max = arrow::compute::max_boolean(as_boolean_array(&max_array));
+            let max = max_boolean(as_boolean_array(&max_array));
             let max = max.map(Value::Bool);
 
             Ok((min, max))
         }
         DataType::Int32 => {
-            let min_array = as_primitive_array::<arrow::datatypes::Int32Type>(&min_array);
-            let min = arrow::compute::min(min_array);
+            let min_array =
+                as_primitive_array::<deltalake::arrow::datatypes::Int32Type>(&min_array);
+            let min = min(min_array);
             let min = min.map(|i| Value::Number(Number::from(i)));
 
-            let max_array = as_primitive_array::<arrow::datatypes::Int32Type>(&max_array);
-            let max = arrow::compute::max(max_array);
+            let max_array =
+                as_primitive_array::<deltalake::arrow::datatypes::Int32Type>(&max_array);
+            let max = max(max_array);
             let max = max.map(|i| Value::Number(Number::from(i)));
 
             Ok((min, max))
         }
         DataType::Int64 => {
-            let min_array = as_primitive_array::<arrow::datatypes::Int64Type>(&min_array);
-            let min = arrow::compute::min(min_array);
-            let max_array = as_primitive_array::<arrow::datatypes::Int64Type>(&max_array);
-            let max = arrow::compute::max(max_array);
+            let min_array =
+                as_primitive_array::<deltalake::arrow::datatypes::Int64Type>(&min_array);
+            let min = min(min_array);
+            let max_array =
+                as_primitive_array::<deltalake::arrow::datatypes::Int64Type>(&max_array);
+            let max = max(max_array);
 
             match column_descr.logical_type().as_ref() {
                 Some(LogicalType::Timestamp { unit, .. }) => {
@@ -963,23 +969,27 @@ fn min_and_max_from_parquet_statistics(
             }
         }
         DataType::Float32 => {
-            let min_array = as_primitive_array::<arrow::datatypes::Float32Type>(&min_array);
-            let min = arrow::compute::min(min_array);
+            let min_array =
+                as_primitive_array::<deltalake::arrow::datatypes::Float32Type>(&min_array);
+            let min = min(min_array);
             let min = min.and_then(|f| Number::from_f64(f as f64).map(Value::Number));
 
-            let max_array = as_primitive_array::<arrow::datatypes::Float32Type>(&max_array);
-            let max = arrow::compute::max(max_array);
+            let max_array =
+                as_primitive_array::<deltalake::arrow::datatypes::Float32Type>(&max_array);
+            let max = max(max_array);
             let max = max.and_then(|f| Number::from_f64(f as f64).map(Value::Number));
 
             Ok((min, max))
         }
         DataType::Float64 => {
-            let min_array = as_primitive_array::<arrow::datatypes::Float64Type>(&min_array);
-            let min = arrow::compute::min(min_array);
+            let min_array =
+                as_primitive_array::<deltalake::arrow::datatypes::Float64Type>(&min_array);
+            let min = min(min_array);
             let min = min.and_then(|f| Number::from_f64(f).map(Value::Number));
 
-            let max_array = as_primitive_array::<arrow::datatypes::Float64Type>(&max_array);
-            let max = arrow::compute::max(max_array);
+            let max_array =
+                as_primitive_array::<deltalake::arrow::datatypes::Float64Type>(&max_array);
+            let max = max(max_array);
             let max = max.and_then(|f| Number::from_f64(f).map(Value::Number));
 
             Ok((min, max))
@@ -1118,7 +1128,7 @@ fn stringified_partition_value(
         DataType::UInt32 => as_primitive_array::<UInt32Type>(arr).value(0).to_string(),
         DataType::UInt64 => as_primitive_array::<UInt64Type>(arr).value(0).to_string(),
         DataType::Utf8 => {
-            let data = arrow::array::as_string_array(arr);
+            let data = deltalake::arrow::array::as_string_array(arr);
 
             data.value(0).to_string()
         }
