@@ -82,7 +82,7 @@ When creating DeltaTransactions - these shall be created with a StreamingUpdate 
 This section lists the crate repositories that are most important to the total job of kafka-delta-ingest.
 
 * [delta-rs](https://github.com/delta-io/delta-rs)
-* [arrow](https://github.com/apache/arrow/tree/master/rust/arrow)
+* [arrow](https://github.com/apache/arrow-rs)
 * [parquet](https://github.com/apache/arrow/tree/master/rust/parquet)
 * [rdkafka](https://github.com/fede1024/rust-rdkafka)
 * [dipstick](https://github.com/fralalonde/dipstick)
