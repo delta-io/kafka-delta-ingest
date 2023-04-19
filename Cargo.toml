@@ -1,7 +1,7 @@
 [package]
 name = "kafka-delta-ingest"
-version = "0.1.0"
-authors = ["R. Tyler Croy <rtyler@scribd.com>", "Christian Williams <christianw@scribd.com>"]
+version = "0.2.0"
+authors = ["R. Tyler Croy <rtyler@brokenco.de>", "Christian Williams <christianw@scribd.com>"]
 edition = "2018"
 
 [dependencies]
@@ -33,10 +33,8 @@ tokio-stream = { version = "0", features = ["fs"] }
 tokio-util = "0.6.3"
 uuid = { version = "0.8", features = ["serde", "v4"] }
 
-deltalake = { git = "https://github.com/delta-io/delta-rs.git", rev = "d9920aaf6c730fda2878c2271ed396a138243bb1", features = ["s3", "azure"] }
-dynamodb_lock = { git = "https://github.com/delta-io/delta-rs.git", rev = "d9920aaf6c730fda2878c2271ed396a138243bb1" }
-# deltalake = { version = "0.7.0", features = ["s3", "azure"] }
-# dynamodb_lock = "0.4.3"
+deltalake = { version = "0.9.0", features = ["s3", "azure"] }
+dynamodb_lock = "0.4.3"
 
 # sentry
 sentry = { version = "0.23.0", optional = true }

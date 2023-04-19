@@ -1,4 +1,5 @@
 //! High-level writer implementations for [`deltalake`].
+#[allow(deprecated)]
 use deltalake::arrow::{
     array::{
         as_boolean_array, as_primitive_array, as_struct_array, make_array, Array, ArrayData,
@@ -587,6 +588,7 @@ pub fn record_batch_from_json(
 ) -> Result<RecordBatch, Box<DataWriterError>> {
     let row_count = json_buffer.len();
     let mut value_iter = json_buffer.iter().map(|j| Ok(j.to_owned()));
+    #[allow(deprecated)]
     let decoder = Decoder::new(
         arrow_schema_ref,
         DecoderOptions::new().with_batch_size(row_count),
