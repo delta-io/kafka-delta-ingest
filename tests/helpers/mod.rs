@@ -5,7 +5,7 @@ use deltalake::storage::DeltaObjectStore;
 use deltalake::{DeltaDataTypeVersion, DeltaTable, Path};
 use kafka_delta_ingest::writer::load_object_store_from_uri;
 use kafka_delta_ingest::{start_ingest, IngestOptions};
-use parquet::{
+use deltalake::parquet::{
     file::reader::{FileReader, SerializedFileReader},
     record::RowAccessor,
 };
