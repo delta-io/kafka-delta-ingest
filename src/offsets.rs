@@ -1,7 +1,7 @@
 use crate::delta_helpers::*;
 use crate::{DataTypeOffset, DataTypePartition};
 use deltalake::action::Action;
-use deltalake::{DeltaTable, DeltaTableError};
+use deltalake::{DeltaDataTypeTimestamp, DeltaTable, DeltaTableError};
 use log::{error, info};
 
 /// Errors returned by `write_offsets_to_delta` function.
@@ -49,7 +49,7 @@ pub(crate) async fn write_offsets_to_delta(
 
     if is_safe_to_commit_transactions(table, &mapped_offsets) {
         // table has no stored offsets for given app_id/partitions so it is safe to write txn actions
-        commit_partition_offsets(table, mapped_offsets, &offsets_as_str).await?;
+        commit_partition_offsets(table, mapped_offsets, &offsets_as_str, app_id.to_owned()).await?;
         Ok(())
     } else {
         // there's at least one app_id/partition stored in delta,
@@ -101,52 +101,45 @@ async fn commit_partition_offsets(
     table: &mut DeltaTable,
     offsets: Vec<(String, DataTypeOffset)>,
     offsets_as_str: &str,
+    app_id: String,
 ) -> Result<(), DeltaTableError> {
     let actions: Vec<Action> = offsets
         .iter()
         .map(|(txn_id, offset)| create_txn_action(txn_id.to_string(), *offset))
         .collect();
+    let epoch_id: DeltaDataTypeTimestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("Time went backwards")
+        .as_millis() as i64;
 
-    let mut tx = table.create_transaction(None);
-    tx.add_actions(actions);
-    let prepared_commit = tx.prepare_commit(None, None).await?;
-
-    let mut attempt_number = 0;
-    loop {
-        table.update().await?;
-        let version = table.version() + 1;
-
-        if !is_safe_to_commit_transactions(table, &offsets) {
-            // Partitions offsets have been committed by other writer, nothing to do here now
-            return Ok(());
+    table.update().await?;
+    match deltalake::operations::transaction::commit(
+        (table.object_store().storage_backend()).as_ref(),
+        &actions,
+        deltalake::action::DeltaOperation::StreamingUpdate {
+            output_mode: deltalake::action::OutputMode::Complete,
+            query_id: app_id,
+            epoch_id,
+        },
+        &table.state,
+        None,
+    )
+    .await
+    {
+        Ok(v) => {
+            info!(
+                "Delta version {} completed with new txn offsets {}.",
+                v, offsets_as_str
+            );
+            Ok(())
         }
-
-        match table
-            .try_commit_transaction(&prepared_commit, version)
-            .await
-        {
-            Ok(v) => {
-                info!(
-                    "Delta version {} completed with new txn offsets {}.",
-                    v, offsets_as_str
-                );
-                return Ok(());
+        Err(e) => match e {
+            DeltaTableError::VersionAlreadyExists(_) => {
+                error!("Transaction attempt failed. Attempts exhausted beyond max_retry_commit_attempts of {} so failing", crate::DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS);
+                Err(e)
             }
-            Err(e) => match e {
-                DeltaTableError::VersionAlreadyExists(_)
-                    if attempt_number > crate::DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS + 1 =>
-                {
-                    error!("Transaction attempt failed. Attempts exhausted beyond max_retry_commit_attempts of {} so failing", crate::DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS);
-                    return Err(e);
-                }
-                DeltaTableError::VersionAlreadyExists(_) => {
-                    attempt_number += 1;
-                }
-                _ => {
-                    return Err(e);
-                }
-            },
-        }
+            _ => Err(e),
+        },
     }
 }
 

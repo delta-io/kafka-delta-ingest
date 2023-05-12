@@ -1,14 +1,14 @@
 use bytes::Buf;
 use chrono::Local;
 use deltalake::action::{Action, Add, MetaData, Protocol, Remove, Txn};
-use deltalake::storage::DeltaObjectStore;
-use deltalake::{DeltaDataTypeVersion, DeltaTable, Path};
-use kafka_delta_ingest::writer::load_object_store_from_uri;
-use kafka_delta_ingest::{start_ingest, IngestOptions};
 use deltalake::parquet::{
     file::reader::{FileReader, SerializedFileReader},
     record::RowAccessor,
 };
+use deltalake::storage::DeltaObjectStore;
+use deltalake::{DeltaDataTypeVersion, DeltaTable, Path};
+use kafka_delta_ingest::writer::load_object_store_from_uri;
+use kafka_delta_ingest::{start_ingest, IngestOptions};
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::client::DefaultClientContext;
 use rdkafka::producer::{FutureProducer, FutureRecord};

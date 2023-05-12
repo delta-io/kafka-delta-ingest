@@ -809,54 +809,71 @@ impl IngestProcessor {
         for a in add.iter() {
             self.ingest_metrics.delta_file_size(a.size);
         }
+
+        self.table.update().await?;
+        if !self.are_partition_offsets_match() {
+            return Err(IngestError::ConflictingOffsets);
+        }
+
+        if self
+            .delta_writer
+            .update_schema(self.table.get_metadata()?)?
+        {
+            info!("Table schema has been updated");
+            // Update the coercion tree to reflect the new schema
+            let coercion_tree = coercions::create_coercion_tree(&self.table.get_metadata()?.schema);
+            let _ = std::mem::replace(&mut self.coercion_tree, coercion_tree);
+
+            return Err(IngestError::DeltaSchemaChanged);
+        }
+
         // Try to commit
         let mut attempt_number: u32 = 0;
-        let prepared_commit = {
-            let mut tx = self.table.create_transaction(None);
-            tx.add_actions(build_actions(
-                &partition_offsets,
-                self.opts.app_id.as_str(),
-                add,
-            ));
-            tx.prepare_commit(None, None).await?
-        };
-
+        let actions = build_actions(&partition_offsets, self.opts.app_id.as_str(), add);
         loop {
-            self.table.update().await?;
-            if !self.are_partition_offsets_match() {
-                return Err(IngestError::ConflictingOffsets);
-            }
-            if self
-                .delta_writer
-                .update_schema(self.table.get_metadata()?)?
-            {
-                info!("Table schema has been updated");
-                // Update the coercion tree to reflect the new schema
-                let coercion_tree =
-                    coercions::create_coercion_tree(&self.table.get_metadata()?.schema);
-                let _ = std::mem::replace(&mut self.coercion_tree, coercion_tree);
+            /*let partition_columns = self.table.get_metadata().unwrap().partition_columns.clone();
+            match deltalake::operations::transaction::commit(
+                (self.table.object_store().storage_backend()).as_ref(),
+                &actions,
+                deltalake::action::DeltaOperation::Write {
+                    mode: deltalake::action::SaveMode::Append,
+                    partition_by: Some(partition_columns),
+                    predicate: None,
+                },
+                &self.table.state,
+                None,
+            )*/
 
-                return Err(IngestError::DeltaSchemaChanged);
-            }
-            let version = self.table.version() + 1;
-            let commit_result = self
-                .table
-                .try_commit_transaction(&prepared_commit, version)
-                .await;
-            match commit_result {
+            let epoch_id = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("Time went backwards")
+                .as_millis() as i64;
+            match deltalake::operations::transaction::commit(
+                (self.table.object_store().storage_backend()).as_ref(),
+                &actions,
+                deltalake::action::DeltaOperation::StreamingUpdate {
+                    output_mode: deltalake::action::OutputMode::Append,
+                    query_id: self.opts.app_id.clone(),
+                    epoch_id,
+                },
+                &self.table.state,
+                None,
+            )
+            .await
+            {
                 Ok(v) => {
-                    if v != version {
+                    /*if v != version {
                         return Err(IngestError::UnexpectedVersionMismatch {
                             expected_version: version,
                             actual_version: v,
                         });
                     }
-                    assert_eq!(v, version);
+                    assert_eq!(v, version);*/
                     for (p, o) in &partition_offsets {
                         self.delta_partition_offsets.insert(*p, Some(*o));
                     }
                     if self.opts.write_checkpoints {
-                        try_create_checkpoint(&mut self.table, version).await?;
+                        try_create_checkpoint(&mut self.table, v).await?;
                     }
                     record_write_lag(
                         self.topic.as_str(),
@@ -864,18 +881,12 @@ impl IngestProcessor {
                         &partition_offsets,
                         &self.ingest_metrics,
                     )?;
-                    return Ok(version);
+                    return Ok(v);
                 }
                 Err(e) => match e {
-                    DeltaTableError::VersionAlreadyExists(_)
-                        if attempt_number > DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS + 1 =>
-                    {
+                    DeltaTableError::VersionAlreadyExists(_) => {
                         error!("Transaction attempt failed. Attempts exhausted beyond max_retry_commit_attempts of {} so failing", DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS);
                         return Err(e.into());
-                    }
-                    DeltaTableError::VersionAlreadyExists(_) => {
-                        attempt_number += 1;
-                        warn!("Transaction attempt failed. Incrementing attempt number to {} and retrying", attempt_number);
                     }
                     // if store == "DeltaS3ObjectStore"
                     DeltaTableError::GenericError { source: _ } => {
@@ -884,9 +895,8 @@ impl IngestProcessor {
                             "The remote dynamodb lock is non-acquirable!".to_string(),
                         ));
                     }
-                    _ => {
-                        return Err(e.into());
-                    }
+                    _ if attempt_number == 0 => return Err(e.into()),
+                    _ => attempt_number = attempt_number + 1,
                 },
             }
         }
