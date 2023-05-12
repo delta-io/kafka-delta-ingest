@@ -573,9 +573,19 @@ impl DataWriter {
     ) -> Result<DeltaDataTypeVersion, Box<DataWriterError>> {
         self.write(values).await?;
         let mut adds = self.write_parquet_files(&table.table_uri()).await?;
-        let mut tx = table.create_transaction(None);
-        tx.add_actions(adds.drain(..).map(Action::add).collect());
-        let version = tx.commit(None, None).await?;
+        let actions = adds.drain(..).map(Action::add).collect();
+        let version = deltalake::operations::transaction::commit(
+            (table.object_store().storage_backend()).as_ref(),
+            &actions,
+            deltalake::action::DeltaOperation::Write {
+                mode: deltalake::action::SaveMode::Append,
+                partition_by: Some(self.partition_columns.clone()),
+                predicate: None,
+            },
+            &table.state,
+            None,
+        )
+        .await?;
 
         Ok(version)
     }

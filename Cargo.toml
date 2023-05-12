@@ -44,6 +44,7 @@ sentry-ext = ["sentry"]
 dynamic-linking = [ "rdkafka/dynamic-linking" ]
 
 [dev-dependencies]
+deltalake = { version = "0.10.0", features = ["s3", "azure", "json"] }
 utime = "0.3"
 serial_test = "*"
 tempfile = "3"

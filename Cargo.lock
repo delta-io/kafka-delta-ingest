@@ -2568,6 +2568,7 @@ dependencies = [
  "object_store",
  "paste",
  "seq-macro",
+ "serde_json",
  "snap",
  "thrift",
  "tokio",
