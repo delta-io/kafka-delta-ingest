@@ -896,7 +896,7 @@ impl IngestProcessor {
                         ));
                     }
                     _ if attempt_number == 0 => return Err(e.into()),
-                    _ => attempt_number = attempt_number + 1,
+                    _ => attempt_number += 1,
                 },
             }
         }

@@ -9,7 +9,7 @@ use deltalake::arrow::{
     datatypes::Schema as ArrowSchema,
     datatypes::*,
     error::ArrowError,
-    json::reader::{Decoder, DecoderOptions},
+    json::reader::ReaderBuilder,
     record_batch::*,
 };
 
@@ -593,18 +593,13 @@ impl DataWriter {
 
 /// Creates an Arrow RecordBatch from the passed JSON buffer.
 pub fn record_batch_from_json(
-    arrow_schema_ref: Arc<ArrowSchema>,
-    json_buffer: &[Value],
+    arrow_schema: Arc<ArrowSchema>,
+    json: &[Value],
 ) -> Result<RecordBatch, Box<DataWriterError>> {
-    let row_count = json_buffer.len();
-    let mut value_iter = json_buffer.iter().map(|j| Ok(j.to_owned()));
-    #[allow(deprecated)]
-    let decoder = Decoder::new(
-        arrow_schema_ref,
-        DecoderOptions::new().with_batch_size(row_count),
-    );
+    let mut decoder = ReaderBuilder::new(arrow_schema).build_decoder()?;
+    decoder.serialize(json)?;
     decoder
-        .next_batch(&mut value_iter)?
+        .flush()?
         .ok_or(Box::new(DataWriterError::EmptyRecordBatch))
 }
 
