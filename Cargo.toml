@@ -32,7 +32,7 @@ tokio-stream = { version = "0", features = ["fs"] }
 tokio-util = "0.6.3"
 uuid = { version = "0.8", features = ["serde", "v4"] }
 
-deltalake = { version = "0.10.0", features = ["s3", "azure"] }
+deltalake = { version = "0.11.0", features = ["s3", "azure"] }
 dynamodb_lock = "0.4.3"
 
 # sentry
@@ -44,7 +44,7 @@ sentry-ext = ["sentry"]
 dynamic-linking = [ "rdkafka/dynamic-linking" ]
 
 [dev-dependencies]
-deltalake = { version = "0.10.0", features = ["s3", "azure", "json"] }
+deltalake = { version = "0.11.0", features = ["s3", "azure", "json"] }
 utime = "0.3"
 serial_test = "*"
 tempfile = "3"
