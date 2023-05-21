@@ -27,14 +27,11 @@
 //! ```
 
 #![deny(warnings)]
-#![allow(deprecated)]
+#![deny(deprecated)]
 #![deny(missing_docs)]
 
-#[macro_use]
-extern crate clap;
-
 use chrono::Local;
-use clap::{AppSettings, Values};
+use clap::{Arg, ArgAction, Command};
 use kafka_delta_ingest::{
     start_ingest, AutoOffsetReset, DataTypeOffset, DataTypePartition, IngestOptions,
 };
@@ -58,151 +55,193 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let matches = clap_app!(kafka_delta_ingest =>
-        (version: env!("CARGO_PKG_VERSION"))
-        (about: "Service for ingesting messages from a Kafka topic and writing them to a Delta table")
-        (@subcommand ingest =>
-            (about: "Starts a stream that consumes from a Kafka topic and and writes to a Delta table")
+    let matches = Command::new("kafka-delta-ingest")
+                    .version(env!["CARGO_PKG_VERSION"])
+                    .about("Daemon for ingesting messages from Kafka and writing them to a Delta table")
+                    .subcommand(
+                        Command::new("ingest")
+                            .about("Starts a stream that consumes from a Kafka topic and writes to a Delta table")
+                            .arg(Arg::new("topic")
+                                 .help("The Kafka topic to stream from")
+                                .required(true))
+                            .arg(Arg::new("table_location")
+                                 .help("The Delta table location to write out")
+                                 .required(true))
+                            .arg(Arg::new("kafka")
+                                 .short('k')
+                                 .help("Kafka broker connection string to use")
+                                 .default_value("localhost:9092"))
+                            .arg(Arg::new("consumer_group")
+                                 .short('g')
+                                 .help("Consumer group to use when subscribing to Kafka topics")
+                                 .default_value("kafka_delta_ingest"))
+                            .arg(Arg::new("app_id")
+                                 .short('a')
+                                 .help("App ID to use when writing to Delta")
+                                 .default_value("kafka_delta_ingest"))
+                            .arg(Arg::new("seek_offsets")
+                                 .long("seek_offsets")
+                                 .help(r#"Only useful when offsets are not already stored in the delta table. A JSON string specifying the partition offset map as the starting point for ingestion. This is *seeking* rather than _starting_ offsets. The first ingested message would be (seek_offset + 1). Ex: {"0":123, "1":321}"#))
 
-            (@arg TOPIC: +required "The Kafka topic to stream from")
-            (@arg TABLE_LOCATION: +required "The Delta table location to write to")
-
-            (@arg KAFKA_BROKERS: -k --kafka +takes_value default_value("localhost:9092") 
-             "The Kafka broker connection string to use when connecting to Kafka.")
-
-            (@arg CONSUMER_GROUP: -g --consumer_group_id +takes_value default_value("kafka_delta_ingest") 
-             "The consumer group id to use when subscribing to Kafka.")
-
-            (@arg APP_ID: -a --app_id +takes_value default_value("kafka_delta_ingest") 
-             "The app id to use when writing to Delta.")
-
-            (@arg SEEK_OFFSETS: --seek_offsets +takes_value
-             r#"A JSON string specifying the partition to offset map as the starting point for the ingestion.
-NOTE: This is seeking offsets rather than starting offsets, as such, the very first ingested message would be `seek_offset + 1` or the next successive message in a partition.
-NOTE: This configuration is only applied when offsets are not already stored in delta lake.
-The JSON example: '{"0":123,"1":321}'"#)
-
-            (@arg AUTO_OFFSET_RESET: -o --auto_offset_reset +takes_value default_value("earliest")
-             r#"The default offset reset policy, which is either 'earliest' or 'latest'.
+                            .arg(Arg::new("auto_offset_reset")
+                                 .short('o')
+                                 .help(r#"The default offset reset policy, which is either 'earliest' or 'latest'.
 The configuration is applied when offsets are not found in delta table or not specified with 'seek_offsets'. This also overrides the kafka consumer's 'auto.offset.reset' config."#)
-
-            (@arg ALLOWED_LATENCY: -l --allowed_latency +takes_value default_value("300") 
-             "The allowed latency (in seconds) from the time a message is consumed to when it should be written to Delta.")
-            (@arg MAX_MESSAGES_PER_BATCH: -m --max_messages_per_batch +takes_value default_value("5000") 
-             "The maximum number of rows allowed in a parquet row group. This should approximate the number of bytes described by MIN_BYTES_PER_FILE.")
-            (@arg MIN_BYTES_PER_FILE: -b --min_bytes_per_file +takes_value default_value("134217728") 
-             "The target minimum file size (in bytes) for each Delta file. File size may be smaller than this value if ALLOWED_LATENCY does not allow enough time to accumulate the specified number of bytes.")
-
-            (@arg TRANSFORM: -t --transform +multiple_occurrences +multiple_values +takes_value validator(parse_transform)
-            r#"A list of transforms to apply to each Kafka message. 
-Each transform should follow the pattern: "PROPERTY: SOURCE". For example: 
+                                 .default_value("earliest"))
+                            .arg(Arg::new("allowed_latency")
+                                 .short('l')
+                                 .help("The allowed latency (in seconds) from the time a message is consumed to when it should be written to Delta.")
+                                 .default_value("300"))
+                            .arg(Arg::new("max_messages_per_batch")
+                                 .short('m')
+                                 .help("The maximum number of rows allowed in a parquet batch. This shoulid be the approximate number of bytes described by MIN_BYTES_PER_FILE")
+                                 .default_value("5000"))
+                            .arg(Arg::new("min_bytes_per_file")
+                                 .short('b')
+                                 .help("The target minimum file size (in bytes) for each Delta file. File size may be smaller than this value if ALLOWED_LATENCY does not allow enough time to accumulate the specified number of bytes.")
+                                 .default_value("134217728"))
+                            .arg(Arg::new("transform")
+                                 .short('t')
+                                 .action(ArgAction::Append)
+                                 .help(
+r#"A list of transforms to apply to each Kafka message. Each transform should follow the pattern:
+"PROPERTY: SOURCE". For example:
 
 ... -t 'modified_date: substr(modified,`0`,`10`)' 'kafka_offset: kafka.offset'
 
-Valid values for SOURCE come in two flavors: (1) JMESPath query expressions and (2) well known Kafka metadata properties. Both are demonstrated in the example above.
+Valid values for SOURCE come in two flavors: (1) JMESPath query expressions and (2) well known
+Kafka metadata properties. Both are demonstrated in the example above.
 
-The first SOURCE extracts a substring from the "modified" property of the JSON value, skipping 0 characters and taking 10. the transform assigns the result to "modified_date" (the PROPERTY).
-You can read about JMESPath syntax in https://jmespath.org/specification.html. In addition to the built-in JMESPath functions, Kafka Delta Ingest adds the custom `substr` function.
+The first SOURCE extracts a substring from the "modified" property of the JSON value, skipping 0
+characters and taking 10. the transform assigns the result to "modified_date" (the PROPERTY).
+You can read about JMESPath syntax in https://jmespath.org/specification.html. In addition to the
+built-in JMESPath functions, Kafka Delta Ingest adds the custom `substr` function.
 
-The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta Ingest supports the following well-known Kafka metadata properties:
+The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta Ingest supports
+the following well-known Kafka metadata properties:
 
 * kafka.offset
 * kafka.partition
 * kafka.topic
 * kafka.timestamp
-"#)
-            (@arg DLQ_TABLE_LOCATION: --dlq_table_location +takes_value "Optional table to write dead letters to")
+"#))
+                            .arg(Arg::new("dlq_table_location")
+                                 .long("dlq_table_location")
+                                 .required(false)
+                                 .help("Optional table to write unprocessable entities to"))
+                            .arg(Arg::new("dlq_transform")
+                                 .long("dlq_transform")
+                                 .required(false)
+                                 .action(ArgAction::Append)
+                                 .help("Transforms to apply before writing unprocessable entities to the dlq_location"))
+                            .arg(Arg::new("checkpoints")
+                                 .short('c')
+                                 .action(ArgAction::SetTrue)
+                                 .help("If set then kafka-delta-ingest will write checkpoints on every 10th commit"))
+                            .arg(Arg::new("kafka_setting")
+                                 .short('K')
+                                 .action(ArgAction::Append)
+                                 .help(r#"A list of additional settings to include when creating the Kafka consumer.
 
-            (@arg DLQ_TRANSFORM: --dlq_transform +multiple_occurrences +multiple_values +takes_value validator(parse_transform) "Transforms to apply before writing dead letters to delta")
+This can be used to provide TLS configuration as in:
 
-            (@arg CHECKPOINTS: -c --checkpoints
-            "If set then Kafka Delta ingest will write checkpoints on each 10th commit.")
+... -K "security.protocol=SSL" "ssl.certificate.location=kafka.crt" "ssl.key.location=kafka.key""#))
+                            .arg(Arg::new("statsd_endpoint")
+                                 .short('s')
+                                 .help("Statsd endpoint for sending stats")
+                                 .default_value("localhost:8125"))
 
-            (@arg ADDITIONAL_KAFKA_SETTINGS: -K --Kafka +multiple_occurrences +multiple_values +takes_value validator(parse_kafka_property)
-            r#"A list of additional settings to include when creating the Kafka consumer.
-
-            This can be used to provide TLS configuration as in:
-
-            ... -K "security.protocol=SSL" "ssl.certificate.location=kafka.crt" "ssl.key.location=kafka.key"
-
-             "#)
-
-            (@arg STATSD_ENDPOINT: -s --statsd_endpoint +takes_value default_value("localhost:8125")
-             "The statsd endpoint to send statistics to.")
-        )
-    )
-    .setting(AppSettings::SubcommandRequiredElseHelp)
-    .get_matches();
+                        )
+                .arg_required_else_help(true)
+                .get_matches();
 
     match matches.subcommand() {
         Some(("ingest", ingest_matches)) => {
-            let app_id = ingest_matches.value_of("APP_ID").unwrap().to_string();
+            let app_id = ingest_matches
+                .get_one::<String>("APP_ID")
+                .unwrap()
+                .to_string();
 
             init_logger(app_id.clone());
 
-            let topic = ingest_matches.value_of("TOPIC").unwrap().to_string();
+            let topic = ingest_matches
+                .get_one::<String>("TOPIC")
+                .unwrap()
+                .to_string();
             let table_location = ingest_matches
-                .value_of("TABLE_LOCATION")
+                .get_one::<String>("TABLE_LOCATION")
                 .unwrap()
                 .to_string();
 
             let kafka_brokers = ingest_matches
-                .value_of("KAFKA_BROKERS")
+                .get_one::<String>("KAFKA_BROKERS")
                 .unwrap()
                 .to_string();
             let consumer_group_id = ingest_matches
-                .value_of("CONSUMER_GROUP")
+                .get_one::<String>("CONSUMER_GROUP")
                 .unwrap()
                 .to_string();
 
-            let seek_offsets: Option<Vec<(DataTypePartition, DataTypeOffset)>> = ingest_matches
-                .value_of("SEEK_OFFSETS")
-                .map(parse_seek_offsets);
+            let seek_offsets = ingest_matches
+                .get_one::<String>("SEEK_OFFSETS")
+                .unwrap()
+                .to_string();
+            let seek_offsets = Some(parse_seek_offsets(&seek_offsets));
 
-            let auto_offset_reset = ingest_matches.value_of("AUTO_OFFSET_RESET").unwrap();
+            let auto_offset_reset = ingest_matches
+                .get_one::<String>("AUTO_OFFSET_RESET")
+                .unwrap()
+                .to_string();
 
-            let auto_offset_reset: AutoOffsetReset = match auto_offset_reset {
+            let auto_offset_reset: AutoOffsetReset = match &auto_offset_reset as &str {
                 "earliest" => AutoOffsetReset::Earliest,
                 "latest" => AutoOffsetReset::Latest,
                 unknown => panic!("Unknown auto_offset_reset {}", unknown),
             };
 
-            let allowed_latency = ingest_matches.value_of_t::<u64>("ALLOWED_LATENCY").unwrap();
+            let allowed_latency = ingest_matches.get_one::<u64>("ALLOWED_LATENCY").unwrap();
             let max_messages_per_batch = ingest_matches
-                .value_of_t::<usize>("MAX_MESSAGES_PER_BATCH")
+                .get_one::<usize>("MAX_MESSAGES_PER_BATCH")
                 .unwrap();
             let min_bytes_per_file = ingest_matches
-                .value_of_t::<usize>("MIN_BYTES_PER_FILE")
+                .get_one::<usize>("MIN_BYTES_PER_FILE")
                 .unwrap();
 
             let transforms: Vec<&str> = ingest_matches
-                .values_of("TRANSFORM")
-                .map(Values::collect)
-                .unwrap_or_else(Vec::new);
+                .get_many("TRANSFORM")
+                .expect("Failed to parse transforms")
+                .copied()
+                .collect();
+
             let transforms: HashMap<String, String> = transforms
                 .iter()
                 .map(|t| parse_transform(t).unwrap())
                 .collect();
 
             let dlq_table_location = ingest_matches
-                .value_of("DLQ_TABLE_LOCATION")
-                .map(|s| s.to_owned());
+                .get_one::<String>("DLQ_TABLE_LOCATION")
+                .unwrap()
+                .to_string();
 
             let dlq_transforms: Vec<&str> = ingest_matches
-                .values_of("DLQ_TRANSFORM")
-                .map(Values::collect)
-                .unwrap_or_else(Vec::new);
+                .get_many("DLQ_TRANSFORM")
+                .expect("Failed to parse dlq transforms")
+                .copied()
+                .collect();
+
             let dlq_transforms: HashMap<String, String> = dlq_transforms
                 .iter()
                 .map(|t| parse_transform(t).unwrap())
                 .collect();
 
-            let write_checkpoints = ingest_matches.is_present("CHECKPOINTS");
+            let write_checkpoints = ingest_matches.get_flag("CHECKPOINTS");
 
-            let additional_kafka_properties = ingest_matches
-                .values_of("ADDITIONAL_KAFKA_SETTINGS")
-                .map(Values::collect)
-                .unwrap_or_else(Vec::new);
+            let additional_kafka_properties: Vec<String> = ingest_matches
+                .get_many::<String>("ADDITIONAL_KAFKA_SETTINGS")
+                .expect("Failed to parse additional kafka settings")
+                .map(|s| s.to_owned())
+                .collect();
+
             let additional_kafka_settings: HashMap<String, String> = additional_kafka_properties
                 .iter()
                 .map(|p| parse_kafka_property(p).unwrap())
@@ -210,7 +249,7 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
             let additional_kafka_settings = Some(additional_kafka_settings);
 
             let statsd_endpoint = ingest_matches
-                .value_of("STATSD_ENDPOINT")
+                .get_one::<String>("STATSD_ENDPOINT")
                 .unwrap()
                 .to_string();
 
@@ -220,11 +259,11 @@ The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta
                 app_id,
                 seek_offsets,
                 auto_offset_reset,
-                allowed_latency,
-                max_messages_per_batch,
-                min_bytes_per_file,
+                allowed_latency: *allowed_latency,
+                max_messages_per_batch: *max_messages_per_batch,
+                min_bytes_per_file: *min_bytes_per_file,
                 transforms,
-                dlq_table_uri: dlq_table_location,
+                dlq_table_uri: Some(dlq_table_location),
                 dlq_transforms,
                 write_checkpoints,
                 additional_kafka_settings,

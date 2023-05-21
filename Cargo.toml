@@ -10,7 +10,7 @@ async-trait = "0.1"
 base64 = "0.13"
 bytes = "1"
 chrono = "0"
-clap = { version = "3", features = ["color"] }
+clap = { version = "4", features = ["color"] }
 dipstick = "0.9"
 env_logger = "0"
 futures = "0.3"
