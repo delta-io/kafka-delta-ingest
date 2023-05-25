@@ -228,7 +228,7 @@ impl TestScope {
 }
 
 async fn prepare_table(topic: &str) -> String {
-    env::set_var("AWS_ENDPOINT_URL", helpers::LOCALSTACK_ENDPOINT);
+    env::set_var("AWS_ENDPOINT_URL", helpers::test_s3());
     env::set_var("AWS_ACCESS_KEY_ID", "test");
     env::set_var("AWS_SECRET_ACCESS_KEY", "test");
 

@@ -27,13 +27,19 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-pub const LOCALSTACK_ENDPOINT: &str = "http://0.0.0.0:4566";
-
 /*
  * Return the KAFKA_BROKER set in the environment or default ot the local machine's port 9092
  */
 pub fn test_broker() -> String {
-    std::env::var("KAFKA_BROKER").unwrap_or("0.0.0.0:9092".into())
+    env::var("KAFKA_BROKER").unwrap_or("0.0.0.0:9092".into())
+}
+
+pub fn test_s3() -> String {
+    env::var("S3_ENDPOINT").unwrap_or("http://0.0.0.0:4506".into())
+}
+
+pub fn test_dynamodb() -> String {
+    env::var("DYNAMODB_ENDPOINT").unwrap_or("http://0.0.0.0:4506".into())
 }
 
 pub async fn create_topic(topic: &str, num_partitions: i32) {
