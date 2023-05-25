@@ -27,12 +27,18 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-pub const TEST_BROKER: &str = "0.0.0.0:9092";
 pub const LOCALSTACK_ENDPOINT: &str = "http://0.0.0.0:4566";
+
+/*
+ * Return the KAFKA_BROKER set in the environment or default ot the local machine's port 9092
+ */
+pub fn test_broker() -> String {
+    std::env::var("KAFKA_BROKER").unwrap_or("0.0.0.0:9092".into())
+}
 
 pub async fn create_topic(topic: &str, num_partitions: i32) {
     let admin_client: AdminClient<_> = ClientConfig::new()
-        .set("bootstrap.servers", TEST_BROKER)
+        .set("bootstrap.servers", test_broker())
         .create()
         .unwrap();
 
@@ -46,7 +52,7 @@ pub async fn create_topic(topic: &str, num_partitions: i32) {
 
 pub async fn delete_topic(topic: &str) {
     let admin_client: AdminClient<_> = ClientConfig::new()
-        .set("bootstrap.servers", TEST_BROKER)
+        .set("bootstrap.servers", test_broker())
         .create()
         .unwrap();
 
@@ -58,7 +64,7 @@ pub async fn delete_topic(topic: &str) {
 
 pub fn create_producer() -> FutureProducer {
     ClientConfig::new()
-        .set("bootstrap.servers", TEST_BROKER)
+        .set("bootstrap.servers", test_broker())
         .create()
         .unwrap()
 }
