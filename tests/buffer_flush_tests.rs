@@ -29,6 +29,7 @@ async fn test_flush_when_latency_expires() {
             max_messages_per_batch: 5000,
             // large value - avoid flushing on file size
             min_bytes_per_file: 1000000,
+            kafka_brokers: helpers::test_broker(),
             ..Default::default()
         }),
     )
@@ -76,6 +77,7 @@ async fn test_dont_write_an_empty_buffer() {
             app_id: "dont_write_an_empty_buffer".to_string(),
             // buffer for 5 seconds before flush
             allowed_latency: 5,
+            kafka_brokers: helpers::test_broker(),
             ..Default::default()
         }),
     )
@@ -124,6 +126,7 @@ async fn test_flush_on_size_without_latency_expiration() {
             max_messages_per_batch: 10,
             // tiny buffer size for write flush
             min_bytes_per_file: 20,
+            kafka_brokers: helpers::test_broker(),
             ..Default::default()
         }),
     )

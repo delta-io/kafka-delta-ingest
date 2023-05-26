@@ -20,9 +20,7 @@ use uuid::Uuid;
 use kafka_delta_ingest::{start_ingest, IngestOptions};
 use tokio::task::JoinHandle;
 
-const TEST_S3_BUCKET: &str = "tests";
 const TEST_APP_ID: &str = "emails_test";
-const TEST_BROKER: &str = "0.0.0.0:9092";
 const TEST_CONSUMER_GROUP_ID: &str = "kafka_delta_ingest_emails";
 const TEST_PARTITIONS: i32 = 4;
 const TEST_TOTAL_MESSAGES: i32 = 200;
@@ -158,7 +156,7 @@ impl TestScope {
 
         IngestOptions {
             transforms,
-            kafka_brokers: TEST_BROKER.to_string(),
+            kafka_brokers: helpers::test_broker(),
             consumer_group_id: TEST_CONSUMER_GROUP_ID.to_string(),
             app_id: TEST_APP_ID.to_string(),
             additional_kafka_settings,
@@ -227,8 +225,8 @@ impl TestScope {
 }
 
 async fn prepare_table(topic: &str) -> String {
-    let container_client =
-        azure_storage_blobs::prelude::ClientBuilder::emulator().container_client(TEST_S3_BUCKET);
+    let container_client = azure_storage_blobs::prelude::ClientBuilder::emulator()
+        .container_client(helpers::test_s3_bucket());
     let source_blob =
         container_client.blob_client(format!("emails/_delta_log/00000000000000000000.json"));
     let sas_url = {
@@ -253,7 +251,7 @@ async fn prepare_table(topic: &str) -> String {
         .await
         .unwrap();
 
-    format!("az://{}/{}", TEST_S3_BUCKET, topic)
+    format!("az://{}/{}", helpers::test_s3_bucket(), topic)
 }
 
 fn create_partitions_app_ids(num_p: i32) -> Vec<String> {

@@ -20,7 +20,6 @@ use rusoto_core::Region;
 use rusoto_s3::{CopyObjectRequest, S3};
 use tokio::task::JoinHandle;
 
-const TEST_S3_BUCKET: &str = "tests";
 const TEST_APP_ID: &str = "emails_test";
 const TEST_CONSUMER_GROUP_ID: &str = "kafka_delta_ingest_emails";
 const TEST_PARTITIONS: i32 = 4;
@@ -236,18 +235,18 @@ async fn prepare_table(topic: &str) -> String {
     });
 
     s3.copy_object(CopyObjectRequest {
-        bucket: TEST_S3_BUCKET.to_string(),
+        bucket: helpers::test_s3_bucket(),
         key: format!("{}/_delta_log/00000000000000000000.json", topic),
         copy_source: format!(
             "/{}/emails/_delta_log/00000000000000000000.json",
-            TEST_S3_BUCKET
+            helpers::test_s3_bucket(),
         ),
         ..Default::default()
     })
     .await
     .unwrap();
 
-    format!("s3://{}/{}", TEST_S3_BUCKET, topic)
+    format!("s3://{}/{}", helpers::test_s3_bucket(), topic)
 }
 
 fn create_partitions_app_ids(num_p: i32) -> Vec<String> {

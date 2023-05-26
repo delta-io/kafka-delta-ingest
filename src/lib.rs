@@ -305,7 +305,7 @@ pub struct IngestOptions {
 impl Default for IngestOptions {
     fn default() -> Self {
         IngestOptions {
-            kafka_brokers: "localhost:9092".to_string(),
+            kafka_brokers: std::env::var("KAFKA_BROKERS").unwrap_or("localhost:9092".into()),
             consumer_group_id: "kafka_delta_ingest".to_string(),
             app_id: "kafka_delta_ingest".to_string(),
             seek_offsets: None,
