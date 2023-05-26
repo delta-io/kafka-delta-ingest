@@ -239,6 +239,7 @@ pub enum SchemaSource {
     File(PathBuf),
 }
 
+#[derive(Debug)]
 /// The enum to represent 'auto.offset.reset' options.
 pub enum AutoOffsetReset {
     /// The "earliest" option. Messages will be ingested from the beginning of a partition on reset.
@@ -253,6 +254,7 @@ impl AutoOffsetReset {
 }
 
 /// Options for configuring the behavior of the run loop executed by the [`start_ingest`] function.
+#[derive(Debug)]
 pub struct IngestOptions {
     /// The Kafka broker string to connect to.
     pub kafka_brokers: String,

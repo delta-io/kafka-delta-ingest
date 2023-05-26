@@ -20,10 +20,8 @@ use rusoto_core::Region;
 use rusoto_s3::{CopyObjectRequest, S3};
 use tokio::task::JoinHandle;
 
-const TEST_S3_ENDPOINT: &str = "http://localhost:4566";
 const TEST_S3_BUCKET: &str = "tests";
 const TEST_APP_ID: &str = "emails_test";
-const TEST_BROKER: &str = "0.0.0.0:9092";
 const TEST_CONSUMER_GROUP_ID: &str = "kafka_delta_ingest_emails";
 const TEST_PARTITIONS: i32 = 4;
 const TEST_TOTAL_MESSAGES: i32 = 200;
@@ -159,7 +157,7 @@ impl TestScope {
 
         IngestOptions {
             transforms,
-            kafka_brokers: TEST_BROKER.to_string(),
+            kafka_brokers: helpers::test_broker(),
             consumer_group_id: TEST_CONSUMER_GROUP_ID.to_string(),
             app_id: TEST_APP_ID.to_string(),
             additional_kafka_settings,
@@ -228,13 +226,13 @@ impl TestScope {
 }
 
 async fn prepare_table(topic: &str) -> String {
-    env::set_var("AWS_ENDPOINT_URL", helpers::test_s3());
+    env::set_var("AWS_ENDPOINT_URL", helpers::test_aws_endpoint());
     env::set_var("AWS_ACCESS_KEY_ID", "test");
     env::set_var("AWS_SECRET_ACCESS_KEY", "test");
 
     let s3 = rusoto_s3::S3Client::new(Region::Custom {
         name: "custom".to_string(),
-        endpoint: TEST_S3_ENDPOINT.to_string(),
+        endpoint: helpers::test_aws_endpoint(),
     });
 
     s3.copy_object(CopyObjectRequest {
