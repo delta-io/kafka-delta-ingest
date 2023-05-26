@@ -4,8 +4,11 @@ The kafka-delta-ingest project aims to build a highly efficient daemon for
 streaming data through link:https://kafka.apache.org[Apache Kafka] into
 link:https://delta.io[Delta Lake].
 
-This project is currently highly experimental and evolving in tandem with the
+This project is currently in production in a number of organizations and is
+still actively evolving in tandem with the
 link:https://github.com/delta-io/delta-rs[delta-rs] bindings.
+
+To contribute please look at the link:https://github.com/delta-io/kafka-delta-ingest/blob/main/doc/HACKING.adoc[hacking document].
 
 == Features
 
@@ -66,37 +69,6 @@ Make sure to provide the additional option:
 
 when invoking the cli command as well.
 
-==== Example Data
-
-A tarball containing 100K line-delimited JSON messages is included in `tests/json/web_requests-100K.json.tar.gz`. Running `./bin/extract-example-json.sh` will unpack this to the expected location.
-
-===== Pretty-printed example from the file
-
-```json
-{
-  "meta": {
-    "producer": {
-      "timestamp": "2021-03-24T15:06:17.321710+00:00"
-    }
-  },
-  "method": "DELETE",
-  "session_id": "7c28bcf9-be26-4d0b-931a-3374ab4bb458",
-  "status": 204,
-  "url": "http://www.youku.com",
-  "uuid": "831c6afa-375c-4988-b248-096f9ed101f8"
-}
-```
-
-After extracting the example data, you'll need to play this onto the web_requests topic of the local Kafka container.
-
-NOTE: URLs sampled for the test data are sourced from Wikipedia's list of most popular websites - https://en.wikipedia.org/wiki/List_of_most_popular_websites.
-
-===== Inspect example output
-
-* List data files - `ls tests/data/web_requests/date=2021-03-24`
-* List delta log files - `ls tests/data/web_requests/_delta_log`
-* Show some parquet data (using link:https://pypi.org/project/parquet-tools/[parquet-tools])
-** `parquet-tools show tests/data/web_requests/date=2021-03-24/<some file written by your example>`
 
 === Using Azure Event Hubs
 
@@ -279,9 +251,6 @@ Use the Azure Portal to browse the file system:
 * Data files: `web_requests/date=2021-03-24`
 * Delta log files: `web_requests/_delta_log`
 
-== Developing
-
-Make sure the docker-compose setup has been ran, and execute `cargo test` to run unit and integration tests.
 
 == Get Involved
 

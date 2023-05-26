@@ -28,14 +28,18 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 /*
- * Return the KAFKA_BROKER set in the environment or default ot the local machine's port 9092
+ * Return the KAFKA_BROKERS set in the environment or default ot the local machine's port 9092
  */
 pub fn test_broker() -> String {
-    env::var("KAFKA_BROKER").unwrap_or("0.0.0.0:9092".into())
+    env::var("KAFKA_BROKERS").unwrap_or("0.0.0.0:9092".into())
 }
 
 pub fn test_aws_endpoint() -> String {
     env::var("AWS_ENDPOINT_URL").unwrap_or("http://0.0.0.0:4506".into())
+}
+
+pub fn test_s3_bucket() -> String {
+    env::var("AWS_S3_BUCKET").unwrap_or("tests".into())
 }
 
 pub async fn create_topic(topic: &str, num_partitions: i32) {
