@@ -1,5 +1,14 @@
+use std::collections::HashMap;
+use std::env;
+use std::fs::{File, OpenOptions};
+use std::io::prelude::*;
+use std::io::{BufReader, Cursor};
+use std::path::Path as FilePath;
+use std::sync::Arc;
+use std::time::Duration;
+
 use bytes::Buf;
-use chrono::Local;
+use chrono::prelude::*;
 use deltalake::action::{Action, Add, MetaData, Protocol, Remove, Txn};
 use deltalake::parquet::{
     file::reader::{FileReader, SerializedFileReader},
@@ -16,12 +25,6 @@ use rdkafka::util::{DefaultRuntime, Timeout};
 use rdkafka::ClientConfig;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
-use std::env;
-use std::fs::{File, OpenOptions};
-use std::io::prelude::*;
-use std::io::{BufReader, Cursor};
-use std::path::Path as FilePath;
-use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -210,6 +213,7 @@ pub async fn create_and_run_kdi(
     Runtime,
 ) {
     init_logger();
+    println!("OPTS!: {:?}", opts);
     let topic = format!("{}-{}", app_id, Uuid::new_v4());
     let table = create_local_table(schema, delta_partitions, &topic);
     create_topic(&topic, kafka_num_partitions).await;
@@ -541,4 +545,117 @@ fn parse_json_field<T: DeserializeOwned>(value: &Value, key: &str) -> Option<T> 
         .as_object()
         .and_then(|v| v.get(key))
         .and_then(|v| serde_json::from_value::<T>(v.clone()).ok())
+}
+
+pub const TEST_APP_ID: &str = "emails_test";
+pub const TEST_CONSUMER_GROUP_ID: &str = "kafka_delta_ingest_emails";
+pub const TEST_PARTITIONS: i32 = 4;
+pub const TEST_TOTAL_MESSAGES: i32 = 200;
+
+pub const WORKER_1: &str = "WORKER-1";
+pub const WORKER_2: &str = "WORKER-2";
+
+pub struct TestScope {
+    pub topic: String,
+    pub table: String,
+    pub workers_token: Arc<CancellationToken>,
+    pub runtime: HashMap<&'static str, Runtime>,
+    options: IngestOptions,
+}
+
+impl TestScope {
+    pub async fn new(topic: &str, table: &str, options: IngestOptions) -> Self {
+        let workers_token = Arc::new(CancellationToken::new());
+        let mut runtime = HashMap::new();
+        runtime.insert(WORKER_1, create_runtime(WORKER_1));
+        runtime.insert(WORKER_2, create_runtime(WORKER_2));
+
+        println!("Topic: {}", &topic);
+        println!("Table: {}", &table);
+        create_topic(topic, TEST_PARTITIONS).await;
+
+        Self {
+            topic: topic.into(),
+            table: table.into(),
+            workers_token,
+            runtime,
+            options,
+        }
+    }
+
+    pub fn shutdown(self) {
+        for (_, rt) in self.runtime {
+            rt.shutdown_background()
+        }
+    }
+
+    pub async fn create_and_start(&self, name: &str) -> JoinHandle<()> {
+        let rt = self.runtime.get(name).unwrap();
+        let topic = self.topic.clone();
+        let table = self.table.clone();
+        let token = self.workers_token.clone();
+        let options = self.options.clone();
+        rt.spawn(async move {
+            let res = start_ingest(topic, table, options, token.clone()).await;
+            res.unwrap_or_else(|e| println!("AN ERROR OCCURED: {}", e));
+            println!("Ingest process exited");
+
+            token.cancel();
+        })
+    }
+
+    pub async fn send_messages(&self, amount: i32) {
+        let producer = create_producer();
+        let now: DateTime<Utc> = Utc::now();
+
+        println!("Sending {} messages to {}", amount, &self.topic);
+        for n in 0..amount {
+            let json = &json!({
+                "id": n.to_string(),
+                "sender": format!("sender-{}@example.com", n),
+                "recipient": format!("recipient-{}@example.com", n),
+                "timestamp": (now + chrono::Duration::seconds(1)).to_rfc3339_opts(SecondsFormat::Secs, true),
+            });
+            send_json(&producer, &self.topic, &json).await;
+        }
+        println!("All messages are sent");
+    }
+
+    pub async fn wait_on_total_offset(&self, apps: Vec<String>, offset: i32) {
+        let mut table = deltalake::open_table(&self.table).await.unwrap();
+        let expected_total = offset - TEST_PARTITIONS;
+        loop {
+            table.update().await.unwrap();
+            let mut total = 0;
+            for key in apps.iter() {
+                total += table
+                    .get_app_transaction_version()
+                    .get(key)
+                    .map(|x| *x)
+                    .unwrap_or(0);
+            }
+
+            if total >= expected_total as i64 {
+                self.workers_token.cancel();
+                println!("All messages are in delta");
+                return;
+            }
+
+            println!("Expecting offsets in delta {}/{}...", total, expected_total);
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+
+    pub async fn validate_data(&self) {
+        let table = deltalake::open_table(&self.table).await.unwrap();
+        let result = read_files_from_store(&table).await;
+        let r: Vec<i32> = (0..TEST_TOTAL_MESSAGES).collect();
+        println!("Got messages {}/{}", result.len(), TEST_TOTAL_MESSAGES);
+
+        if result.len() != TEST_TOTAL_MESSAGES as usize {
+            inspect_table(&self.table).await;
+        }
+
+        assert_eq!(result, r);
+    }
 }
