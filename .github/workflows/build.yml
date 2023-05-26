@@ -39,12 +39,14 @@ jobs:
     - uses: actions/checkout@v2
     - name: Install minimum stable with clippy and rustfmt
       uses: actions-rs/toolchain@v1
-      with: 
+      with:
         profile: default
         toolchain: stable
         override: true
     - name: Teststack setup
       run: docker-compose up setup
-    - name: Run tests
-      run: cargo test
+    - name: Run s3 feature tests
+      run: cargo test --features s3
+    - name: Run azure feature tests
+      run: cargo test --features azure
 
