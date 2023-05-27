@@ -30,8 +30,10 @@ jobs:
         profile: default
         toolchain: stable
         override: true
-    - name: build and lint with clippy
-      run: cargo clippy
+    - name: Build and lint for S3
+      run: cargo clippy --features s3
+    - name: Build and lint for Azure
+      run: cargo clippy --features azure
 
   test:
     runs-on: ubuntu-latest
