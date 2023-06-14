@@ -3,16 +3,16 @@ mod helpers;
 
 use std::collections::HashMap;
 use std::env;
+use std::io::Read;
 use std::thread;
 use std::time::Duration;
 
-use chrono::prelude::*;
 use serial_test::serial;
 use uuid::Uuid;
 
 use kafka_delta_ingest::{start_ingest, IngestOptions};
 use rusoto_core::Region;
-use rusoto_s3::{CopyObjectRequest, S3};
+use rusoto_s3::{CopyObjectRequest, PutObjectRequest, S3};
 
 use helpers::*;
 
@@ -111,14 +111,37 @@ fn create_options(name: &str) -> IngestOptions {
 }
 
 async fn prepare_table(topic: &str) -> String {
-    env::set_var("AWS_ENDPOINT_URL", helpers::test_aws_endpoint());
-    env::set_var("AWS_ACCESS_KEY_ID", "test");
-    env::set_var("AWS_SECRET_ACCESS_KEY", "test");
+    match env::var("AWS_ACCESS_KEY_ID") {
+        Err(_) => env::set_var("AWS_ACCESS_KEY_ID", "test"),
+        Ok(_) => {}
+    }
+    match env::var("AWS_SECRET_ACCESS_KEY") {
+        Err(_) => env::set_var("AWS_SECRET_ACCESS_KEY", "test"),
+        Ok(_) => {}
+    }
 
     let s3 = rusoto_s3::S3Client::new(Region::Custom {
         name: "custom".to_string(),
         endpoint: helpers::test_aws_endpoint(),
     });
+
+    /*
+     * Copy the local fixture to create a simple delta table in storage.
+     */
+    let mut buf = vec![];
+    let original_log =
+        std::fs::File::open("tests/data/emails/_delta_log/00000000000000000000.json")
+            .unwrap()
+            .read_to_end(&mut buf);
+
+    s3.put_object(PutObjectRequest {
+        bucket: helpers::test_s3_bucket(),
+        body: Some(buf.into()),
+        key: "emails/_delta_log/00000000000000000000.json".into(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
 
     s3.copy_object(CopyObjectRequest {
         bucket: helpers::test_s3_bucket(),
