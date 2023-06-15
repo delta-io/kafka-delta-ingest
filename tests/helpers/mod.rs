@@ -268,6 +268,7 @@ pub fn create_kdi_with(
     let worker_name = worker_name.unwrap_or(app_id.clone());
 
     env::set_var("AWS_S3_LOCKING_PROVIDER", "dynamodb");
+    env::set_var("AWS_REGION", "us-east-2");
     env::set_var("DYNAMO_LOCK_TABLE_NAME", "locks");
     env::set_var("DYNAMO_LOCK_OWNER_NAME", Uuid::new_v4().to_string());
     env::set_var("DYNAMO_LOCK_PARTITION_KEY_VALUE", app_id.clone());
