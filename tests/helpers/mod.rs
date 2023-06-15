@@ -38,7 +38,7 @@ pub fn test_broker() -> String {
 }
 
 pub fn test_aws_endpoint() -> String {
-    env::var("AWS_ENDPOINT_URL").unwrap_or("http://0.0.0.0:4506".into())
+    env::var("AWS_ENDPOINT_URL").unwrap_or("http://0.0.0.0:4566".into())
 }
 
 pub fn test_s3_bucket() -> String {
