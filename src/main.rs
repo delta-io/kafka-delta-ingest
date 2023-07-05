@@ -217,7 +217,7 @@ fn to_schema_source(input: Option<&String>, disable_files: bool) -> SchemaSource
                 return SchemaSource::File(schema_source_value);
             }
 
-            return SchemaSource::SchemaRegistry(schema_source_value);
+            SchemaSource::SchemaRegistry(schema_source_value)
         }
     }
 }
