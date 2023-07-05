@@ -38,12 +38,12 @@ pub struct DeadLetter {
 impl DeadLetter {
     /// Creates a dead letter from bytes that failed deserialization.
     /// `json_string` will always be `None`.
-    pub(crate) fn from_failed_deserialization(bytes: &[u8], err: serde_json::Error) -> Self {
+    pub(crate) fn from_failed_deserialization(bytes: &[u8], err: String) -> Self {
         let timestamp = Utc::now();
         Self {
             base64_bytes: Some(base64::encode(bytes)),
             json_string: None,
-            error: Some(err.to_string()),
+            error: Some(err),
             timestamp: timestamp.timestamp_nanos() / 1000,
         }
     }

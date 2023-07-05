@@ -28,6 +28,7 @@ use rdkafka::{
     ClientContext, Message, Offset, TopicPartitionList,
 };
 use serde_json::Value;
+use serialization::{MessageDeserializer, MessageDeserializerFactory};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -41,6 +42,7 @@ mod dead_letters;
 mod delta_helpers;
 mod metrics;
 mod offsets;
+mod serialization;
 mod transforms;
 mod value_buffers;
 /// Doc
@@ -201,6 +203,39 @@ pub enum IngestError {
         /// The version returned after the commit
         actual_version: DeltaDataTypeVersion,
     },
+    /// Error returned if unable to construct a deserializer
+    #[error("Unable to construct a message deserializer, source: {source}")]
+    UnableToCreateDeserializer {
+        /// The underlying error.
+        source: anyhow::Error,
+    },
+}
+
+/// Formats for message parsing
+#[derive(Clone)]
+pub enum MessageFormat {
+    /// Parses messages as json and uses the inferred schema
+    DefaultJson,
+
+    /// Parses messages as json using the provided schema source. Will not use json schema files
+    Json(SchemaSource),
+
+    /// Parses avro messages using provided schema, schema registry or schema within file
+    Avro(SchemaSource),
+    //    ProtoBuf(SchemaSource),
+}
+
+/// Source for schema
+#[derive(Clone)]
+pub enum SchemaSource {
+    /// Use default behavior
+    None,
+
+    /// Use confluent schema registry url
+    SchemaRegistry(String),
+
+    /// Use provided file for schema
+    File(String),
 }
 
 /// The enum to represent 'auto.offset.reset' options.
@@ -258,6 +293,8 @@ pub struct IngestOptions {
     pub additional_kafka_settings: Option<HashMap<String, String>>,
     /// A statsd endpoint to send statistics to.
     pub statsd_endpoint: String,
+    /// Input format
+    pub input_format: MessageFormat,
 }
 
 impl Default for IngestOptions {
@@ -277,6 +314,7 @@ impl Default for IngestOptions {
             additional_kafka_settings: None,
             write_checkpoints: false,
             statsd_endpoint: "localhost:8125".to_string(),
+            input_format: MessageFormat::DefaultJson,
         }
     }
 }
@@ -340,11 +378,8 @@ pub async fn start_ingest(
     loop {
         // Consume the next message from the stream.
         // Timeout if the next message is not received before the next flush interval.
-        let consume_result = tokio::time::timeout(
-            ingest_processor.consume_timeout_duration(),
-            consumer.stream().next(),
-        )
-        .await;
+        let duration = ingest_processor.consume_timeout_duration();
+        let consume_result = tokio::time::timeout(duration, consumer.stream().next()).await;
 
         // Check for rebalance signal - skip the message if there is one.
         // After seek - Some worker will re-consume the message and see it again.
@@ -588,6 +623,10 @@ enum MessageDeserializationError {
     EmptyPayload,
     #[error("Kafka message deserialization failed")]
     JsonDeserialization { dead_letter: DeadLetter },
+    #[error("Kafka message deserialization failed")]
+    AvroDeserialization { dead_letter: DeadLetter },
+    //    #[error("Kafka message deserialization failed")]
+    //    ProtoDeserialization { dead_letter: DeadLetter },
 }
 
 /// Indicates whether a rebalance signal should simply skip the currently consumed message, or clear state and skip.
@@ -610,6 +649,7 @@ struct IngestProcessor {
     dlq: Box<dyn DeadLetterQueue>,
     opts: IngestOptions,
     ingest_metrics: IngestMetrics,
+    message_deserializer: Box<dyn MessageDeserializer + Send>,
 }
 
 impl IngestProcessor {
@@ -626,7 +666,10 @@ impl IngestProcessor {
         let table = delta_helpers::load_table(table_uri, HashMap::new()).await?;
         let coercion_tree = coercions::create_coercion_tree(&table.get_metadata()?.schema);
         let delta_writer = DataWriter::for_table(&table, HashMap::new())?;
-
+        let deserializer = match MessageDeserializerFactory::try_build(&opts.input_format) {
+            Ok(deserializer) => deserializer,
+            Err(e) => return Err(IngestError::UnableToCreateDeserializer { source: e }),
+        };
         Ok(IngestProcessor {
             topic,
             consumer,
@@ -640,6 +683,7 @@ impl IngestProcessor {
             dlq,
             opts,
             ingest_metrics,
+            message_deserializer: deserializer,
         })
     }
 
@@ -678,7 +722,7 @@ impl IngestProcessor {
         }
 
         // Deserialize
-        match self.deserialize_message(&message) {
+        match self.deserialize_message(&message).await {
             Ok(mut value) => {
                 self.ingest_metrics.message_deserialized();
                 // Transform
@@ -708,10 +752,16 @@ impl IngestProcessor {
                     partition, offset
                 );
             }
-            Err(MessageDeserializationError::JsonDeserialization { dead_letter }) => {
+            Err(
+                MessageDeserializationError::JsonDeserialization { dead_letter }
+                | MessageDeserializationError::AvroDeserialization { dead_letter },
+                // | MessageDeserializationError::ProtoDeserialization { dead_letter },
+            ) => {
                 warn!(
-                    "Deserialization failed - partition {}, offset {}",
-                    partition, offset
+                    "Deserialization failed - partition {}, offset {}, dead_letter {}",
+                    partition,
+                    offset,
+                    dead_letter.error.as_ref().unwrap_or(&String::from("_")),
                 );
                 self.ingest_metrics.message_deserialization_failed();
                 self.dlq.write_dead_letter(dead_letter).await?;
@@ -722,31 +772,22 @@ impl IngestProcessor {
     }
 
     /// Deserializes a message received from Kafka
-    fn deserialize_message<M>(&mut self, msg: &M) -> Result<Value, MessageDeserializationError>
+    async fn deserialize_message<M>(
+        &mut self,
+        msg: &M,
+    ) -> Result<Value, MessageDeserializationError>
     where
         M: Message + Send + Sync,
     {
-        // Deserialize the rdkafka message into a serde_json::Value
         let message_bytes = match msg.payload() {
-            Some(bytes) => bytes,
-            None => {
-                return Err(MessageDeserializationError::EmptyPayload);
-            }
+            Some(b) => b,
+            None => return Err(MessageDeserializationError::EmptyPayload),
         };
 
+        let value = self.message_deserializer.deserialize(message_bytes).await?;
         self.ingest_metrics
             .message_deserialized_size(message_bytes.len());
-
-        let value: Value = match serde_json::from_slice(message_bytes) {
-            Ok(v) => v,
-            Err(e) => {
-                return Err(MessageDeserializationError::JsonDeserialization {
-                    dead_letter: DeadLetter::from_failed_deserialization(message_bytes, e),
-                });
-            }
-        };
-
-        Ok(value)
+        return Ok(value);
     }
 
     /// Writes the transformed messages currently held in buffer to parquet byte buffers.

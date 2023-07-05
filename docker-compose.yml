@@ -2,36 +2,52 @@
 version: '3.9'
 services:
   kafka:
-    image: confluentinc/cp-kafka:latest
-    depends_on: 
-      - zookeeper
+    image: docker.redpanda.com/redpandadata/redpanda:v23.1.13
+    command:
+      - redpanda
+      - start
+      - --smp
+      - '1'
+      - --reserve-memory
+      - 0M
+      - --overprovisioned
+      - --node-id
+      - '0'
+      - --kafka-addr
+      - PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr
+      - PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
+      - --pandaproxy-addr
+      - PLAINTEXT://0.0.0.0:28082,OUTSIDE://0.0.0.0:8082
+      - --advertise-pandaproxy-addr
+      - PLAINTEXT://redpanda:28082,OUTSIDE://localhost:8082
+    networks:
+      default:
+        aliases:
+          - redpanda
     ports:
-      - "9092:9092"
-    environment:
-      ALLOW_PLAINTEXT_LISTENER: "true"
-      KAFKA_BROKER_ID: "1"
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
-      KAFKA_ADVERTISED_HOST_NAME: localhost
-      KAFKA_CREATE_TOPICS: "example:3:1,web_requests:3:1"
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
-    healthcheck:
-      test: ["CMD", "bash", "-c", "unset", "JMX_PORT", ";", "kafka-topics.sh", "--zookeeper", "zookeeper:2181", "--list"]
+      #      - 8081:8081
+      - 8082:8082
+      - 9092:9092
+      - 28082:28082
+      - 29092:29092
 
-  zookeeper:
-    image: confluentinc/cp-zookeeper:latest
-    environment:
-      ZOOKEEPER_CLIENT_PORT: "2181"
-    privileged: true
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.4.0
+    hostname: schema-registry
+    container_name: schema-registry
+    depends_on:
+      - kafka
     ports:
-      - "2181:2181"
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: 'redpanda:29092'
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
 
   localstack:
     image: localstack/localstack:0.13.1
-    ports: 
+    ports:
       - "4566:4566"
     environment:
       - SERVICES=s3,dynamodb
@@ -44,16 +60,17 @@ services:
   azurite:
     image: mcr.microsoft.com/azure-storage/azurite
     ports:
-    - "10000:10000"
-    - "10001:10001"
+      - "10000:10000"
+      - "10001:10001"
   setup:
     build:
       context: .
       dockerfile: Dockerfile.setup
-    depends_on: 
+    depends_on:
       - kafka
       - localstack
       - azurite
+      - schema-registry
     entrypoint: "/bin/bash"
     command:
       - /localstack-setup_emails.sh

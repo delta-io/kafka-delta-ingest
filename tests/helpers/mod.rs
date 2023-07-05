@@ -70,6 +70,11 @@ pub async fn send_json(producer: &FutureProducer, topic: &str, json: &Value) -> 
     producer.send(record, Timeout::Never).await.unwrap()
 }
 
+pub async fn send_encoded(producer: &FutureProducer, topic: &str, content: Vec<u8>) -> (i32, i64) {
+    let record: FutureRecord<String, Vec<u8>> = FutureRecord::to(topic).payload(&content);
+    producer.send(record, Timeout::Never).await.unwrap()
+}
+
 pub async fn send_kv_json(
     producer: &FutureProducer,
     topic: &str,

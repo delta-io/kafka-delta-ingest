@@ -31,9 +31,10 @@
 #![deny(missing_docs)]
 
 use chrono::Local;
-use clap::{Arg, ArgAction, Command};
+use clap::{Arg, ArgAction, ArgGroup, Command};
 use kafka_delta_ingest::{
-    start_ingest, AutoOffsetReset, DataTypeOffset, DataTypePartition, IngestOptions,
+    start_ingest, AutoOffsetReset, DataTypeOffset, DataTypePartition, IngestOptions, MessageFormat,
+    SchemaSource,
 };
 use log::{error, info, LevelFilter};
 use std::collections::HashMap;
@@ -150,6 +151,13 @@ This can be used to provide TLS configuration as in:
                                  .short('s')
                                  .help("Statsd endpoint for sending stats")
                                  .default_value("localhost:8125"))
+                            .arg(Arg::new("json")
+                                    .help("Schema registry endpoint, local path, or empty string"))
+                            .arg(Arg::new("avro")
+                                    .help("Schema registry endpoint, local path, or empty string"))
+                            // .arg(Arg::new("proto").help("Schema registry endpoint"))
+                            .group(ArgGroup::new("format")
+                                .args(["json", "avro"]))
 
                         )
                 .arg_required_else_help(true)
@@ -253,6 +261,17 @@ This can be used to provide TLS configuration as in:
                 .unwrap()
                 .to_string();
 
+            let format = match ingest_matches.get_one::<String>("FORMAT") {
+                Some(avro_format) if avro_format == "avro" => {
+                    MessageFormat::Avro(to_schema_source(ingest_matches.get_one::<String>("avro")))
+                }
+                //                Some(proto_format) if proto_format == "proto" => (proto_format, String::default()),
+                Some(_) => {
+                    MessageFormat::Json(to_schema_source(ingest_matches.get_one::<String>("json")))
+                }
+                None => MessageFormat::DefaultJson,
+            };
+
             let options = IngestOptions {
                 kafka_brokers,
                 consumer_group_id,
@@ -268,6 +287,7 @@ This can be used to provide TLS configuration as in:
                 write_checkpoints,
                 additional_kafka_settings,
                 statsd_endpoint,
+                input_format: format,
             };
 
             tokio::spawn(async move {
@@ -292,6 +312,20 @@ This can be used to provide TLS configuration as in:
     }
 
     Ok(())
+}
+
+fn to_schema_source(input: Option<&String>) -> SchemaSource {
+    match input {
+        None => SchemaSource::None,
+        Some(value) => {
+            let schema_source_value = (*value).clone();
+            if !value.starts_with("http") {
+                return SchemaSource::File(schema_source_value);
+            }
+
+            return SchemaSource::SchemaRegistry(schema_source_value);
+        }
+    }
 }
 
 fn init_logger(app_id: String) {
