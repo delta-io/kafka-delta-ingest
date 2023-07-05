@@ -31,7 +31,7 @@
 #![deny(missing_docs)]
 
 use chrono::Local;
-use clap::{Arg, ArgAction, ArgGroup, Command};
+use clap::{Arg, ArgAction, ArgGroup, ArgMatches, Command};
 use kafka_delta_ingest::{
     start_ingest, AutoOffsetReset, DataTypeOffset, DataTypePartition, IngestOptions, MessageFormat,
     SchemaSource,
@@ -56,112 +56,7 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let matches = Command::new("kafka-delta-ingest")
-                    .version(env!["CARGO_PKG_VERSION"])
-                    .about("Daemon for ingesting messages from Kafka and writing them to a Delta table")
-                    .subcommand(
-                        Command::new("ingest")
-                            .about("Starts a stream that consumes from a Kafka topic and writes to a Delta table")
-                            .arg(Arg::new("topic")
-                                 .help("The Kafka topic to stream from")
-                                .required(true))
-                            .arg(Arg::new("table_location")
-                                 .help("The Delta table location to write out")
-                                 .required(true))
-                            .arg(Arg::new("kafka")
-                                 .short('k')
-                                 .help("Kafka broker connection string to use")
-                                 .default_value("localhost:9092"))
-                            .arg(Arg::new("consumer_group")
-                                 .short('g')
-                                 .help("Consumer group to use when subscribing to Kafka topics")
-                                 .default_value("kafka_delta_ingest"))
-                            .arg(Arg::new("app_id")
-                                 .short('a')
-                                 .help("App ID to use when writing to Delta")
-                                 .default_value("kafka_delta_ingest"))
-                            .arg(Arg::new("seek_offsets")
-                                 .long("seek_offsets")
-                                 .help(r#"Only useful when offsets are not already stored in the delta table. A JSON string specifying the partition offset map as the starting point for ingestion. This is *seeking* rather than _starting_ offsets. The first ingested message would be (seek_offset + 1). Ex: {"0":123, "1":321}"#))
-
-                            .arg(Arg::new("auto_offset_reset")
-                                 .short('o')
-                                 .help(r#"The default offset reset policy, which is either 'earliest' or 'latest'.
-The configuration is applied when offsets are not found in delta table or not specified with 'seek_offsets'. This also overrides the kafka consumer's 'auto.offset.reset' config."#)
-                                 .default_value("earliest"))
-                            .arg(Arg::new("allowed_latency")
-                                 .short('l')
-                                 .help("The allowed latency (in seconds) from the time a message is consumed to when it should be written to Delta.")
-                                 .default_value("300"))
-                            .arg(Arg::new("max_messages_per_batch")
-                                 .short('m')
-                                 .help("The maximum number of rows allowed in a parquet batch. This shoulid be the approximate number of bytes described by MIN_BYTES_PER_FILE")
-                                 .default_value("5000"))
-                            .arg(Arg::new("min_bytes_per_file")
-                                 .short('b')
-                                 .help("The target minimum file size (in bytes) for each Delta file. File size may be smaller than this value if ALLOWED_LATENCY does not allow enough time to accumulate the specified number of bytes.")
-                                 .default_value("134217728"))
-                            .arg(Arg::new("transform")
-                                 .short('t')
-                                 .action(ArgAction::Append)
-                                 .help(
-r#"A list of transforms to apply to each Kafka message. Each transform should follow the pattern:
-"PROPERTY: SOURCE". For example:
-
-... -t 'modified_date: substr(modified,`0`,`10`)' 'kafka_offset: kafka.offset'
-
-Valid values for SOURCE come in two flavors: (1) JMESPath query expressions and (2) well known
-Kafka metadata properties. Both are demonstrated in the example above.
-
-The first SOURCE extracts a substring from the "modified" property of the JSON value, skipping 0
-characters and taking 10. the transform assigns the result to "modified_date" (the PROPERTY).
-You can read about JMESPath syntax in https://jmespath.org/specification.html. In addition to the
-built-in JMESPath functions, Kafka Delta Ingest adds the custom `substr` function.
-
-The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta Ingest supports
-the following well-known Kafka metadata properties:
-
-* kafka.offset
-* kafka.partition
-* kafka.topic
-* kafka.timestamp
-"#))
-                            .arg(Arg::new("dlq_table_location")
-                                 .long("dlq_table_location")
-                                 .required(false)
-                                 .help("Optional table to write unprocessable entities to"))
-                            .arg(Arg::new("dlq_transform")
-                                 .long("dlq_transform")
-                                 .required(false)
-                                 .action(ArgAction::Append)
-                                 .help("Transforms to apply before writing unprocessable entities to the dlq_location"))
-                            .arg(Arg::new("checkpoints")
-                                 .short('c')
-                                 .action(ArgAction::SetTrue)
-                                 .help("If set then kafka-delta-ingest will write checkpoints on every 10th commit"))
-                            .arg(Arg::new("kafka_setting")
-                                 .short('K')
-                                 .action(ArgAction::Append)
-                                 .help(r#"A list of additional settings to include when creating the Kafka consumer.
-
-This can be used to provide TLS configuration as in:
-
-... -K "security.protocol=SSL" "ssl.certificate.location=kafka.crt" "ssl.key.location=kafka.key""#))
-                            .arg(Arg::new("statsd_endpoint")
-                                 .short('s')
-                                 .help("Statsd endpoint for sending stats")
-                                 .default_value("localhost:8125"))
-                            .arg(Arg::new("json")
-                                    .help("Schema registry endpoint, local path, or empty string"))
-                            .arg(Arg::new("avro")
-                                    .help("Schema registry endpoint, local path, or empty string"))
-                            // .arg(Arg::new("proto").help("Schema registry endpoint"))
-                            .group(ArgGroup::new("format")
-                                .args(["json", "avro"]))
-
-                        )
-                .arg_required_else_help(true)
-                .get_matches();
+    let matches = build_app().get_matches();
 
     match matches.subcommand() {
         Some(("ingest", ingest_matches)) => {
@@ -261,16 +156,7 @@ This can be used to provide TLS configuration as in:
                 .unwrap()
                 .to_string();
 
-            let format = match ingest_matches.get_one::<String>("FORMAT") {
-                Some(avro_format) if avro_format == "avro" => {
-                    MessageFormat::Avro(to_schema_source(ingest_matches.get_one::<String>("avro")))
-                }
-                //                Some(proto_format) if proto_format == "proto" => (proto_format, String::default()),
-                Some(_) => {
-                    MessageFormat::Json(to_schema_source(ingest_matches.get_one::<String>("json")))
-                }
-                None => MessageFormat::DefaultJson,
-            };
+            let format = convert_matches_to_message_format(ingest_matches);
 
             let options = IngestOptions {
                 kafka_brokers,
@@ -314,12 +200,20 @@ This can be used to provide TLS configuration as in:
     Ok(())
 }
 
-fn to_schema_source(input: Option<&String>) -> SchemaSource {
+fn to_schema_source(input: Option<&String>, disable_files: bool) -> SchemaSource {
     match input {
         None => SchemaSource::None,
         Some(value) => {
+            if value.is_empty() {
+                return SchemaSource::None;
+            }
+
             let schema_source_value = (*value).clone();
             if !value.starts_with("http") {
+                if disable_files {
+                    return SchemaSource::None;
+                }
+
                 return SchemaSource::File(schema_source_value);
             }
 
@@ -398,13 +292,202 @@ fn parse_seek_offsets(val: &str) -> Vec<(DataTypePartition, DataTypeOffset)> {
     list
 }
 
+fn build_app() -> Command {
+    Command::new("kafka-delta-ingest")
+                    .version(env!["CARGO_PKG_VERSION"])
+                    .about("Daemon for ingesting messages from Kafka and writing them to a Delta table")
+                    .subcommand(
+                        Command::new("ingest")
+                            .about("Starts a stream that consumes from a Kafka topic and writes to a Delta table")
+                            .arg(Arg::new("topic")
+                                 .help("The Kafka topic to stream from")
+                                .required(true))
+                            .arg(Arg::new("table_location")
+                                 .help("The Delta table location to write out")
+                                 .required(true))
+                            .arg(Arg::new("kafka")
+                                 .short('k')
+                                 .help("Kafka broker connection string to use")
+                                 .default_value("localhost:9092"))
+                            .arg(Arg::new("consumer_group")
+                                 .short('g')
+                                 .help("Consumer group to use when subscribing to Kafka topics")
+                                 .default_value("kafka_delta_ingest"))
+                            .arg(Arg::new("app_id")
+                                 .short('a')
+                                 .help("App ID to use when writing to Delta")
+                                 .default_value("kafka_delta_ingest"))
+                            .arg(Arg::new("seek_offsets")
+                                 .long("seek_offsets")
+                                 .help(r#"Only useful when offsets are not already stored in the delta table. A JSON string specifying the partition offset map as the starting point for ingestion. This is *seeking* rather than _starting_ offsets. The first ingested message would be (seek_offset + 1). Ex: {"0":123, "1":321}"#))
+
+                            .arg(Arg::new("auto_offset_reset")
+                                 .short('o')
+                                 .help(r#"The default offset reset policy, which is either 'earliest' or 'latest'.
+The configuration is applied when offsets are not found in delta table or not specified with 'seek_offsets'. This also overrides the kafka consumer's 'auto.offset.reset' config."#)
+                                 .default_value("earliest"))
+                            .arg(Arg::new("allowed_latency")
+                                 .short('l')
+                                 .help("The allowed latency (in seconds) from the time a message is consumed to when it should be written to Delta.")
+                                 .default_value("300"))
+                            .arg(Arg::new("max_messages_per_batch")
+                                 .short('m')
+                                 .help("The maximum number of rows allowed in a parquet batch. This shoulid be the approximate number of bytes described by MIN_BYTES_PER_FILE")
+                                 .default_value("5000"))
+                            .arg(Arg::new("min_bytes_per_file")
+                                 .short('b')
+                                 .help("The target minimum file size (in bytes) for each Delta file. File size may be smaller than this value if ALLOWED_LATENCY does not allow enough time to accumulate the specified number of bytes.")
+                                 .default_value("134217728"))
+                            .arg(Arg::new("transform")
+                                 .short('t')
+                                 .action(ArgAction::Append)
+                                 .help(
+r#"A list of transforms to apply to each Kafka message. Each transform should follow the pattern:
+"PROPERTY: SOURCE". For example:
+
+... -t 'modified_date: substr(modified,`0`,`10`)' 'kafka_offset: kafka.offset'
+
+Valid values for SOURCE come in two flavors: (1) JMESPath query expressions and (2) well known
+Kafka metadata properties. Both are demonstrated in the example above.
+
+The first SOURCE extracts a substring from the "modified" property of the JSON value, skipping 0
+characters and taking 10. the transform assigns the result to "modified_date" (the PROPERTY).
+You can read about JMESPath syntax in https://jmespath.org/specification.html. In addition to the
+built-in JMESPath functions, Kafka Delta Ingest adds the custom `substr` function.
+
+The second SOURCE represents the well-known Kafka "offset" property. Kafka Delta Ingest supports
+the following well-known Kafka metadata properties:
+
+* kafka.offset
+* kafka.partition
+* kafka.topic
+* kafka.timestamp
+"#))
+                            .arg(Arg::new("dlq_table_location")
+                                 .long("dlq_table_location")
+                                 .required(false)
+                                 .help("Optional table to write unprocessable entities to"))
+                            .arg(Arg::new("dlq_transform")
+                                 .long("dlq_transform")
+                                 .required(false)
+                                 .action(ArgAction::Append)
+                                 .help("Transforms to apply before writing unprocessable entities to the dlq_location"))
+                            .arg(Arg::new("checkpoints")
+                                 .short('c')
+                                 .action(ArgAction::SetTrue)
+                                 .help("If set then kafka-delta-ingest will write checkpoints on every 10th commit"))
+                            .arg(Arg::new("kafka_setting")
+                                 .short('K')
+                                 .action(ArgAction::Append)
+                                 .help(r#"A list of additional settings to include when creating the Kafka consumer.
+
+This can be used to provide TLS configuration as in:
+
+... -K "security.protocol=SSL" "ssl.certificate.location=kafka.crt" "ssl.key.location=kafka.key""#))
+                            .arg(Arg::new("statsd_endpoint")
+                                 .short('s')
+                                 .help("Statsd endpoint for sending stats")
+                                 .default_value("localhost:8125"))
+                            .arg(Arg::new("json")
+                                    .required(false)
+                                    .long("json")
+                                    .help("Schema registry endpoint, local path, or empty string"))
+                            .arg(Arg::new("avro")
+                                    .long("avro")
+                                    .required(false)
+                                    .help("Schema registry endpoint, local path, or empty string"))
+                            .group(ArgGroup::new("format")
+                                    .args(["json", "avro"])
+                                    .required(false))
+                        )
+                .arg_required_else_help(true)
+}
+
+fn convert_matches_to_message_format(ingest_matches: &ArgMatches) -> MessageFormat {
+    if !ingest_matches.contains_id("format") {
+        return MessageFormat::DefaultJson;
+    }
+
+    if ingest_matches.contains_id("avro") {
+        return MessageFormat::Avro(to_schema_source(
+            ingest_matches.get_one::<String>("avro"),
+            false,
+        ));
+    }
+
+    return MessageFormat::Json(to_schema_source(
+        ingest_matches.get_one::<String>("json"),
+        true,
+    ));
+}
+
 #[cfg(test)]
 mod test {
-    use crate::parse_seek_offsets;
+    use kafka_delta_ingest::{MessageFormat, SchemaSource};
+
+    use crate::{build_app, convert_matches_to_message_format, parse_seek_offsets};
+
+    static SCHEMA_REGISTRY_ADDRESS: &'static str = "http://localhost:8081";
 
     #[test]
     fn parse_seek_offsets_test() {
         let parsed = parse_seek_offsets(r#"{"0":10,"2":12,"1":13}"#);
         assert_eq!(parsed, vec![(0, 10), (1, 13), (2, 12)]);
+    }
+
+    #[test]
+    fn get_json_argument() {
+        assert!(matches!(
+            get_subcommand_matches(vec!["--json", ""]),
+            MessageFormat::Json(SchemaSource::None)
+        ));
+        assert!(matches!(
+            get_subcommand_matches(vec!["--json", "test"]),
+            MessageFormat::Json(SchemaSource::None)
+        ));
+
+        match get_subcommand_matches(vec!["--json", SCHEMA_REGISTRY_ADDRESS]) {
+            MessageFormat::Json(SchemaSource::SchemaRegistry(registry_url)) => {
+                assert_eq!(registry_url, SCHEMA_REGISTRY_ADDRESS);
+            }
+            _ => panic!("invalid message format"),
+        }
+    }
+
+    #[test]
+    fn get_avro_argument() {
+        assert!(matches!(
+            get_subcommand_matches(vec!["--avro", ""]),
+            MessageFormat::Avro(SchemaSource::None)
+        ));
+
+        match get_subcommand_matches(vec!["--avro", "test"]) {
+            MessageFormat::Avro(SchemaSource::File(file_name)) => {
+                assert_eq!(file_name, "test");
+            }
+            _ => panic!("invalid message format"),
+        }
+
+        match get_subcommand_matches(vec!["--avro", SCHEMA_REGISTRY_ADDRESS]) {
+            MessageFormat::Avro(SchemaSource::SchemaRegistry(registry_url)) => {
+                assert_eq!(registry_url, SCHEMA_REGISTRY_ADDRESS);
+            }
+            _ => panic!("invalid message format"),
+        }
+    }
+
+    fn get_subcommand_matches(args: Vec<&str>) -> MessageFormat {
+        let base_args = vec![
+            "app",
+            "ingest",
+            "web_requests",
+            "./tests/data/web_requests",
+            "-a",
+            "test",
+        ];
+        let try_matches = build_app().try_get_matches_from([base_args, args].concat());
+        let matches = try_matches.unwrap();
+        let (_, subcommand) = matches.subcommand().unwrap();
+        return convert_matches_to_message_format(subcommand);
     }
 }
