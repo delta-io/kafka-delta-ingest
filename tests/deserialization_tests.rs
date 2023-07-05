@@ -156,7 +156,7 @@ async fn test_json_with_registry() {
     rt.shutdown_background();
 }
 
-`#[tokio::test]
+#[tokio::test]
 #[serial]
 async fn test_avro_default() {
     let (topic, table, producer, kdi, token, rt) = helpers::create_and_run_kdi(
