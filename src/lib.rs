@@ -787,7 +787,7 @@ impl IngestProcessor {
         let value = self.message_deserializer.deserialize(message_bytes).await?;
         self.ingest_metrics
             .message_deserialized_size(message_bytes.len());
-        return Ok(value);
+        Ok(value)
     }
 
     /// Writes the transformed messages currently held in buffer to parquet byte buffers.

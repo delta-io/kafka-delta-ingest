@@ -26,7 +26,7 @@ impl MessageDeserializerFactory {
                 crate::SchemaSource::None => Ok(Self::json_default()),
                 crate::SchemaSource::SchemaRegistry(sr) => {
                     match Self::build_sr_settings((*sr).clone())
-                        .map(|sr_settings| JsonDeserializer::from_schema_registry(sr_settings))
+                        .map(JsonDeserializer::from_schema_registry)
                     {
                         Ok(s) => Ok(Box::new(s)),
                         Err(e) => Err(e),
@@ -35,10 +35,10 @@ impl MessageDeserializerFactory {
                 crate::SchemaSource::File(_) => Ok(Self::json_default()),
             },
             MessageFormat::Avro(data) => match data {
-                crate::SchemaSource::None => Ok(Box::new(AvroSchemaDeserializer::default())),
+                crate::SchemaSource::None => Ok(Box::<AvroSchemaDeserializer>::default()),
                 crate::SchemaSource::SchemaRegistry(sr) => {
                     match Self::build_sr_settings((*sr).clone())
-                        .map(|sr_settings| AvroDeserializer::from_schema_registry(sr_settings))
+                        .map(AvroDeserializer::from_schema_registry)
                     {
                         Ok(s) => Ok(Box::new(s)),
                         Err(e) => Err(e),
@@ -101,6 +101,7 @@ struct AvroDeserializer {
     decoder: EasyAvroDecoder,
 }
 
+#[derive(Default)]
 struct AvroSchemaDeserializer {
     schema: Option<apache_avro::Schema>,
 }
@@ -148,12 +149,12 @@ impl MessageDeserializer for AvroSchemaDeserializer {
     ) -> Result<Value, MessageDeserializationError> {
         let reader_result = match &self.schema {
             None => apache_avro::Reader::new(Cursor::new(message_bytes)),
-            Some(schema) => apache_avro::Reader::with_schema(&schema, Cursor::new(message_bytes)),
+            Some(schema) => apache_avro::Reader::with_schema(schema, Cursor::new(message_bytes)),
         };
 
         match reader_result {
-            Ok(reader) => {
-                for r in reader {
+            Ok(mut reader) => {
+                if let Some(r) = reader.next() {
                     let v = match r {
                         Err(_) => return Err(MessageDeserializationError::EmptyPayload),
                         Ok(v) => Value::try_from(v),
@@ -169,6 +170,7 @@ impl MessageDeserializer for AvroSchemaDeserializer {
                         }),
                     };
                 }
+
                 return Err(MessageDeserializationError::EmptyPayload);
                 // TODO: Code to return multiple values from avro message
                 /*let (values, errors): (Vec<_>, Vec<_>) =
@@ -222,15 +224,7 @@ impl MessageDeserializer for JsonDeserializer {
         let decoder = self.decoder.borrow_mut();
         match decoder.decode(Some(message_bytes)).await {
             Ok(drs) => match drs {
-                Some(v) => match Value::try_from(v.value) {
-                    Ok(v) => Ok(v),
-                    Err(e) => Err(MessageDeserializationError::AvroDeserialization {
-                        dead_letter: DeadLetter::from_failed_deserialization(
-                            message_bytes,
-                            e.to_string(),
-                        ),
-                    }),
-                },
+                Some(v) => Ok(v.value),
                 None => return Err(MessageDeserializationError::EmptyPayload),
             },
             Err(e) => {
@@ -246,9 +240,9 @@ impl MessageDeserializer for JsonDeserializer {
 }
 impl JsonDeserializer {
     pub(crate) fn from_schema_registry(sr_settings: SrSettings) -> Self {
-        return JsonDeserializer {
+        JsonDeserializer {
             decoder: EasyJsonDecoder::new(sr_settings),
-        };
+        }
     }
 }
 
@@ -264,17 +258,11 @@ impl AvroSchemaDeserializer {
     }
 }
 
-impl Default for AvroSchemaDeserializer {
-    fn default() -> Self {
-        Self { schema: None }
-    }
-}
-
 impl AvroDeserializer {
     pub(crate) fn from_schema_registry(sr_settings: SrSettings) -> Self {
-        return AvroDeserializer {
+        AvroDeserializer {
             decoder: EasyAvroDecoder::new(sr_settings),
-        };
+        }
     }
 }
 
