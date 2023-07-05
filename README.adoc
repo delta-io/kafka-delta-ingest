@@ -255,8 +255,21 @@ aws dynamodb create-table --table-name delta_rs_lock_table \
         ReadCapacityUnits=10,WriteCapacityUnits=10
 ```
 
+== Schema Support
+This application has support for both avro and json format via command line arguments. If no format argument is provided, the default behavior is to use json.
+The table below indicates what will happen with respect to the provided arguments.
+| Argument      | Value |  Result |
+| ----------- | ----------- | ----------- |
+| <none>      | <none>       | default json behavior |
+| --json      | <any string>       | default json behavior |
+| --json      | <schema registry url>       |  will connect schema registry to deserialize json |
+| --avro   | ""        | expects all messages in avro format |
+| --avro      | <path to an avro schema>       | will use the provided avro schema for deserialization |
+| --avro   | <schema registry url>        | will connect schema registry to deserialize avro |
+
+
 For more information, see link:https://github.com/delta-io/delta-rs/tree/dbc2994c5fddfd39fc31a8f9202df74788f59a01/dynamodb_lock[DynamoDB lock].
-==== Verifying data in Azure Storage
+== Verifying data in Azure Storage
 
 Use the Azure Portal to browse the file system:
 
