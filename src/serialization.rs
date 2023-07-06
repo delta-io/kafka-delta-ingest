@@ -25,9 +25,7 @@ impl MessageDeserializerFactory {
             MessageFormat::Json(data) => match data {
                 crate::SchemaSource::None => Ok(Self::json_default()),
                 crate::SchemaSource::SchemaRegistry(sr) => {
-                    match Self::build_sr_settings(sr.to_string())
-                        .map(JsonDeserializer::from_schema_registry)
-                    {
+                    match Self::build_sr_settings(sr).map(JsonDeserializer::from_schema_registry) {
                         Ok(s) => Ok(Box::new(s)),
                         Err(e) => Err(e),
                     }
@@ -37,9 +35,7 @@ impl MessageDeserializerFactory {
             MessageFormat::Avro(data) => match data {
                 crate::SchemaSource::None => Ok(Box::<AvroSchemaDeserializer>::default()),
                 crate::SchemaSource::SchemaRegistry(sr) => {
-                    match Self::build_sr_settings(sr.to_string())
-                        .map(AvroDeserializer::from_schema_registry)
-                    {
+                    match Self::build_sr_settings(sr).map(AvroDeserializer::from_schema_registry) {
                         Ok(s) => Ok(Box::new(s)),
                         Err(e) => Err(e),
                     }
@@ -59,8 +55,13 @@ impl MessageDeserializerFactory {
         Box::new(DefaultDeserializer {})
     }
 
-    fn build_sr_settings(registry_url: String) -> Result<SrSettings, anyhow::Error> {
-        let mut builder = SrSettings::new_builder(registry_url);
+    fn build_sr_settings(registry_url: &url::Url) -> Result<SrSettings, anyhow::Error> {
+        let mut url_string = registry_url.as_str();
+        if url_string.ends_with('/') {
+            url_string = &url_string[0..url_string.len() - 1];
+        }
+
+        let mut builder = SrSettings::new_builder(url_string.to_owned());
         if let Ok(username) = std::env::var("SCHEMA_REGISTRY_USERNAME") {
             builder.set_basic_authorization(
                 username.as_str(),
