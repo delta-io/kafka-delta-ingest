@@ -222,7 +222,6 @@ pub enum MessageFormat {
 
     /// Parses avro messages using provided schema, schema registry or schema within file
     Avro(SchemaSource),
-    //    ProtoBuf(SchemaSource),
 }
 
 /// Source for schema
