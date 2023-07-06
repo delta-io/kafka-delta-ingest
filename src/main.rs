@@ -39,6 +39,7 @@ use kafka_delta_ingest::{
 use log::{error, info, LevelFilter};
 use std::collections::HashMap;
 use std::io::prelude::*;
+use std::path::PathBuf;
 use std::str::FromStr;
 
 #[tokio::main(flavor = "current_thread")]
@@ -208,16 +209,21 @@ fn to_schema_source(input: Option<&String>, disable_files: bool) -> SchemaSource
                 return SchemaSource::None;
             }
 
-            let schema_source_value = (*value).clone();
             if !value.starts_with("http") {
                 if disable_files {
                     return SchemaSource::None;
                 }
 
-                return SchemaSource::File(schema_source_value);
+                match PathBuf::from_str(value) {
+                    Ok(p) => return SchemaSource::File(p),
+                    Err(e) => panic!("invalid schema file path {}", e),
+                }
             }
 
-            SchemaSource::SchemaRegistry(schema_source_value)
+            match url::Url::parse(value) {
+                Ok(uri) => SchemaSource::SchemaRegistry(uri),
+                Err(e) => panic!("invalid schema registry uri {}", e),
+            }
         }
     }
 }
@@ -437,6 +443,7 @@ mod test {
 
     #[test]
     fn get_json_argument() {
+        let schema_registry_url: url::Url = url::Url::parse(SCHEMA_REGISTRY_ADDRESS).unwrap();
         assert!(matches!(
             get_subcommand_matches(vec!["--json", ""]),
             MessageFormat::Json(SchemaSource::None)
@@ -448,7 +455,7 @@ mod test {
 
         match get_subcommand_matches(vec!["--json", SCHEMA_REGISTRY_ADDRESS]) {
             MessageFormat::Json(SchemaSource::SchemaRegistry(registry_url)) => {
-                assert_eq!(registry_url, SCHEMA_REGISTRY_ADDRESS);
+                assert_eq!(registry_url, schema_registry_url);
             }
             _ => panic!("invalid message format"),
         }
@@ -456,6 +463,7 @@ mod test {
 
     #[test]
     fn get_avro_argument() {
+        let schema_registry_url: url::Url = url::Url::parse(SCHEMA_REGISTRY_ADDRESS).unwrap();
         assert!(matches!(
             get_subcommand_matches(vec!["--avro", ""]),
             MessageFormat::Avro(SchemaSource::None)
@@ -463,14 +471,15 @@ mod test {
 
         match get_subcommand_matches(vec!["--avro", "test"]) {
             MessageFormat::Avro(SchemaSource::File(file_name)) => {
-                assert_eq!(file_name, "test");
+                assert_eq!(file_name.to_str().unwrap(), "test");
             }
             _ => panic!("invalid message format"),
         }
 
         match get_subcommand_matches(vec!["--avro", SCHEMA_REGISTRY_ADDRESS]) {
             MessageFormat::Avro(SchemaSource::SchemaRegistry(registry_url)) => {
-                assert_eq!(registry_url, SCHEMA_REGISTRY_ADDRESS);
+                assert_eq!(registry_url, schema_registry_url)
+                // assert_eq!(registry_url, SCHEMA_REGISTRY_ADDRESS);
             }
             _ => panic!("invalid message format"),
         }

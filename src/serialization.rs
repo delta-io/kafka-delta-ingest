@@ -1,4 +1,4 @@
-use std::{borrow::BorrowMut, convert::TryFrom, io::Cursor};
+use std::{borrow::BorrowMut, convert::TryFrom, io::Cursor, path::PathBuf};
 
 use async_trait::async_trait;
 use schema_registry_converter::async_impl::{
@@ -25,7 +25,7 @@ impl MessageDeserializerFactory {
             MessageFormat::Json(data) => match data {
                 crate::SchemaSource::None => Ok(Self::json_default()),
                 crate::SchemaSource::SchemaRegistry(sr) => {
-                    match Self::build_sr_settings((*sr).clone())
+                    match Self::build_sr_settings(sr.to_string())
                         .map(JsonDeserializer::from_schema_registry)
                     {
                         Ok(s) => Ok(Box::new(s)),
@@ -37,7 +37,7 @@ impl MessageDeserializerFactory {
             MessageFormat::Avro(data) => match data {
                 crate::SchemaSource::None => Ok(Box::<AvroSchemaDeserializer>::default()),
                 crate::SchemaSource::SchemaRegistry(sr) => {
-                    match Self::build_sr_settings((*sr).clone())
+                    match Self::build_sr_settings(sr.to_string())
                         .map(AvroDeserializer::from_schema_registry)
                     {
                         Ok(s) => Ok(Box::new(s)),
@@ -247,7 +247,7 @@ impl JsonDeserializer {
 }
 
 impl AvroSchemaDeserializer {
-    pub(crate) fn try_from_schema_file(file: &str) -> Result<Self, anyhow::Error> {
+    pub(crate) fn try_from_schema_file(file: &PathBuf) -> Result<Self, anyhow::Error> {
         match std::fs::read_to_string(file) {
             Ok(content) => match apache_avro::Schema::parse_str(&content) {
                 Ok(s) => Ok(AvroSchemaDeserializer { schema: Some(s) }),

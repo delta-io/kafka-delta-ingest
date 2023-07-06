@@ -26,7 +26,6 @@ services:
         aliases:
           - redpanda
     ports:
-      #      - 8081:8081
       - 8082:8082
       - 9092:9092
       - 28082:28082
