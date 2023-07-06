@@ -258,6 +258,8 @@ aws dynamodb create-table --table-name delta_rs_lock_table \
 == Schema Support
 This application has support for both avro and json format via command line arguments. If no format argument is provided, the default behavior is to use json.
 The table below indicates what will happen with respect to the provided arguments.
+
+|===
 | Argument      | Value |  Result |
 | ----------- | ----------- | ----------- |
 | <none>      | <none>       | default json behavior |
