@@ -427,7 +427,7 @@ mod test {
 
     use crate::{build_app, convert_matches_to_message_format, parse_seek_offsets};
 
-    static SCHEMA_REGISTRY_ADDRESS: &'static str = "http://localhost:8081";
+    const SCHEMA_REGISTRY_ADDRESS: &str = "http://localhost:8081";
 
     #[test]
     fn parse_seek_offsets_test() {

@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serial_test::serial;
 
-static DEFAULT_AVRO_SCHEMA: &'static str = r#"{
+const DEFAULT_AVRO_SCHEMA: &str = r#"{
     "type": "record",
     "name": "test",
     "fields": [
@@ -25,11 +25,11 @@ static DEFAULT_AVRO_SCHEMA: &'static str = r#"{
         {"name": "date", "type": "string"}
     ]
 }"#;
-static SCHEMA_PATH: &'static str = "tests/data/default_schema.avro";
-static DEFAULT_ID: i64 = 1;
-static DEFAULT_DATE: &'static str = "2023-06-30";
-static DEFAULT_NAME: &'static str = "test";
-static SCHEMA_REGISTRY_ADDRESS: &'static str = "http://localhost:8081";
+const SCHEMA_PATH: &str = "tests/data/default_schema.avro";
+const DEFAULT_ID: i64 = 1;
+const DEFAULT_DATE: &str = "2023-06-30";
+const DEFAULT_NAME: &str = "test";
+const SCHEMA_REGISTRY_ADDRESS: &str = "http://localhost:8081";
 
 #[tokio::test]
 #[serial]
