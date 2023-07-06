@@ -157,7 +157,7 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap()
                 .to_string();
 
-            let format = convert_matches_to_message_format(ingest_matches);
+            let format = convert_matches_to_message_format(ingest_matches).unwrap();
 
             let options = IngestOptions {
                 kafka_brokers,
@@ -201,29 +201,33 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn to_schema_source(input: Option<&String>, disable_files: bool) -> SchemaSource {
+fn to_schema_source(
+    input: Option<&String>,
+    disable_files: bool,
+) -> Result<SchemaSource, SchemaSourceError> {
     match input {
-        None => SchemaSource::None,
+        None => Ok(SchemaSource::None),
         Some(value) => {
             if value.is_empty() {
-                return SchemaSource::None;
+                return Ok(SchemaSource::None);
             }
 
             if !value.starts_with("http") {
                 if disable_files {
-                    return SchemaSource::None;
+                    return Ok(SchemaSource::None);
                 }
 
-                match PathBuf::from_str(value) {
-                    Ok(p) => return SchemaSource::File(p),
-                    Err(e) => panic!("invalid schema file path {}", e),
+                let p = PathBuf::from_str(value)?;
+                if !p.exists() {
+                    return Err(SchemaSourceError::FileNotFound {
+                        file_name: (*value).clone(),
+                    });
                 }
+
+                return Ok(SchemaSource::File(p));
             }
 
-            match url::Url::parse(value) {
-                Ok(uri) => SchemaSource::SchemaRegistry(uri),
-                Err(e) => panic!("invalid schema registry uri {}", e),
-            }
+            Ok(SchemaSource::SchemaRegistry(url::Url::parse(value)?))
         }
     }
 }
@@ -260,6 +264,25 @@ struct TransformSyntaxError {
 #[error("'{value}' - Each Kafka setting must be delimited by an '=' and match the pattern 'PROPERTY_NAME=PROPERTY_VALUE'")]
 struct KafkaPropertySyntaxError {
     value: String,
+}
+
+/// Errors returned by [`to_schema_source`] function.
+#[derive(thiserror::Error, Debug)]
+enum SchemaSourceError {
+    /// Wrapped [`core::convert::Infallible`]
+    #[error("Invalid file path: {source}")]
+    InvalidPath {
+        #[from]
+        source: core::convert::Infallible,
+    },
+    /// Wrapped [`url::ParseError`]
+    #[error("Invalid url: {source}")]
+    InvalidUrl {
+        #[from]
+        source: url::ParseError,
+    },
+    #[error("File not found error: {file_name}")]
+    FileNotFound { file_name: String },
 }
 
 fn parse_kafka_property(val: &str) -> Result<(String, String), KafkaPropertySyntaxError> {
@@ -409,29 +432,29 @@ This can be used to provide TLS configuration as in:
                 .arg_required_else_help(true)
 }
 
-fn convert_matches_to_message_format(ingest_matches: &ArgMatches) -> MessageFormat {
+fn convert_matches_to_message_format(
+    ingest_matches: &ArgMatches,
+) -> Result<MessageFormat, SchemaSourceError> {
     if !ingest_matches.contains_id("format") {
-        return MessageFormat::DefaultJson;
+        return Ok(MessageFormat::DefaultJson);
     }
 
     if ingest_matches.contains_id("avro") {
-        return MessageFormat::Avro(to_schema_source(
-            ingest_matches.get_one::<String>("avro"),
-            false,
-        ));
+        return to_schema_source(ingest_matches.get_one::<String>("avro"), false)
+            .map(MessageFormat::Avro);
     }
 
-    return MessageFormat::Json(to_schema_source(
-        ingest_matches.get_one::<String>("json"),
-        true,
-    ));
+    return to_schema_source(ingest_matches.get_one::<String>("json"), true)
+        .map(MessageFormat::Json);
 }
 
 #[cfg(test)]
 mod test {
     use kafka_delta_ingest::{MessageFormat, SchemaSource};
 
-    use crate::{build_app, convert_matches_to_message_format, parse_seek_offsets};
+    use crate::{
+        build_app, convert_matches_to_message_format, parse_seek_offsets, SchemaSourceError,
+    };
 
     const SCHEMA_REGISTRY_ADDRESS: &str = "http://localhost:8081";
 
@@ -445,47 +468,65 @@ mod test {
     fn get_json_argument() {
         let schema_registry_url: url::Url = url::Url::parse(SCHEMA_REGISTRY_ADDRESS).unwrap();
         assert!(matches!(
-            get_subcommand_matches(vec!["--json", ""]),
+            get_subcommand_matches(vec!["--json", ""]).unwrap(),
             MessageFormat::Json(SchemaSource::None)
         ));
         assert!(matches!(
-            get_subcommand_matches(vec!["--json", "test"]),
+            get_subcommand_matches(vec!["--json", "test"]).unwrap(),
             MessageFormat::Json(SchemaSource::None)
         ));
 
-        match get_subcommand_matches(vec!["--json", SCHEMA_REGISTRY_ADDRESS]) {
+        match get_subcommand_matches(vec!["--json", SCHEMA_REGISTRY_ADDRESS]).unwrap() {
             MessageFormat::Json(SchemaSource::SchemaRegistry(registry_url)) => {
                 assert_eq!(registry_url, schema_registry_url);
             }
             _ => panic!("invalid message format"),
         }
+
+        assert!(matches!(
+            get_subcommand_matches(vec!["--json", "http::a//"]),
+            Err(SchemaSourceError::InvalidUrl { .. })
+        ));
     }
 
     #[test]
     fn get_avro_argument() {
         let schema_registry_url: url::Url = url::Url::parse(SCHEMA_REGISTRY_ADDRESS).unwrap();
         assert!(matches!(
-            get_subcommand_matches(vec!["--avro", ""]),
+            get_subcommand_matches(vec!["--avro", ""]).unwrap(),
             MessageFormat::Avro(SchemaSource::None)
         ));
 
-        match get_subcommand_matches(vec!["--avro", "test"]) {
+        match get_subcommand_matches(vec!["--avro", "tests/data/default_schema.avro"]).unwrap() {
             MessageFormat::Avro(SchemaSource::File(file_name)) => {
-                assert_eq!(file_name.to_str().unwrap(), "test");
+                assert_eq!(
+                    file_name.to_str().unwrap(),
+                    "tests/data/default_schema.avro"
+                );
             }
             _ => panic!("invalid message format"),
         }
 
-        match get_subcommand_matches(vec!["--avro", SCHEMA_REGISTRY_ADDRESS]) {
+        assert!(matches!(
+            get_subcommand_matches(vec!["--avro", "this_file_does_not_exist"]),
+            Err(SchemaSourceError::FileNotFound { .. })
+        ));
+
+        match get_subcommand_matches(vec!["--avro", SCHEMA_REGISTRY_ADDRESS]).unwrap() {
             MessageFormat::Avro(SchemaSource::SchemaRegistry(registry_url)) => {
                 assert_eq!(registry_url, schema_registry_url)
                 // assert_eq!(registry_url, SCHEMA_REGISTRY_ADDRESS);
             }
             _ => panic!("invalid message format"),
         }
+
+        assert!(matches!(
+            get_subcommand_matches(vec!["--avro", "http::a//"]),
+            Err(SchemaSourceError::InvalidUrl { .. })
+        ));
     }
 
-    fn get_subcommand_matches(args: Vec<&str>) -> MessageFormat {
+    fn get_subcommand_matches(args: Vec<&str>) -> Result<MessageFormat, SchemaSourceError> {
         let base_args = vec![
             "app",
             "ingest",
