@@ -29,11 +29,12 @@ use rdkafka::{
 };
 use serde_json::Value;
 use serialization::{MessageDeserializer, MessageDeserializerFactory};
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use std::{collections::HashMap, path::PathBuf};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
+use url::Url;
 
 mod coercions;
 /// Doc
@@ -231,10 +232,10 @@ pub enum SchemaSource {
     None,
 
     /// Use confluent schema registry url
-    SchemaRegistry(String),
+    SchemaRegistry(Url),
 
     /// Use provided file for schema
-    File(String),
+    File(PathBuf),
 }
 
 /// The enum to represent 'auto.offset.reset' options.
@@ -624,8 +625,6 @@ enum MessageDeserializationError {
     JsonDeserialization { dead_letter: DeadLetter },
     #[error("Kafka message deserialization failed")]
     AvroDeserialization { dead_letter: DeadLetter },
-    //    #[error("Kafka message deserialization failed")]
-    //    ProtoDeserialization { dead_letter: DeadLetter },
 }
 
 /// Indicates whether a rebalance signal should simply skip the currently consumed message, or clear state and skip.
@@ -754,7 +753,6 @@ impl IngestProcessor {
             Err(
                 MessageDeserializationError::JsonDeserialization { dead_letter }
                 | MessageDeserializationError::AvroDeserialization { dead_letter },
-                // | MessageDeserializationError::ProtoDeserialization { dead_letter },
             ) => {
                 warn!(
                     "Deserialization failed - partition {}, offset {}, dead_letter {}",
