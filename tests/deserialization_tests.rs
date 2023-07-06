@@ -15,6 +15,9 @@ use schema_registry_converter::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serial_test::serial;
+use std::path::PathBuf;
+use std::str::FromStr;
+use url::Url;
 
 const DEFAULT_AVRO_SCHEMA: &str = r#"{
     "type": "record",
@@ -128,9 +131,9 @@ async fn test_json_with_registry() {
             max_messages_per_batch: 1,
             // large value - avoid flushing on file size
             min_bytes_per_file: 1000000,
-            input_format: MessageFormat::Json(SchemaSource::SchemaRegistry(String::from(
-                SCHEMA_REGISTRY_ADDRESS,
-            ))),
+            input_format: MessageFormat::Json(SchemaSource::SchemaRegistry(
+                Url::parse(SCHEMA_REGISTRY_ADDRESS).unwrap(),
+            )),
             ..Default::default()
         }),
     )
@@ -215,7 +218,9 @@ async fn test_avro_with_file() {
             max_messages_per_batch: 1,
             // large value - avoid flushing on file size
             min_bytes_per_file: 1000000,
-            input_format: MessageFormat::Avro(SchemaSource::File(String::from(SCHEMA_PATH))),
+            input_format: MessageFormat::Avro(SchemaSource::File(
+                PathBuf::from_str(SCHEMA_PATH).unwrap(),
+            )),
             ..Default::default()
         }),
     )
@@ -258,9 +263,9 @@ async fn test_avro_with_registry() {
             max_messages_per_batch: 1,
             // large value - avoid flushing on file size
             min_bytes_per_file: 1000000,
-            input_format: MessageFormat::Avro(SchemaSource::SchemaRegistry(String::from(
-                SCHEMA_REGISTRY_ADDRESS,
-            ))),
+            input_format: MessageFormat::Avro(SchemaSource::SchemaRegistry(
+                Url::parse(SCHEMA_REGISTRY_ADDRESS).unwrap(),
+            )),
             ..Default::default()
         }),
     )
