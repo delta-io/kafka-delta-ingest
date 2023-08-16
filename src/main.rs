@@ -62,38 +62,38 @@ async fn main() -> anyhow::Result<()> {
     match matches.subcommand() {
         Some(("ingest", ingest_matches)) => {
             let app_id = ingest_matches
-                .get_one::<String>("APP_ID")
+                .get_one::<String>("app_id")
                 .unwrap()
                 .to_string();
 
             init_logger(app_id.clone());
 
             let topic = ingest_matches
-                .get_one::<String>("TOPIC")
+                .get_one::<String>("topic")
                 .unwrap()
                 .to_string();
             let table_location = ingest_matches
-                .get_one::<String>("TABLE_LOCATION")
+                .get_one::<String>("table_location")
                 .unwrap()
                 .to_string();
 
             let kafka_brokers = ingest_matches
-                .get_one::<String>("KAFKA_BROKERS")
+                .get_one::<String>("kafka")
                 .unwrap()
                 .to_string();
             let consumer_group_id = ingest_matches
-                .get_one::<String>("CONSUMER_GROUP")
+                .get_one::<String>("consumer_group")
                 .unwrap()
                 .to_string();
 
             let seek_offsets = ingest_matches
-                .get_one::<String>("SEEK_OFFSETS")
+                .get_one::<String>("seek_offsets")
                 .unwrap()
                 .to_string();
             let seek_offsets = Some(parse_seek_offsets(&seek_offsets));
 
             let auto_offset_reset = ingest_matches
-                .get_one::<String>("AUTO_OFFSET_RESET")
+                .get_one::<String>("auto_offset_reset")
                 .unwrap()
                 .to_string();
 
@@ -103,16 +103,16 @@ async fn main() -> anyhow::Result<()> {
                 unknown => panic!("Unknown auto_offset_reset {}", unknown),
             };
 
-            let allowed_latency = ingest_matches.get_one::<u64>("ALLOWED_LATENCY").unwrap();
+            let allowed_latency = ingest_matches.get_one::<u64>("allowed_latency").unwrap();
             let max_messages_per_batch = ingest_matches
-                .get_one::<usize>("MAX_MESSAGES_PER_BATCH")
+                .get_one::<usize>("max_messages_per_batch")
                 .unwrap();
             let min_bytes_per_file = ingest_matches
-                .get_one::<usize>("MIN_BYTES_PER_FILE")
+                .get_one::<usize>("min_bytes_per_file")
                 .unwrap();
 
             let transforms: Vec<&str> = ingest_matches
-                .get_many("TRANSFORM")
+                .get_many("transform")
                 .expect("Failed to parse transforms")
                 .copied()
                 .collect();
@@ -123,12 +123,12 @@ async fn main() -> anyhow::Result<()> {
                 .collect();
 
             let dlq_table_location = ingest_matches
-                .get_one::<String>("DLQ_TABLE_LOCATION")
+                .get_one::<String>("dlq_table_location")
                 .unwrap()
                 .to_string();
 
             let dlq_transforms: Vec<&str> = ingest_matches
-                .get_many("DLQ_TRANSFORM")
+                .get_many("dlq_transform")
                 .expect("Failed to parse dlq transforms")
                 .copied()
                 .collect();
@@ -138,10 +138,10 @@ async fn main() -> anyhow::Result<()> {
                 .map(|t| parse_transform(t).unwrap())
                 .collect();
 
-            let write_checkpoints = ingest_matches.get_flag("CHECKPOINTS");
+            let write_checkpoints = ingest_matches.get_flag("checkpoints");
 
             let additional_kafka_properties: Vec<String> = ingest_matches
-                .get_many::<String>("ADDITIONAL_KAFKA_SETTINGS")
+                .get_many::<String>("additional_kafka_settings")
                 .expect("Failed to parse additional kafka settings")
                 .map(|s| s.to_owned())
                 .collect();
@@ -153,7 +153,7 @@ async fn main() -> anyhow::Result<()> {
             let additional_kafka_settings = Some(additional_kafka_settings);
 
             let statsd_endpoint = ingest_matches
-                .get_one::<String>("STATSD_ENDPOINT")
+                .get_one::<String>("statds_endpoint")
                 .unwrap()
                 .to_string();
 
@@ -336,14 +336,17 @@ fn build_app() -> Command {
                                  .required(true))
                             .arg(Arg::new("kafka")
                                  .short('k')
+                                 .long("kafka")
                                  .help("Kafka broker connection string to use")
                                  .default_value("localhost:9092"))
                             .arg(Arg::new("consumer_group")
                                  .short('g')
+                                 .long("consumer_group")
                                  .help("Consumer group to use when subscribing to Kafka topics")
                                  .default_value("kafka_delta_ingest"))
                             .arg(Arg::new("app_id")
                                  .short('a')
+                                 .long("app_id")
                                  .help("App ID to use when writing to Delta")
                                  .default_value("kafka_delta_ingest"))
                             .arg(Arg::new("seek_offsets")
@@ -352,23 +355,28 @@ fn build_app() -> Command {
 
                             .arg(Arg::new("auto_offset_reset")
                                  .short('o')
+                                 .long("auto_offset_reset")
                                  .help(r#"The default offset reset policy, which is either 'earliest' or 'latest'.
 The configuration is applied when offsets are not found in delta table or not specified with 'seek_offsets'. This also overrides the kafka consumer's 'auto.offset.reset' config."#)
                                  .default_value("earliest"))
                             .arg(Arg::new("allowed_latency")
                                  .short('l')
+                                 .long("allowed_latency")
                                  .help("The allowed latency (in seconds) from the time a message is consumed to when it should be written to Delta.")
                                  .default_value("300"))
                             .arg(Arg::new("max_messages_per_batch")
                                  .short('m')
+                                 .long("max_messages_per_batch")
                                  .help("The maximum number of rows allowed in a parquet batch. This shoulid be the approximate number of bytes described by MIN_BYTES_PER_FILE")
                                  .default_value("5000"))
                             .arg(Arg::new("min_bytes_per_file")
                                  .short('b')
+                                 .long("min_bytes_per_file")
                                  .help("The target minimum file size (in bytes) for each Delta file. File size may be smaller than this value if ALLOWED_LATENCY does not allow enough time to accumulate the specified number of bytes.")
                                  .default_value("134217728"))
                             .arg(Arg::new("transform")
                                  .short('t')
+                                 .long("transform")
                                  .action(ArgAction::Append)
                                  .help(
 r#"A list of transforms to apply to each Kafka message. Each transform should follow the pattern:
@@ -403,10 +411,12 @@ the following well-known Kafka metadata properties:
                                  .help("Transforms to apply before writing unprocessable entities to the dlq_location"))
                             .arg(Arg::new("checkpoints")
                                  .short('c')
+                                 .long("checkpoints")
                                  .action(ArgAction::SetTrue)
                                  .help("If set then kafka-delta-ingest will write checkpoints on every 10th commit"))
                             .arg(Arg::new("kafka_setting")
                                  .short('K')
+                                 .long("kafka_setting")
                                  .action(ArgAction::Append)
                                  .help(r#"A list of additional settings to include when creating the Kafka consumer.
 
@@ -415,6 +425,7 @@ This can be used to provide TLS configuration as in:
 ... -K "security.protocol=SSL" "ssl.certificate.location=kafka.crt" "ssl.key.location=kafka.key""#))
                             .arg(Arg::new("statsd_endpoint")
                                  .short('s')
+                                 .long("statsd_endpoint")
                                  .help("Statsd endpoint for sending stats")
                                  .default_value("localhost:8125"))
                             .arg(Arg::new("json")

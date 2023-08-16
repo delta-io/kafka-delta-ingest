@@ -36,9 +36,9 @@ RUST_LOG=debug cargo run ingest web_requests ./tests/data/web_requests \
   --allowed_latency 60 \
   --app_id web_requests \
   --transform 'date: substr(meta.producer.timestamp, `0`, `10`)' \
-              'meta.kafka.offset: kafka.offset' \
-              'meta.kafka.partition: kafka.partition' \
-              'meta.kafka.topic: kafka.topic' \
+  --transform 'meta.kafka.offset: kafka.offset' \
+  --transform 'meta.kafka.partition: kafka.partition' \
+  --transform 'meta.kafka.topic: kafka.topic' \
   --auto_offset_reset earliest
 ```
 
