@@ -88,9 +88,7 @@ async fn main() -> anyhow::Result<()> {
 
             let seek_offsets = ingest_matches
                 .get_one::<String>("seek_offsets")
-                .unwrap()
-                .to_string();
-            let seek_offsets = Some(parse_seek_offsets(&seek_offsets));
+                .map(|s| parse_seek_offsets(s));
 
             let auto_offset_reset = ingest_matches
                 .get_one::<String>("auto_offset_reset")
@@ -111,49 +109,29 @@ async fn main() -> anyhow::Result<()> {
                 .get_one::<usize>("min_bytes_per_file")
                 .unwrap();
 
-            let transforms: Vec<&str> = ingest_matches
-                .get_many("transform")
+            let transforms: HashMap<String, String> = ingest_matches
+                .get_many::<String>("transform")
                 .expect("Failed to parse transforms")
-                .copied()
-                .collect();
-
-            let transforms: HashMap<String, String> = transforms
-                .iter()
                 .map(|t| parse_transform(t).unwrap())
                 .collect();
 
             let dlq_table_location = ingest_matches
                 .get_one::<String>("dlq_table_location")
-                .unwrap()
-                .to_string();
+                .map(|s| s.to_string());
 
-            let dlq_transforms: Vec<&str> = ingest_matches
-                .get_many("dlq_transform")
-                .expect("Failed to parse dlq transforms")
-                .copied()
-                .collect();
-
-            let dlq_transforms: HashMap<String, String> = dlq_transforms
-                .iter()
-                .map(|t| parse_transform(t).unwrap())
-                .collect();
+            let dlq_transforms: HashMap<String, String> = ingest_matches
+                .get_many::<String>("dlq_transform")
+                .map(|dlq| dlq.map(|t| parse_transform(t).unwrap()).collect())
+                .unwrap_or(HashMap::new());
 
             let write_checkpoints = ingest_matches.get_flag("checkpoints");
 
-            let additional_kafka_properties: Vec<String> = ingest_matches
-                .get_many::<String>("additional_kafka_settings")
-                .expect("Failed to parse additional kafka settings")
-                .map(|s| s.to_owned())
-                .collect();
-
-            let additional_kafka_settings: HashMap<String, String> = additional_kafka_properties
-                .iter()
-                .map(|p| parse_kafka_property(p).unwrap())
-                .collect();
-            let additional_kafka_settings = Some(additional_kafka_settings);
+            let additional_kafka_settings = ingest_matches
+                .get_many::<String>("kafka_setting")
+                .map(|k| k.map(|s| parse_kafka_property(s).unwrap()).collect());
 
             let statsd_endpoint = ingest_matches
-                .get_one::<String>("statds_endpoint")
+                .get_one::<String>("statsd_endpoint")
                 .unwrap()
                 .to_string();
 
@@ -169,7 +147,7 @@ async fn main() -> anyhow::Result<()> {
                 max_messages_per_batch: *max_messages_per_batch,
                 min_bytes_per_file: *min_bytes_per_file,
                 transforms,
-                dlq_table_uri: Some(dlq_table_location),
+                dlq_table_uri: dlq_table_location,
                 dlq_transforms,
                 write_checkpoints,
                 additional_kafka_settings,
@@ -352,7 +330,6 @@ fn build_app() -> Command {
                             .arg(Arg::new("seek_offsets")
                                  .long("seek_offsets")
                                  .help(r#"Only useful when offsets are not already stored in the delta table. A JSON string specifying the partition offset map as the starting point for ingestion. This is *seeking* rather than _starting_ offsets. The first ingested message would be (seek_offset + 1). Ex: {"0":123, "1":321}"#))
-
                             .arg(Arg::new("auto_offset_reset")
                                  .short('o')
                                  .long("auto_offset_reset")
@@ -363,17 +340,20 @@ The configuration is applied when offsets are not found in delta table or not sp
                                  .short('l')
                                  .long("allowed_latency")
                                  .help("The allowed latency (in seconds) from the time a message is consumed to when it should be written to Delta.")
-                                 .default_value("300"))
+                                 .default_value("300")
+                                 .value_parser(clap::value_parser!(u64)))
                             .arg(Arg::new("max_messages_per_batch")
                                  .short('m')
                                  .long("max_messages_per_batch")
                                  .help("The maximum number of rows allowed in a parquet batch. This shoulid be the approximate number of bytes described by MIN_BYTES_PER_FILE")
-                                 .default_value("5000"))
+                                 .default_value("5000")
+                                 .value_parser(clap::value_parser!(usize)))
                             .arg(Arg::new("min_bytes_per_file")
                                  .short('b')
                                  .long("min_bytes_per_file")
                                  .help("The target minimum file size (in bytes) for each Delta file. File size may be smaller than this value if ALLOWED_LATENCY does not allow enough time to accumulate the specified number of bytes.")
-                                 .default_value("134217728"))
+                                 .default_value("134217728")
+                                 .value_parser(clap::value_parser!(usize)))
                             .arg(Arg::new("transform")
                                  .short('t')
                                  .long("transform")
