@@ -135,7 +135,7 @@ More info:
 5. Build the docker image
 
 ```
-docker build -t kdi:0.1 . -f Dockerfile-Debian
+docker build -t kdi:0.1 . -f Dockerfile.Debian
 ```
 
 Notes:
@@ -285,4 +285,4 @@ Make sure the docker-compose setup has been ran, and execute `cargo test` to run
 
 == Get Involved
 
-Join link:https://dbricks.co/delta-users-slack[#kafka-delta-ingest in the Delta Lake Slack workspace]
+Join link:https://delta-users.slack.com/archives/C01Q2RXCVSQ[#kafka-delta-ingest in the Delta Lake Slack workspace]
