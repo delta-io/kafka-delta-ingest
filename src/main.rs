@@ -424,6 +424,7 @@ This can be used to provide TLS configuration as in:
                                     .args(["json", "avro"])
                                     .required(false))
                             .arg(Arg::new("end")
+                                .short('e')
                                 .long("ends_at_latest_offsets")
                                 .required(false)
                                 .num_args(0)
