@@ -135,6 +135,9 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap()
                 .to_string();
 
+            let end_at_last_offsets = ingest_matches
+                .contains_id("end");
+
             let format = convert_matches_to_message_format(ingest_matches).unwrap();
 
             let options = IngestOptions {
@@ -153,6 +156,7 @@ async fn main() -> anyhow::Result<()> {
                 additional_kafka_settings,
                 statsd_endpoint,
                 input_format: format,
+                end_at_last_offsets,
             };
 
             tokio::spawn(async move {
@@ -419,6 +423,11 @@ This can be used to provide TLS configuration as in:
                             .group(ArgGroup::new("format")
                                     .args(["json", "avro"])
                                     .required(false))
+                            .arg(Arg::new("end")
+                                .long("ends_at_initial_offsets")
+                                .required(false)
+                                .num_args(0)
+                                .help(""))
                         )
                 .arg_required_else_help(true)
 }

@@ -60,6 +60,7 @@ use crate::{
 use delta_helpers::*;
 use deltalake::checkpoints::CheckpointError;
 use std::ops::Add;
+use rdkafka::message::BorrowedMessage;
 
 /// Type alias for Kafka partition
 pub type DataTypePartition = i32;
@@ -158,7 +159,7 @@ pub enum IngestError {
     /// Error returned when a delta write fails.
     /// Ending Kafka offsets and counts for each partition are included to help identify the Kafka buffer that caused the write to fail.
     #[error(
-        "Delta write failed: ending_offsets: {ending_offsets}, partition_counts: {partition_counts}, source: {source}"
+    "Delta write failed: ending_offsets: {ending_offsets}, partition_counts: {partition_counts}, source: {source}"
     )]
     DeltaWriteFailed {
         /// Ending offsets for each partition that failed to be written to delta.
@@ -171,7 +172,7 @@ pub enum IngestError {
 
     /// Error returned when a message is received from Kafka that has already been processed.
     #[error(
-        "Partition offset has already been processed - partition: {partition}, offset: {offset}"
+    "Partition offset has already been processed - partition: {partition}, offset: {offset}"
     )]
     AlreadyProcessedPartitionOffset {
         /// The Kafka partition the message was received from
@@ -295,6 +296,8 @@ pub struct IngestOptions {
     pub statsd_endpoint: String,
     /// Input format
     pub input_format: MessageFormat,
+    /// Terminates when initial offsets are reached
+    pub end_at_last_offsets: bool,
 }
 
 impl Default for IngestOptions {
@@ -315,9 +318,11 @@ impl Default for IngestOptions {
             write_checkpoints: false,
             statsd_endpoint: "localhost:8125".to_string(),
             input_format: MessageFormat::DefaultJson,
+            end_at_last_offsets: false,
         }
     }
 }
+
 /// Executes a run loop to consume from a Kafka topic and write to a Delta table.
 pub async fn start_ingest(
     topic: String,
@@ -351,6 +356,12 @@ pub async fn start_ingest(
     let consumer = Arc::new(consumer);
     consumer.subscribe(&[topic.as_str()])?;
 
+    let _max_offsets = if opts.end_at_last_offsets {
+        Some(fetch_latest_offsets(&topic, &consumer)?)
+    } else {
+        None
+    };
+
     // Initialize metrics
     let ingest_metrics = IngestMetrics::new(opts.statsd_endpoint.as_str())?;
     // Initialize partition assignment tracking
@@ -362,8 +373,7 @@ pub async fn start_ingest(
         consumer.clone(),
         opts,
         ingest_metrics.clone(),
-    )
-    .await?;
+    ).await?;
 
     // Write seek_offsets if it's supplied and has not been written yet
     ingest_processor.write_offsets_to_delta_if_any().await?;
@@ -388,8 +398,8 @@ pub async fn start_ingest(
             rebalance_signal.clone(),
             &mut partition_assignment,
             &mut ingest_processor,
-        )
-        .await
+        ).await
+
         {
             match e {
                 IngestError::RebalanceInterrupt => continue,
@@ -417,8 +427,14 @@ pub async fn start_ingest(
                 // Increment the consumed message counter.
                 consumed += 1;
 
-                // Process the message if there wasn't a rebalance signal
                 let message = message?;
+
+                if let Some(offset_map) = &_max_offsets {
+                    if end_of_partition_reached(&message, offset_map) {
+                        unassign_partition(cancellation_token.clone(), consumer.clone(), &message)?;
+                    }
+                }
+                // Process the message if there wasn't a rebalance signal
                 if let Err(e) = ingest_processor.process_message(message).await {
                     match e {
                         IngestError::AlreadyProcessedPartitionOffset { partition, offset } => {
@@ -504,6 +520,58 @@ pub async fn start_ingest(
     }
 }
 
+fn end_of_partition_reached(message: &BorrowedMessage,
+                            offset_map: &HashMap<DataTypePartition, DataTypeOffset>) -> bool{
+    let partition = message.partition() as DataTypePartition;
+    let offset = &(message.offset() as DataTypeOffset);
+    let max_offset = offset_map.get(&partition).unwrap();
+    max_offset == offset
+}
+
+fn unassign_partition(cancellation_token: Arc<CancellationToken>, consumer: Arc<StreamConsumer<KafkaContext>>, message: &BorrowedMessage) -> Result<(), IngestError> {
+    let mut tpl = TopicPartitionList::new();
+    let partition = message.partition();
+    tpl.add_partition(message.topic(), partition);
+
+    // Remove the partition of this message from the assigned partitions
+    let assignment = consumer.assignment()?
+        .elements()
+        .iter()
+        .filter(|tp| {
+            tp.topic() != message.topic() || (tp.topic() == message.topic() && tp.partition() != message.partition())
+        })
+        .map(|tp| ((tp.topic().to_string(), tp.partition()), tp.offset()))
+        .collect::<HashMap<_, _>>();
+
+    let new_assignment = TopicPartitionList::from_topic_map(&assignment)?;
+    consumer.assign(&new_assignment)?;
+    log::info!("Reached the end of partition {}, removing assignment", partition);
+
+    if new_assignment.count() == 0 {
+        log::info!("Reached the end of partition {}, terminating", partition);
+        cancellation_token.cancel();
+    }
+
+    Ok(())
+}
+
+fn fetch_latest_offsets(topic: &String, consumer: &Arc<StreamConsumer<KafkaContext>>) -> Result<HashMap<DataTypePartition, DataTypeOffset>, IngestError> {
+    let metadata = &consumer
+        .fetch_metadata(Some(topic.as_ref()), Timeout::Never)?;
+
+    let partition_meta = metadata
+        .topics()
+        .iter()
+        .filter(|t| t.name() == topic)
+        .collect::<Vec<_>>()
+        .first()
+        .unwrap()
+        .partitions();
+    let partitions = partition_meta.iter().map(|p| p.id() as DataTypePartition).collect::<Vec<_>>();
+    let result = get_high_watermark_map(topic.as_str(), consumer.clone(), partitions.into_iter())?;
+    Ok(result)
+}
+
 /// Handles a [`RebalanceSignal`] if one exists.
 /// The [`RebalanceSignal`] is wrapped in a tokio [`RwLock`] so that it can be written to from the thread that receives rebalance events from [`rdkafka`].
 /// Writing a new rebalance signal is implemented in [`KafkaContext`].
@@ -573,10 +641,10 @@ fn should_record_buffer_lag(last_buffer_lag_report: &Option<Instant>) -> bool {
     match last_buffer_lag_report {
         None => true,
         Some(last_buffer_lag_report)
-            if last_buffer_lag_report.elapsed().as_secs() >= BUFFER_LAG_REPORT_SECONDS =>
-        {
-            true
-        }
+        if last_buffer_lag_report.elapsed().as_secs() >= BUFFER_LAG_REPORT_SECONDS =>
+            {
+                true
+            }
         _ => false,
     }
 }
@@ -718,8 +786,8 @@ impl IngestProcessor {
     /// Processes a single message received from Kafka.
     /// This method deserializes, transforms and writes the message to buffers.
     async fn process_message<M>(&mut self, message: M) -> Result<(), IngestError>
-    where
-        M: Message + Send + Sync,
+        where
+            M: Message + Send + Sync,
     {
         let partition = message.partition();
         let offset = message.offset();
@@ -782,8 +850,8 @@ impl IngestProcessor {
         &mut self,
         msg: &M,
     ) -> Result<Value, MessageDeserializationError>
-    where
-        M: Message + Send + Sync,
+        where
+            M: Message + Send + Sync,
     {
         let message_bytes = match msg.payload() {
             Some(b) => b,
@@ -905,8 +973,8 @@ impl IngestProcessor {
                 },
                 &self.table.state,
                 None,
-            )
-            .await
+            ).await
+
             {
                 Ok(v) => {
                     /*if v != version {
@@ -1030,7 +1098,7 @@ impl IngestProcessor {
 
         let should = self.value_buffers.len() > 0
             && (self.value_buffers.len() == self.opts.max_messages_per_batch
-                || elapsed_millis >= (self.opts.allowed_latency * 1000) as u128);
+            || elapsed_millis >= (self.opts.allowed_latency * 1000) as u128);
 
         debug!(
             "Should complete record batch - latency test: {} >= {}",
@@ -1052,7 +1120,7 @@ impl IngestProcessor {
 
         let should = self.delta_writer.buffer_len() > 0
             && (self.delta_writer.buffer_len() >= self.opts.min_bytes_per_file
-                || elapsed_secs >= self.opts.allowed_latency);
+            || elapsed_secs >= self.opts.allowed_latency);
 
         debug!(
             "Should complete file - latency test: {} >= {}",
@@ -1252,8 +1320,7 @@ async fn dead_letter_queue_from_options(
         delta_table_uri: opts.dlq_table_uri.clone(),
         dead_letter_transforms: opts.dlq_transforms.clone(),
         write_checkpoints: opts.write_checkpoints,
-    })
-    .await
+    }).await
 }
 
 /// Creates a vec of partition numbers from a topic partition list.
@@ -1272,15 +1339,28 @@ fn get_high_watermarks<I>(
     topic: &str,
     consumer: Arc<StreamConsumer<KafkaContext>>,
     partitions: I,
-) -> Result<Vec<i64>, KafkaError>
-where
-    I: Iterator<Item = DataTypePartition>,
+) -> Result<Vec<DataTypeOffset>, KafkaError>
+    where
+        I: Iterator<Item=DataTypePartition>
+{
+    get_high_watermark_map(topic, consumer, partitions)
+        .map(|hashmap| hashmap.into_values().collect::<Vec<_>>())
+}
+
+/// Fetches high watermarks (latest offsets) with partitions from Kafka from the iterator of partitions.
+fn get_high_watermark_map<I>(
+    topic: &str,
+    consumer: Arc<StreamConsumer<KafkaContext>>,
+    partitions: I,
+) -> Result<HashMap<DataTypePartition, DataTypeOffset>, KafkaError>
+    where
+        I: Iterator<Item=DataTypePartition>
 {
     partitions
         .map(|partition| {
             consumer
                 .fetch_watermarks(topic, partition, Timeout::Never)
-                .map(|(_, latest_offset)| latest_offset)
+                .map(|(_, latest_offset)| (partition, latest_offset as DataTypeOffset))
         })
         .collect()
 }
