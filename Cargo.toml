@@ -10,7 +10,7 @@ async-trait = "0.1"
 apache-avro = "^0.14"
 base64 = "0.13"
 bytes = "1"
-chrono = "0"
+chrono = "0.4.31"
 clap = { version = "4", features = ["color"] }
 dipstick = "0.9"
 env_logger = "0"
@@ -19,7 +19,8 @@ jmespatch = { version = "0.3", features = ["sync"] }
 lazy_static = "1"
 log = "0"
 maplit = "1"
-rdkafka = { version = "0.28", features = ["ssl-vendored"] }
+openssl = { version = "0.10.45", features = ["vendored"] }
+rdkafka = { version = "0.25", features = ["cmake-build"] }
 rusoto_core = { version = "0.46" }
 rusoto_credential = { version = "0.46" }
 rusoto_s3 = { version = "0.46" }

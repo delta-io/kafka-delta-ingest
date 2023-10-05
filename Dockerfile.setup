@@ -1,5 +1,15 @@
 FROM python:3.10-alpine
 
+# To be able to download `ca-certificates` with `apk add` command
+COPY my-root-ca.pem /root/my-root-ca.pem
+RUN cat /root/my-root-ca.pem >> /etc/ssl/certs/ca-certificates.crt
+
+# Add again root CA with `update-ca-certificates` tool
+RUN apk --no-cache add ca-certificates \
+    && rm -rf /var/cache/apk/*
+COPY my-root-ca.pem /usr/local/share/ca-certificates
+RUN update-ca-certificates
+
 RUN apk add --no-cache bash openssh ca-certificates jq curl openssl perl git zip \
  && apk add --no-cache --virtual .build-deps gcc make openssl-dev libffi-dev musl-dev linux-headers \
  && apk add --no-cache libintl icu-libs libc6-compat \

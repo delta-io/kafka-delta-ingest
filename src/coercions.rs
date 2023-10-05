@@ -138,7 +138,7 @@ fn string_to_timestamp(string: &str) -> Option<Value> {
     }
     parsed
         .ok()
-        .map(|dt: DateTime<Utc>| Value::Number((dt.timestamp_nanos() / 1000).into()))
+        .map(|dt: DateTime<Utc>| Value::Number((dt.timestamp_nanos_opt().unwrap() / 1000).into()))
 }
 
 #[cfg(test)]

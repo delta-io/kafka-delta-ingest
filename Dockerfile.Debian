@@ -1,6 +1,15 @@
-FROM rust:1.67.0-bullseye as builder
+FROM rust:1.70.0-bullseye as builder
 WORKDIR /usr/src/kafka-delta-ingest
 COPY . .
+
+# To be able to download `ca-certificates` with `apk add` command (fix SSL error)
+COPY my-root-ca.pem /root/my-root-ca.pem
+RUN cat /root/my-root-ca.pem >> /etc/ssl/certs/ca-certificates.crt
+
+# Install CMake (Fix CMake error)
+RUN apt-get update && apt-get -y install cmake protobuf-compiler
+
+# Moved this down to make room for above fixes
 RUN cargo install --path .
 
 FROM debian:bullseye

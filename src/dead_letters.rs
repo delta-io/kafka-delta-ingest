@@ -44,7 +44,7 @@ impl DeadLetter {
             base64_bytes: Some(base64::encode(bytes)),
             json_string: None,
             error: Some(err),
-            timestamp: timestamp.timestamp_nanos() / 1000,
+            timestamp: timestamp.timestamp_nanos_opt().unwrap() / 1000,
         }
     }
 
@@ -56,7 +56,7 @@ impl DeadLetter {
             base64_bytes: None,
             json_string: Some(value.to_string()),
             error: Some(err.to_string()),
-            timestamp: timestamp.timestamp_nanos() / 1000,
+            timestamp: timestamp.timestamp_nanos_opt().unwrap() / 1000,
         }
     }
 
@@ -69,7 +69,7 @@ impl DeadLetter {
             base64_bytes: None,
             json_string: Some(value.to_string()),
             error: Some(err.to_string()),
-            timestamp: timestamp.timestamp_nanos() / 1000,
+            timestamp: timestamp.timestamp_nanos_opt().unwrap() / 1000,
         }
     }
 
