@@ -135,8 +135,7 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap()
                 .to_string();
 
-            let end_at_last_offsets = ingest_matches
-                .contains_id("end");
+            let end_at_last_offsets = ingest_matches.contains_id("end");
 
             let format = convert_matches_to_message_format(ingest_matches).unwrap();
 

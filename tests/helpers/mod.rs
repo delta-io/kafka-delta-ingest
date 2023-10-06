@@ -340,19 +340,19 @@ pub fn wait_until_version_created(table: &str, version: i64) {
     wait_until_file_created(FilePath::new(&path));
 }
 
-pub async fn expect_termination_within(kdi: JoinHandle<()>, seconds: i64){
+pub async fn expect_termination_within(kdi: JoinHandle<()>, seconds: i64) {
     let start_time = Local::now();
     let timelimit = chrono::Duration::seconds(seconds);
 
     loop {
-        if kdi.is_finished(){
+        if kdi.is_finished() {
             kdi.await.unwrap();
             return;
         }
         let now = Local::now();
         let poll_time = now - start_time;
 
-        if poll_time > timelimit{
+        if poll_time > timelimit {
             panic!("KDI did not terminate within timeout",);
         }
     }

@@ -47,7 +47,7 @@ async fn end_at_initial_offsets() {
             &topic,
             &serde_json::to_value(Msg::new(i)).unwrap(),
         )
-            .await;
+        .await;
     }
 
     let (kdi, _token, rt) = helpers::create_kdi(
@@ -79,7 +79,7 @@ async fn end_at_initial_offsets() {
             &topic,
             &serde_json::to_value(Msg::new(i)).unwrap(),
         )
-            .await;
+        .await;
     }
 
     helpers::expect_termination_within(kdi, 10).await;
