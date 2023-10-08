@@ -609,7 +609,7 @@ pub fn load_object_store_from_uri(
     options: Option<HashMap<String, String>>,
 ) -> DeltaResult<DeltaObjectStore> {
     match Url::parse(path) {
-        Ok(table_uri) => DeltaObjectStore::try_new(table_uri, options.unwrap_or(HashMap::new())),
+        Ok(table_uri) => DeltaObjectStore::try_new(table_uri, options.unwrap_or_default()),
         Err(url::ParseError::RelativeUrlWithoutBase) => {
             match std::path::Path::new(path).is_absolute() {
                 true => load_table_from_file_uri(path, options),
@@ -635,7 +635,7 @@ fn load_table_from_file_uri(
     options: Option<HashMap<String, String>>,
 ) -> DeltaResult<DeltaObjectStore> {
     let url = Url::from_file_path(absolute_path).unwrap();
-    DeltaObjectStore::try_new(url, options.unwrap_or(HashMap::new()))
+    DeltaObjectStore::try_new(url, options.unwrap_or_default())
 }
 
 type BadValue = (Value, ParquetError);
