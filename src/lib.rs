@@ -620,18 +620,27 @@ async fn handle_rebalance(
     // if there is a revoke signal - we should skip the message, but not bother altering state yet.
     match rebalance_action {
         Some(RebalanceAction::ClearStateAndSkipMessage) => {
-            let mut rebalance_signal = rebalance_signal.write().await;
-            match rebalance_signal.as_mut() {
+            let rebalance_signal_val = rebalance_signal.write().await.take();
+            match rebalance_signal_val {
                 Some(RebalanceSignal::RebalanceAssign(partitions)) => {
                     info!(
                         "Handling rebalance assign. New assigned partitions are {:?}",
                         partitions
                     );
-                    processor.table.update().await?;
-                    partition_assignment.reset_with(partitions.as_slice());
-                    processor.reset_state(partition_assignment)?;
-                    *rebalance_signal = None;
-                    Err(IngestError::RebalanceInterrupt)
+                    if let Err(err) = processor.table.update().await {
+                        let mut rebalance_signal_val = rebalance_signal.write().await;
+                        // Set the signal back,
+                        // but only if it wasn't already replaced by a new one.
+                        if rebalance_signal_val.is_none() {
+                            *rebalance_signal_val =
+                                Some(RebalanceSignal::RebalanceAssign(partitions));
+                        }
+                        Err(err.into())
+                    } else {
+                        partition_assignment.reset_with(partitions.as_slice());
+                        processor.reset_state(partition_assignment)?;
+                        Err(IngestError::RebalanceInterrupt)
+                    }
                 }
                 _ => unreachable!(),
             }
