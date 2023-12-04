@@ -135,8 +135,9 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap()
                 .to_string();
 
-            let end_at_last_offsets = ingest_matches.contains_id("end");
+            let end_at_last_offsets = ingest_matches.get_flag("end");
 
+            // ingest_matches.get_flag("end")
             let format = convert_matches_to_message_format(ingest_matches).unwrap();
 
             let options = IngestOptions {
@@ -427,6 +428,7 @@ This can be used to provide TLS configuration as in:
                                 .long("ends_at_latest_offsets")
                                 .required(false)
                                 .num_args(0)
+                                .action(ArgAction::SetTrue)
                                 .help(""))
                         )
                 .arg_required_else_help(true)
@@ -450,6 +452,7 @@ fn convert_matches_to_message_format(
 
 #[cfg(test)]
 mod test {
+    use clap::ArgMatches;
     use kafka_delta_ingest::{MessageFormat, SchemaSource};
 
     use crate::{
@@ -526,7 +529,26 @@ mod test {
         ));
     }
 
+    #[test]
+    fn get_end_at_last_offset() {
+        let values = ["-e", "--ends_at_latest_offsets"];
+        for value in values {
+            let subcommand = get_subcommand_matches_raw(vec![value]);
+            assert_eq!(true, subcommand.contains_id("end"));
+            assert_eq!(true, subcommand.get_flag("end"));
+        }
+
+        let subcommand = get_subcommand_matches_raw(vec![]);
+        assert_eq!(true, subcommand.contains_id("end"));
+        assert_eq!(false, subcommand.get_flag("end"));
+    }
+
     fn get_subcommand_matches(args: Vec<&str>) -> Result<MessageFormat, SchemaSourceError> {
+        let arg_matches = get_subcommand_matches_raw(args);
+        return convert_matches_to_message_format(&arg_matches);
+    }
+
+    fn get_subcommand_matches_raw(args: Vec<&str>) -> ArgMatches {
         let base_args = vec![
             "app",
             "ingest",
@@ -536,8 +558,8 @@ mod test {
             "test",
         ];
         let try_matches = build_app().try_get_matches_from([base_args, args].concat());
-        let matches = try_matches.unwrap();
-        let (_, subcommand) = matches.subcommand().unwrap();
-        return convert_matches_to_message_format(subcommand);
+        let mut matches = try_matches.unwrap();
+        let (_, subcommand) = matches.remove_subcommand().unwrap();
+        subcommand
     }
 }
