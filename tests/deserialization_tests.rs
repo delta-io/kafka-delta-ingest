@@ -299,7 +299,7 @@ struct TestMsg {
 }
 
 fn default_settings() -> SrSettings {
-    SrSettings::new(String::from(String::from(SCHEMA_REGISTRY_ADDRESS)))
+    SrSettings::new(String::from(SCHEMA_REGISTRY_ADDRESS))
 }
 
 async fn avro_encode(item: impl Serialize, topic: String) -> Result<Vec<u8>, SRCError> {

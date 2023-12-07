@@ -534,18 +534,18 @@ mod test {
         let values = ["-e", "--ends_at_latest_offsets"];
         for value in values {
             let subcommand = get_subcommand_matches_raw(vec![value]);
-            assert_eq!(true, subcommand.contains_id("end"));
-            assert_eq!(true, subcommand.get_flag("end"));
+            assert!(subcommand.contains_id("end"));
+            assert!(subcommand.get_flag("end"));
         }
 
         let subcommand = get_subcommand_matches_raw(vec![]);
-        assert_eq!(true, subcommand.contains_id("end"));
-        assert_eq!(false, subcommand.get_flag("end"));
+        assert!(subcommand.contains_id("end"));
+        assert!(!subcommand.get_flag("end"));
     }
 
     fn get_subcommand_matches(args: Vec<&str>) -> Result<MessageFormat, SchemaSourceError> {
         let arg_matches = get_subcommand_matches_raw(args);
-        return convert_matches_to_message_format(&arg_matches);
+        convert_matches_to_message_format(&arg_matches)
     }
 
     fn get_subcommand_matches_raw(args: Vec<&str>) -> ArgMatches {

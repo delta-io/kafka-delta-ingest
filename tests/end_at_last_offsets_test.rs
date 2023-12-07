@@ -63,7 +63,7 @@ async fn end_at_initial_offsets() {
         },
     );
 
-    helpers::wait_until_version_created(&table, 1);
+    helpers::wait_until_version_created(table, 1);
 
     {
         // check that there's 3 records in table

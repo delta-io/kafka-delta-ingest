@@ -96,7 +96,7 @@ async fn schema_update_test() {
     // convert msg v1 to v2
     let expected = vec![
         MsgV2 {
-            id: msg_v1.id.clone(),
+            id: msg_v1.id,
             color: None,
             date: msg_v1.date.clone(),
         },

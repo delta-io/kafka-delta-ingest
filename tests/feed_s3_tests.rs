@@ -91,7 +91,7 @@ async fn feed_load_test() {
         .collect();
     ids.sort();
 
-    let id_count = ids.iter().count();
+    let id_count = ids.len();
     let expected = (0..TOTAL_MESSAGES_RECEIVED).count();
 
     if id_count != expected {
@@ -138,8 +138,8 @@ fn spawn_worker(
         .collect();
 
     helpers::create_kdi_with(
-        &topic,
-        &table,
+        topic,
+        table,
         Some(format!("WORKER-{}", id)),
         IngestOptions {
             app_id: "feed".to_string(),

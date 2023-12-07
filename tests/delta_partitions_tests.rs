@@ -73,21 +73,21 @@ async fn test_delta_partitions() {
         {
             Some("red") => {
                 assert!(add.path.starts_with("color=red"));
-                assert_eq!(&get_stats_value(&add, "numRecords"), "4");
-                assert_eq!(msg(get_stats_value(&add, "minValues")).id, 1);
-                assert_eq!(msg(get_stats_value(&add, "maxValues")).id, 6);
+                assert_eq!(&get_stats_value(add, "numRecords"), "4");
+                assert_eq!(msg(get_stats_value(add, "minValues")).id, 1);
+                assert_eq!(msg(get_stats_value(add, "maxValues")).id, 6);
             }
             Some("blue") => {
                 assert!(add.path.starts_with("color=blue"));
-                assert_eq!(&get_stats_value(&add, "numRecords"), "4");
-                assert_eq!(msg(get_stats_value(&add, "minValues")).id, 3);
-                assert_eq!(msg(get_stats_value(&add, "maxValues")).id, 8);
+                assert_eq!(&get_stats_value(add, "numRecords"), "4");
+                assert_eq!(msg(get_stats_value(add, "minValues")).id, 3);
+                assert_eq!(msg(get_stats_value(add, "maxValues")).id, 8);
             }
             None => {
                 assert!(add.path.starts_with("color=__HIVE_DEFAULT_PARTITION__"));
-                assert_eq!(&get_stats_value(&add, "numRecords"), "1");
-                assert_eq!(msg(get_stats_value(&add, "minValues")).id, 9);
-                assert_eq!(msg(get_stats_value(&add, "maxValues")).id, 9);
+                assert_eq!(&get_stats_value(add, "numRecords"), "1");
+                assert_eq!(msg(get_stats_value(add, "minValues")).id, 9);
+                assert_eq!(msg(get_stats_value(add, "maxValues")).id, 9);
             }
             other => {
                 panic!("{:?}", other);

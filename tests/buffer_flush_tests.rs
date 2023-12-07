@@ -1,7 +1,6 @@
 #[allow(dead_code)]
 mod helpers;
 
-use deltalake;
 use log::info;
 use serde::{Deserialize, Serialize};
 use serde_json::json;

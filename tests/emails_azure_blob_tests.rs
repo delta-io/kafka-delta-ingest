@@ -1,16 +1,8 @@
 #[allow(dead_code)]
 mod helpers;
 
-use std::thread;
-use std::time::Duration;
-
 #[cfg(feature = "azure")]
 use azure_storage::{prelude::BlobSasPermissions, shared_access_signature::SasProtocol};
-use kafka_delta_ingest::{start_ingest, IngestOptions};
-use serial_test::serial;
-use uuid::Uuid;
-
-use helpers::*;
 
 #[cfg(feature = "azure")]
 #[tokio::test(flavor = "multi_thread")]

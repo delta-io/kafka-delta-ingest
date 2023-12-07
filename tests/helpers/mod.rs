@@ -103,7 +103,7 @@ pub async fn send_kv_json(
 }
 
 pub async fn send_bytes(producer: &FutureProducer, topic: &str, bytes: &Vec<u8>) {
-    let record: FutureRecord<String, Vec<u8>> = FutureRecord::to(topic).payload(&bytes);
+    let record: FutureRecord<String, Vec<u8>> = FutureRecord::to(topic).payload(bytes);
     let _ = producer.send(record, Timeout::Never).await;
 }
 
@@ -133,9 +133,9 @@ pub async fn read_files_from_store(table: &DeltaTable) -> Vec<i32> {
 
         let reader = SerializedFileReader::new(File::open(&tmp).unwrap()).unwrap();
 
-        let mut row_iter = reader.get_row_iter(None).unwrap();
+        let row_iter = reader.get_row_iter(None).unwrap();
 
-        while let Some(record) = row_iter.next() {
+        for record in row_iter {
             list.push(record.get_string(0).unwrap().parse::<i32>().unwrap());
         }
     }
@@ -151,14 +151,14 @@ fn parse_type(schema: &Value) -> Value {
         Value::String(_) => schema.clone(),
         Value::Object(_) => json!({
             "type": "struct",
-            "fields": parse_fields(&schema),
+            "fields": parse_fields(schema),
         }),
         Value::Array(v) if v.len() == 1 => json!({
             "type": "array",
             "elementType": parse_type(v.first().unwrap()),
             "containsNull": true,
         }),
-        _ => panic!("Unsupported type {}", schema.to_string()),
+        _ => panic!("Unsupported type {}", schema),
     }
 }
 
@@ -416,19 +416,15 @@ async fn json_listify_table_content(table: DeltaTable, store: DeltaObjectStore) 
     let tmp = format!(".test-{}.tmp", Uuid::new_v4());
     let mut list = Vec::new();
     for file in table.get_files() {
-        let get_result = store
-            .storage_backend()
-            .get(&Path::from(file))
-            .await
-            .unwrap();
+        let get_result = store.storage_backend().get(&file).await.unwrap();
         let bytes = get_result.bytes().await.unwrap();
         let mut file = File::create(&tmp).unwrap();
         file.write_all(bytes.chunk()).unwrap();
         drop(file);
         let reader = SerializedFileReader::new(File::open(&tmp).unwrap()).unwrap();
-        let mut row_iter = reader.get_row_iter(None).unwrap();
+        let row_iter = reader.get_row_iter(None).unwrap();
 
-        while let Some(record) = row_iter.next() {
+        for record in row_iter {
             list.push(record.to_json_value());
         }
     }
@@ -617,7 +613,7 @@ impl TestScope {
                 "recipient": format!("recipient-{}@example.com", n),
                 "timestamp": (now + chrono::Duration::seconds(1)).to_rfc3339_opts(SecondsFormat::Secs, true),
             });
-            send_json(&producer, &self.topic, &json).await;
+            send_json(&producer, &self.topic, json).await;
         }
         println!("All messages are sent");
     }
@@ -632,7 +628,7 @@ impl TestScope {
                 total += table
                     .get_app_transaction_version()
                     .get(key)
-                    .map(|x| *x)
+                    .copied()
                     .unwrap_or(0);
             }
 

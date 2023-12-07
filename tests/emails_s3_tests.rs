@@ -10,7 +10,7 @@ use std::time::Duration;
 use serial_test::serial;
 use uuid::Uuid;
 
-use kafka_delta_ingest::{start_ingest, IngestOptions};
+use kafka_delta_ingest::IngestOptions;
 use rusoto_core::Region;
 use rusoto_s3::{CopyObjectRequest, PutObjectRequest, S3};
 
@@ -129,7 +129,7 @@ async fn prepare_table(topic: &str) -> String {
      * Copy the local fixture to create a simple delta table in storage.
      */
     let mut buf = vec![];
-    let original_log =
+    let _original_log =
         std::fs::File::open("tests/data/emails/_delta_log/00000000000000000000.json")
             .unwrap()
             .read_to_end(&mut buf);
