@@ -1,7 +1,7 @@
 use kafka_delta_ingest::IngestOptions;
 use log::info;
 use serde::{Deserialize, Serialize};
-use serde_json;
+
 use serde_json::json;
 use serde_json::Value;
 use uuid::Uuid;

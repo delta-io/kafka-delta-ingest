@@ -214,7 +214,7 @@ pub enum IngestError {
 }
 
 /// Formats for message parsing
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum MessageFormat {
     /// Parses messages as json and uses the inferred schema
     DefaultJson,
@@ -227,7 +227,7 @@ pub enum MessageFormat {
 }
 
 /// Source for schema
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum SchemaSource {
     /// Use default behavior
     None,

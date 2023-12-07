@@ -1198,7 +1198,7 @@ mod tests {
                     assert_eq!("2021-06-22", timestamp.as_str().unwrap());
                 }
                 ("some_int", ColumnValueStat::Value(v)) => assert_eq!(302, v.as_i64().unwrap()),
-                ("some_bool", ColumnValueStat::Value(v)) => assert_eq!(false, v.as_bool().unwrap()),
+                ("some_bool", ColumnValueStat::Value(v)) => assert!(!v.as_bool().unwrap()),
                 ("some_string", ColumnValueStat::Value(v)) => {
                     assert_eq!("GET", v.as_str().unwrap())
                 }
@@ -1226,7 +1226,7 @@ mod tests {
                     assert_eq!("2021-06-22", timestamp.as_str().unwrap());
                 }
                 ("some_int", ColumnValueStat::Value(v)) => assert_eq!(400, v.as_i64().unwrap()),
-                ("some_bool", ColumnValueStat::Value(v)) => assert_eq!(true, v.as_bool().unwrap()),
+                ("some_bool", ColumnValueStat::Value(v)) => assert!(v.as_bool().unwrap()),
                 ("some_string", ColumnValueStat::Value(v)) => {
                     assert_eq!("PUT", v.as_str().unwrap())
                 }
@@ -1267,8 +1267,8 @@ mod tests {
     fn create_temp_table(table_path: &Path) {
         let log_path = table_path.join("_delta_log");
 
-        let _ = std::fs::create_dir(log_path.as_path()).unwrap();
-        let _ = std::fs::write(
+        std::fs::create_dir(log_path.as_path()).unwrap();
+        std::fs::write(
             log_path.join("00000000000000000000.json"),
             V0_COMMIT.as_str(),
         )

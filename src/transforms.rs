@@ -495,12 +495,7 @@ mod tests {
         let new_value_path = ValuePath::from_str("name.first");
         let new_value = Value::String("John".to_string());
 
-        set_value(
-            &mut val.as_object_mut().unwrap(),
-            &new_value_path,
-            0,
-            new_value,
-        );
+        set_value(val.as_object_mut().unwrap(), &new_value_path, 0, new_value);
 
         assert_eq!(
             json!({
@@ -539,7 +534,7 @@ mod tests {
 
         let transformer = Transformer::from_transforms(&transforms).unwrap();
 
-        let _ = transformer
+        transformer
             .transform(&mut test_value, Some(&test_message))
             .unwrap();
 
@@ -610,7 +605,7 @@ mod tests {
 
         let transformer = Transformer::from_transforms(&transforms).unwrap();
 
-        let _ = transformer
+        transformer
             .transform(&mut test_value, Some(&test_message))
             .unwrap();
 
@@ -677,9 +672,9 @@ mod tests {
             "kafka.timestamp_type".to_string(),
         );
 
-        let transformer = Transformer::from_transforms(&&transforms).unwrap();
+        let transformer = Transformer::from_transforms(&transforms).unwrap();
 
-        let _ = transformer
+        transformer
             .transform(&mut test_value, Some(&test_message))
             .unwrap();
 
