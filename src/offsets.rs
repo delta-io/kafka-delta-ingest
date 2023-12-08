@@ -1,7 +1,7 @@
 use crate::delta_helpers::*;
 use crate::{DataTypeOffset, DataTypePartition};
 use deltalake::action::Action;
-use deltalake::{DeltaDataTypeTimestamp, DeltaTable, DeltaTableError};
+use deltalake::{DeltaTable, DeltaTableError};
 use log::{error, info};
 
 /// Errors returned by `write_offsets_to_delta` function.
@@ -107,7 +107,7 @@ async fn commit_partition_offsets(
         .iter()
         .map(|(txn_id, offset)| create_txn_action(txn_id.to_string(), *offset))
         .collect();
-    let epoch_id: DeltaDataTypeTimestamp = std::time::SystemTime::now()
+    let epoch_id = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("Time went backwards")
         .as_millis() as i64;

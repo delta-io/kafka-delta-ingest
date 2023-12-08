@@ -25,8 +25,7 @@ use deltalake::{
     action::{Action, Add, ColumnCountStat, ColumnValueStat, Stats},
     storage::DeltaObjectStore,
     time_utils::timestamp_to_delta_stats_string,
-    DeltaDataTypeLong, DeltaDataTypeVersion, DeltaResult, DeltaTable, DeltaTableError,
-    DeltaTableMetaData, ObjectStoreError, Schema,
+    DeltaResult, DeltaTable, DeltaTableError, DeltaTableMetaData, ObjectStoreError, Schema,
 };
 use log::{error, info, warn};
 use serde_json::{Number, Value};
@@ -570,7 +569,7 @@ impl DataWriter {
         &mut self,
         table: &mut DeltaTable,
         values: Vec<Value>,
-    ) -> Result<DeltaDataTypeVersion, Box<DataWriterError>> {
+    ) -> Result<i64, Box<DataWriterError>> {
         self.write(values).await?;
         let mut adds = self.write_parquet_files(&table.table_uri()).await?;
         let actions = adds.drain(..).map(Action::add).collect();
@@ -800,7 +799,7 @@ fn apply_null_counts_for_column(
 
             match col_struct {
                 ColumnCountStat::Value(n) => {
-                    let null_count = column.null_count() as DeltaDataTypeLong;
+                    let null_count = column.null_count() as i64;
                     let n = null_count + *n;
                     null_counts.insert(key, ColumnCountStat::Value(n));
                 }
