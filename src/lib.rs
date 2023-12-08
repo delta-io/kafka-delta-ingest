@@ -17,7 +17,7 @@ extern crate strum_macros;
 extern crate serde_json;
 
 use coercions::CoercionTree;
-use deltalake::{DeltaDataTypeVersion, DeltaTable, DeltaTableError};
+use deltalake::{DeltaTable, DeltaTableError};
 use futures::stream::StreamExt;
 use log::{debug, error, info, warn};
 use rdkafka::{
@@ -201,9 +201,9 @@ pub enum IngestError {
     #[error("Committed delta version {actual_version} does not match the version specified in the commit attempt {expected_version}")]
     UnexpectedVersionMismatch {
         /// The version specified in the commit attempt
-        expected_version: DeltaDataTypeVersion,
+        expected_version: i64,
         /// The version returned after the commit
-        actual_version: DeltaDataTypeVersion,
+        actual_version: i64,
     },
     /// Error returned if unable to construct a deserializer
     #[error("Unable to construct a message deserializer, source: {source}")]

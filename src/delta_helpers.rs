@@ -1,7 +1,7 @@
 use crate::{DataTypeOffset, DataTypePartition};
 use deltalake::action::{Action, Add, Txn};
 use deltalake::checkpoints::CheckpointError;
-use deltalake::{DeltaDataTypeVersion, DeltaTable, DeltaTableError};
+use deltalake::{DeltaTable, DeltaTableError};
 use std::collections::HashMap;
 
 pub(crate) async fn load_table(
@@ -42,7 +42,7 @@ pub(crate) fn create_txn_action(txn_app_id: String, offset: DataTypeOffset) -> A
 
 pub(crate) async fn try_create_checkpoint(
     table: &mut DeltaTable,
-    version: DeltaDataTypeVersion,
+    version: i64,
 ) -> Result<(), CheckpointError> {
     if version % 10 == 0 {
         let table_version = table.version();
@@ -73,7 +73,7 @@ pub(crate) fn txn_app_id_for_partition(app_id: &str, partition: DataTypePartitio
 }
 
 /// Returns the last transaction version for the given transaction id recorded in the delta table.
-pub(crate) fn last_txn_version(table: &DeltaTable, txn_id: &str) -> Option<DeltaDataTypeVersion> {
+pub(crate) fn last_txn_version(table: &DeltaTable, txn_id: &str) -> Option<i64> {
     table
         .get_app_transaction_version()
         .get(txn_id)
