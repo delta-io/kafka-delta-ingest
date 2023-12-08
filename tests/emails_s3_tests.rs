@@ -1,3 +1,5 @@
+#![cfg(feature = "s3")]
+
 #[allow(dead_code)]
 mod helpers;
 
@@ -74,6 +76,7 @@ async fn run_emails_s3_tests(initiate_rebalance: bool) {
 }
 
 fn create_options(name: &str) -> IngestOptions {
+    env::set_var("AWS_ENDPOINT_URL", helpers::test_aws_endpoint());
     env::set_var("AWS_S3_LOCKING_PROVIDER", "dynamodb");
     env::set_var("AWS_REGION", "us-east-2");
     env::set_var("AWS_STORAGE_ALLOW_HTTP", "true");

@@ -1,29 +1,40 @@
+#![cfg(feature = "azure")]
 #[allow(dead_code)]
 mod helpers;
 
-#[cfg(feature = "azure")]
+use std::collections::HashMap;
+use std::env;
+use std::thread;
+use std::time::Duration;
+use time::OffsetDateTime;
+
+use serial_test::serial;
+use uuid::Uuid;
+
+use kafka_delta_ingest::IngestOptions;
+
+use helpers::*;
+
 use azure_storage::{prelude::BlobSasPermissions, shared_access_signature::SasProtocol};
 
-#[cfg(feature = "azure")]
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn when_both_workers_started_simultaneously_azure() {
     run_emails_s3_tests(false).await;
 }
 
-#[cfg(feature = "azure")]
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn when_rebalance_happens_azure() {
     run_emails_s3_tests(true).await;
 }
 
-#[cfg(feature = "azure")]
 async fn run_emails_s3_tests(initiate_rebalance: bool) {
     helpers::init_logger();
     let topic = format!("emails_azure-{}", Uuid::new_v4());
     let table = prepare_table(&topic).await;
-    let scope = TestScope::new(&topic, &table).await;
+    let options = create_options();
+    let scope = TestScope::new(&topic, &table, options).await;
 
     let w1 = scope.create_and_start(helpers::WORKER_1).await;
 
@@ -63,7 +74,6 @@ async fn run_emails_s3_tests(initiate_rebalance: bool) {
     scope.shutdown();
 }
 
-#[cfg(feature = "azure")]
 async fn prepare_table(topic: &str) -> String {
     let container_client = azure_storage_blobs::prelude::ClientBuilder::emulator()
         .container_client(helpers::test_s3_bucket());
@@ -100,4 +110,44 @@ fn create_partitions_app_ids(num_p: i32) -> Vec<String> {
         vector.push(format!("{}-{}", helpers::TEST_APP_ID, n));
     }
     vector
+}
+
+fn create_options() -> IngestOptions {
+    env::set_var("AZURE_STORAGE_USE_EMULATOR", "true");
+    env::set_var("AZURE_ACCOUNT_NAME", "devstoreaccount1");
+    env::set_var(
+        "AZURE_ACCESS_KEY",
+        "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==",
+    );
+    env::set_var("AZURE_STORAGE_CONTAINER_NAME", "tests");
+    env::set_var("AZURE_STORAGE_ALLOW_HTTP", "1");
+    env::set_var("AZURITE_BLOB_STORAGE_URL", "http://127.0.0.1:10000");
+    env::set_var(
+            "AZURE_STORAGE_CONNECTION_STRING", 
+            "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://localhost:10000/devstoreaccount1;QueueEndpoint=http://localhost:10001/devstoreaccount1;");
+
+    let mut additional_kafka_settings = HashMap::new();
+    additional_kafka_settings.insert("auto.offset.reset".to_string(), "earliest".to_string());
+    let additional_kafka_settings = Some(additional_kafka_settings);
+
+    let allowed_latency = 2;
+    let max_messages_per_batch = 10;
+    let min_bytes_per_file = 370;
+
+    let mut transforms = HashMap::new();
+    transforms.insert("date".to_string(), "substr(timestamp,`0`,`10`)".to_string());
+    transforms.insert("_kafka_offset".to_string(), "kafka.offset".to_string());
+
+    IngestOptions {
+        transforms,
+        kafka_brokers: helpers::test_broker(),
+        consumer_group_id: TEST_CONSUMER_GROUP_ID.to_string(),
+        app_id: TEST_APP_ID.to_string(),
+        additional_kafka_settings,
+        allowed_latency,
+        max_messages_per_batch,
+        min_bytes_per_file,
+        write_checkpoints: true,
+        ..Default::default()
+    }
 }
