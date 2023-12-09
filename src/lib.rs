@@ -17,6 +17,8 @@ extern crate strum_macros;
 extern crate serde_json;
 
 use coercions::CoercionTree;
+use deltalake::protocol::DeltaOperation;
+use deltalake::protocol::OutputMode;
 use deltalake::{DeltaTable, DeltaTableError};
 use futures::stream::StreamExt;
 use log::{debug, error, info, warn};
@@ -58,7 +60,6 @@ use crate::{
     writer::{DataWriter, DataWriterError},
 };
 use delta_helpers::*;
-use deltalake::checkpoints::CheckpointError;
 use rdkafka::message::BorrowedMessage;
 use std::ops::Add;
 
@@ -98,14 +99,6 @@ pub enum IngestError {
         /// Wrapped [`DataWriterError`]
         #[from]
         source: Box<DataWriterError>,
-    },
-
-    /// Error occurred when writing a delta log checkpoint.
-    #[error("CheckpointErrorError error: {source}")]
-    CheckpointErrorError {
-        /// The wrapped [`CheckpointError`]
-        #[from]
-        source: CheckpointError,
     },
 
     /// Error from [`WriteOffsetsError`]
@@ -985,8 +978,8 @@ impl IngestProcessor {
             match deltalake::operations::transaction::commit(
                 (self.table.object_store().storage_backend()).as_ref(),
                 &actions,
-                deltalake::action::DeltaOperation::StreamingUpdate {
-                    output_mode: deltalake::action::OutputMode::Append,
+                DeltaOperation::StreamingUpdate {
+                    output_mode: OutputMode::Append,
                     query_id: self.opts.app_id.clone(),
                     epoch_id,
                 },

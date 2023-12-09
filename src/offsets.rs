@@ -1,6 +1,8 @@
 use crate::delta_helpers::*;
 use crate::{DataTypeOffset, DataTypePartition};
-use deltalake::action::Action;
+use deltalake::protocol::Action;
+use deltalake::protocol::DeltaOperation;
+use deltalake::protocol::OutputMode;
 use deltalake::{DeltaTable, DeltaTableError};
 use log::{error, info};
 
@@ -116,8 +118,8 @@ async fn commit_partition_offsets(
     match deltalake::operations::transaction::commit(
         (table.object_store().storage_backend()).as_ref(),
         &actions,
-        deltalake::action::DeltaOperation::StreamingUpdate {
-            output_mode: deltalake::action::OutputMode::Complete,
+        DeltaOperation::StreamingUpdate {
+            output_mode: OutputMode::Complete,
             query_id: app_id,
             epoch_id,
         },

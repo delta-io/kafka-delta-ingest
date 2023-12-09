@@ -1,6 +1,5 @@
 use crate::{DataTypeOffset, DataTypePartition};
-use deltalake::action::{Action, Add, Txn};
-use deltalake::checkpoints::CheckpointError;
+use deltalake::protocol::{Action, Add, Txn};
 use deltalake::{DeltaTable, DeltaTableError};
 use std::collections::HashMap;
 
@@ -43,7 +42,7 @@ pub(crate) fn create_txn_action(txn_app_id: String, offset: DataTypeOffset) -> A
 pub(crate) async fn try_create_checkpoint(
     table: &mut DeltaTable,
     version: i64,
-) -> Result<(), CheckpointError> {
+) -> Result<(), DeltaTableError> {
     if version % 10 == 0 {
         let table_version = table.version();
         // if there's new version right after current commit, then we need to reset
