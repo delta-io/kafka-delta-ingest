@@ -32,10 +32,10 @@ tokio-util = "0.6.3"
 uuid = { version = "0.8", features = ["serde", "v4"] }
 url = "2.3"
 
-deltalake = { version = "0.12.0", features = ["json"], optional = true }
+deltalake = { version = "0.16.5", features = ["arrow", "json", "parquet"], optional = true }
 
 # s3 feature enabled
-dynamodb_lock = { version = "^0.4.3", optional = true }
+dynamodb_lock = { version = "=0.4.3", optional = true }
 rusoto_core = { version = "0.46", optional = true }
 rusoto_credential = { version = "0.46", optional = true }
 rusoto_s3 = { version = "0.46", optional = true }

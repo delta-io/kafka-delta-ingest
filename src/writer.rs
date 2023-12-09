@@ -12,20 +12,22 @@ use deltalake::arrow::{
     json::reader::ReaderBuilder,
     record_batch::*,
 };
-
 use deltalake::parquet::format::FileMetaData;
 use deltalake::parquet::{
     arrow::ArrowWriter,
     basic::{Compression, LogicalType},
     errors::ParquetError,
     file::{metadata::RowGroupMetaData, properties::WriterProperties, statistics::Statistics},
+    format::TimeUnit,
     schema::types::{ColumnDescriptor, SchemaDescriptor},
 };
+use deltalake::protocol::DeltaOperation;
+use deltalake::protocol::SaveMode;
 use deltalake::{
-    action::{Action, Add, ColumnCountStat, ColumnValueStat, Stats},
+    protocol::{Action, Add, ColumnCountStat, ColumnValueStat, Stats},
     storage::DeltaObjectStore,
-    time_utils::timestamp_to_delta_stats_string,
-    DeltaResult, DeltaTable, DeltaTableError, DeltaTableMetaData, ObjectStoreError, Schema,
+    table::DeltaTableMetaData,
+    DeltaResult, DeltaTable, DeltaTableError, ObjectStoreError, Schema,
 };
 use log::{error, info, warn};
 use serde_json::{Number, Value};
@@ -576,8 +578,8 @@ impl DataWriter {
         let version = deltalake::operations::transaction::commit(
             (table.object_store().storage_backend()).as_ref(),
             &actions,
-            deltalake::action::DeltaOperation::Write {
-                mode: deltalake::action::SaveMode::Append,
+            DeltaOperation::Write {
+                mode: SaveMode::Append,
                 partition_by: Some(self.partition_columns.clone()),
                 predicate: None,
             },
@@ -1086,6 +1088,7 @@ fn create_add(
         stats: Some(stats_string),
         stats_parsed: None,
         tags: None,
+        ..Default::default()
     })
 }
 
@@ -1145,6 +1148,19 @@ fn stringified_partition_value(
     };
 
     Ok(Some(s))
+}
+
+/// Vendored from delta-rs since it's no longer a public API
+fn timestamp_to_delta_stats_string(n: i64, time_unit: &TimeUnit) -> Option<String> {
+    use deltalake::arrow::temporal_conversions;
+
+    let dt = match time_unit {
+        TimeUnit::MILLIS(_) => temporal_conversions::timestamp_ms_to_datetime(n),
+        TimeUnit::MICROS(_) => temporal_conversions::timestamp_us_to_datetime(n),
+        TimeUnit::NANOS(_) => temporal_conversions::timestamp_ns_to_datetime(n),
+    }?;
+
+    Some(format!("{}", dt.format("%Y-%m-%dT%H:%M:%S%.3fZ")))
 }
 
 #[cfg(test)]

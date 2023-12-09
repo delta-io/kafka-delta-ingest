@@ -136,9 +136,14 @@ fn string_to_timestamp(string: &str) -> Option<Value> {
             e
         )
     }
-    parsed
-        .ok()
-        .map(|dt: DateTime<Utc>| Value::Number((dt.timestamp_nanos() / 1000).into()))
+    parsed.ok().map(|dt: DateTime<Utc>| {
+        Value::Number(
+            (dt.timestamp_nanos_opt()
+                .expect("Failed to turn timestamp nanoseconds")
+                / 1000)
+                .into(),
+        )
+    })
 }
 
 #[cfg(test)]

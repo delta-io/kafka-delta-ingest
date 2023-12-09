@@ -15,7 +15,6 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::{transforms::TransformError, writer::*};
-use deltalake::checkpoints::CheckpointError;
 
 #[cfg(feature = "s3")]
 mod env_vars {
@@ -47,7 +46,10 @@ impl DeadLetter {
             base64_bytes: Some(base64::encode(bytes)),
             json_string: None,
             error: Some(err),
-            timestamp: timestamp.timestamp_nanos() / 1000,
+            timestamp: timestamp
+                .timestamp_nanos_opt()
+                .expect("Failed to convert timezone to nanoseconds")
+                / 1000,
         }
     }
 
@@ -59,7 +61,10 @@ impl DeadLetter {
             base64_bytes: None,
             json_string: Some(value.to_string()),
             error: Some(err.to_string()),
-            timestamp: timestamp.timestamp_nanos() / 1000,
+            timestamp: timestamp
+                .timestamp_nanos_opt()
+                .expect("Failed to convert timezone to nanoseconds")
+                / 1000,
         }
     }
 
@@ -72,7 +77,10 @@ impl DeadLetter {
             base64_bytes: None,
             json_string: Some(value.to_string()),
             error: Some(err.to_string()),
-            timestamp: timestamp.timestamp_nanos() / 1000,
+            timestamp: timestamp
+                .timestamp_nanos_opt()
+                .expect("Failed to convert timezone to nanoseconds")
+                / 1000,
         }
     }
 
@@ -111,14 +119,6 @@ pub enum DeadLetterQueueError {
         source: TransformError,
     },
 
-    /// Error occurred when writing a delta log checkpoint.
-    #[error("CheckpointErrorError error: {source}")]
-    CheckpointErrorError {
-        /// The wrapped [`CheckpointError`]
-        #[from]
-        source: CheckpointError,
-    },
-
     /// DeltaTable returned an error.
     #[error("DeltaTable interaction failed: {source}")]
     DeltaTable {
@@ -151,7 +151,7 @@ pub(crate) struct DeadLetterQueueOptions {
 /// The [LoggingDeadLetterQueue] is intended for local development only
 /// and is not provided by the [dlq_from_opts] factory method.
 #[async_trait]
-pub(crate) trait DeadLetterQueue: Send + Sync {
+pub(crate) trait DeadLetterQueue: Send {
     /// Writes one [DeadLetter] to the [DeadLetterQueue].
     async fn write_dead_letter(
         &mut self,
