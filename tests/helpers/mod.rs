@@ -9,13 +9,13 @@ use std::time::Duration;
 
 use bytes::Buf;
 use chrono::prelude::*;
-use deltalake::action::{Action, Add, MetaData, Protocol, Remove, Txn};
 use deltalake::parquet::{
     file::reader::{FileReader, SerializedFileReader},
     record::RowAccessor,
 };
+use deltalake::protocol::{Action, Add, MetaData, Protocol, Remove, Txn};
 use deltalake::storage::DeltaObjectStore;
-use deltalake::{DeltaDataTypeVersion, DeltaTable, Path};
+use deltalake::{DeltaTable, Path};
 use kafka_delta_ingest::writer::load_object_store_from_uri;
 use kafka_delta_ingest::{start_ingest, IngestOptions};
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
@@ -136,7 +136,9 @@ pub async fn read_files_from_store(table: &DeltaTable) -> Vec<i32> {
         let row_iter = reader.get_row_iter(None).unwrap();
 
         for record in row_iter {
-            list.push(record.get_string(0).unwrap().parse::<i32>().unwrap());
+            if let Ok(record) = record {
+                list.push(record.get_string(0).unwrap().parse::<i32>().unwrap());
+            }
         }
     }
 
@@ -386,7 +388,7 @@ pub async fn read_table_content_as<T: DeserializeOwned>(table_uri: &str) -> Vec<
 
 pub async fn read_table_content_at_version_as<T: DeserializeOwned>(
     table_uri: &str,
-    version: DeltaDataTypeVersion,
+    version: i64,
 ) -> Vec<T> {
     read_table_content_at_version_as_jsons(table_uri, version)
         .await
@@ -401,10 +403,7 @@ pub async fn read_table_content_as_jsons(table_uri: &str) -> Vec<Value> {
     json_listify_table_content(table, store).await
 }
 
-pub async fn read_table_content_at_version_as_jsons(
-    table_uri: &str,
-    version: DeltaDataTypeVersion,
-) -> Vec<Value> {
+pub async fn read_table_content_at_version_as_jsons(table_uri: &str, version: i64) -> Vec<Value> {
     let table = deltalake::open_table_with_version(table_uri, version)
         .await
         .unwrap();
@@ -426,7 +425,7 @@ async fn json_listify_table_content(table: DeltaTable, store: DeltaObjectStore) 
         let row_iter = reader.get_row_iter(None).unwrap();
 
         for record in row_iter {
-            list.push(record.to_json_value());
+            list.push(record.unwrap().to_json_value());
         }
     }
 
@@ -481,7 +480,7 @@ pub async fn inspect_table(path: &str) {
                         .unwrap();
                     let reader = SerializedFileReader::new(parquet_bytes).unwrap();
                     for record in reader.get_row_iter(None).unwrap() {
-                        println!("  - {}", record.to_json_value())
+                        println!("  - {}", record.unwrap().to_json_value())
                     }
                 }
                 _ => println!("Unknown action {:?}", action),
@@ -505,7 +504,7 @@ pub async fn inspect_table(path: &str) {
             let reader = SerializedFileReader::new(bytes).unwrap();
             let mut i = 0;
             for record in reader.get_row_iter(None).unwrap() {
-                let json = record.to_json_value();
+                let json = record.unwrap().to_json_value();
                 if let Some(m) = parse_json_field::<MetaData>(&json, "metaData") {
                     println!(" {}. metaData: {}", i, m.id);
                 }
