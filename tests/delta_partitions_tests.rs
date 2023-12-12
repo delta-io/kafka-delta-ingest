@@ -1,7 +1,7 @@
 #[allow(dead_code)]
 mod helpers;
 
-use deltalake::action::{Action, Add};
+use deltalake::protocol::{Action, Add, DeltaOperation, SaveMode};
 use kafka_delta_ingest::writer::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -95,9 +95,21 @@ async fn test_delta_partitions() {
         }
     }
 
-    let mut tx = table.create_transaction(None);
-    tx.add_actions(result.iter().cloned().map(Action::add).collect());
-    let version = tx.commit(None, None).await.unwrap();
+    let operation = DeltaOperation::Write {
+        mode: SaveMode::Append,
+        partition_by: None,
+        predicate: None,
+    };
+
+    let version = deltalake::operations::transaction::commit(
+        &*table.object_store(),
+        &result.iter().cloned().map(Action::add).collect(),
+        operation,
+        &table.state,
+        None,
+    )
+    .await
+    .expect("Failed to create transaction");
 
     deltalake::checkpoints::create_checkpoint(&table)
         .await
