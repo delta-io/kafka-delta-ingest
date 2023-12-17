@@ -44,9 +44,9 @@ rusoto_s3 = { version = "0.47", default-features = false, features = ["rustls"],
 sentry = { version = "0.23.0", optional = true }
 
 # azure feature enabled, mostly used for tests
-azure_core = { version = "0.10.0", optional = true }
-azure_storage = { version = "0.10.0", optional = true }
-azure_storage_blobs = { version = "0.10.0", optional = true }
+azure_core = { version = "0.18.0", optional = true }
+azure_storage = { version = "0.18.0", optional = true }
+azure_storage_blobs = { version = "0.18.0", optional = true }
 
 [features]
 default = []

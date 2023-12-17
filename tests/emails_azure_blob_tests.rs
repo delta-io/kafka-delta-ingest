@@ -90,6 +90,7 @@ async fn prepare_table(topic: &str) -> String {
                 },
                 later,
             )
+            .await
             .unwrap()
             .start(now)
             .protocol(SasProtocol::HttpHttps);

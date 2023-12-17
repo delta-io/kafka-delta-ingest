@@ -394,8 +394,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81953c529336010edd6d8e358f886d9581267795c61b19475b71314bffa46d35"
 dependencies = [
  "concurrent-queue",
- "event-listener",
+ "event-listener 2.5.3",
  "futures-core",
+]
+
+[[package]]
+name = "async-lock"
+version = "3.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7125e42787d53db9dd54261812ef17e937c95a51e4d291373b670342fa44310c"
+dependencies = [
+ "event-listener 4.0.0",
+ "event-listener-strategy",
+ "pin-project-lite",
 ]
 
 [[package]]
@@ -423,49 +434,27 @@ checksum = "d468802bab17cbc0cc575e9b053f41e72aa36bfa6b7f55e3529ffa43161b97fa"
 
 [[package]]
 name = "azure_core"
-version = "0.10.0"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8904f5c2ee4f5a172542700a42708706ef8591a16a5c6226bcf6b7f21ead9a6"
+checksum = "a6218987c374650fdad0b476bfc675729762c28dfb35f58608a38a2b1ea337dd"
 dependencies = [
  "async-trait",
- "base64 0.13.1",
+ "base64 0.21.5",
  "bytes",
  "dyn-clone",
  "futures",
  "getrandom 0.2.11",
+ "hmac 0.12.1",
  "http-types",
  "log",
+ "once_cell",
  "paste",
  "pin-project",
+ "quick-xml 0.31.0",
  "rand 0.8.5",
  "reqwest",
  "rustc_version",
  "serde",
- "serde-xml-rs",
- "serde_json",
- "time 0.3.30",
- "url",
- "uuid 1.6.1",
-]
-
-[[package]]
-name = "azure_storage"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b5940f60d0cdfe6312e9feb6528c975ba9de061026843b0ded723585b540338"
-dependencies = [
- "RustyXML",
- "async-trait",
- "azure_core",
- "base64 0.13.1",
- "bytes",
- "futures",
- "hmac 0.12.1",
- "log",
- "once_cell",
- "serde",
- "serde-xml-rs",
- "serde_derive",
  "serde_json",
  "sha2 0.10.8",
  "time 0.3.30",
@@ -474,26 +463,59 @@ dependencies = [
 ]
 
 [[package]]
-name = "azure_storage_blobs"
-version = "0.10.0"
+name = "azure_storage"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf7e8d719a89c6079ba6298fc3969acf53a24d590e1f5c1faab6f732e3ddf56b"
+checksum = "ade8f2653e408de88b9eafec9f48c3c26b94026375e88adbd34523a7dd9795a1"
+dependencies = [
+ "RustyXML",
+ "async-lock",
+ "async-trait",
+ "azure_core",
+ "bytes",
+ "log",
+ "serde",
+ "serde_derive",
+ "time 0.3.30",
+ "url",
+ "uuid 1.6.1",
+]
+
+[[package]]
+name = "azure_storage_blobs"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "025701c7cc5b523100f0f3b2b01723564ec5a86c03236521c06826337047e872"
 dependencies = [
  "RustyXML",
  "azure_core",
  "azure_storage",
- "base64 0.13.1",
+ "azure_svc_blobstorage",
  "bytes",
  "futures",
  "log",
- "md5",
  "serde",
- "serde-xml-rs",
  "serde_derive",
  "serde_json",
  "time 0.3.30",
  "url",
  "uuid 1.6.1",
+]
+
+[[package]]
+name = "azure_svc_blobstorage"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76051e5bb67cea1055abe5e530a0878feac7e0ab4cbbcb4a6adc953a58993389"
+dependencies = [
+ "azure_core",
+ "bytes",
+ "futures",
+ "log",
+ "once_cell",
+ "serde",
+ "serde_json",
+ "time 0.3.30",
 ]
 
 [[package]]
@@ -1040,6 +1062,27 @@ name = "event-listener"
 version = "2.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0206175f82b8d6bf6652ff7d71a1e27fd2e4efde587fd368662814d6ec1d9ce0"
+
+[[package]]
+name = "event-listener"
+version = "4.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "770d968249b5d99410d61f5bf89057f3199a077a04d087092f58e7d10692baae"
+dependencies = [
+ "concurrent-queue",
+ "parking",
+ "pin-project-lite",
+]
+
+[[package]]
+name = "event-listener-strategy"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "958e4d70b6d5e81971bebec42271ec641e7ff4e170a6fa605f2b8a8b65cb97d3"
+dependencies = [
+ "event-listener 4.0.0",
+ "pin-project-lite",
+]
 
 [[package]]
 name = "fastrand"
@@ -1867,12 +1910,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "md5"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "490cc448043f947bae3cbee9c203358d62dbee0db12107a74be5c30ccfd09771"
-
-[[package]]
 name = "memchr"
 version = "2.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2083,15 +2120,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "num_threads"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2819ce041d2ee131036f4fc9d6ae7ae125a3a40e97ba64d04fe799ad9dabbb44"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "object"
 version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2116,7 +2144,7 @@ dependencies = [
  "itertools",
  "parking_lot 0.12.1",
  "percent-encoding",
- "quick-xml",
+ "quick-xml 0.30.0",
  "rand 0.8.5",
  "reqwest",
  "ring 0.16.20",
@@ -2437,6 +2465,16 @@ name = "quick-xml"
 version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eff6510e86862b57b210fd8cbe8ed3f0d7d600b9c2863cd4549a2e033c66e956"
+dependencies = [
+ "memchr",
+ "serde",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.31.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1004a344b30a54e2ee58d66a71b32d2db2feb0a31f9a2d302bf0536f15de2a33"
 dependencies = [
  "memchr",
  "serde",
@@ -3098,18 +3136,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde-xml-rs"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb3aa78ecda1ebc9ec9847d5d3aba7d618823446a049ba2491940506da6e2782"
-dependencies = [
- "log",
- "serde",
- "thiserror",
- "xml-rs",
-]
-
-[[package]]
 name = "serde_derive"
 version = "1.0.193"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3479,8 +3505,7 @@ checksum = "c4a34ab300f2dee6e562c10a046fc05e358b29f9bf92277f30c3c8d82275f6f5"
 dependencies = [
  "deranged",
  "itoa",
- "libc",
- "num_threads",
+ "js-sys",
  "powerfmt",
  "serde",
  "time-core",
