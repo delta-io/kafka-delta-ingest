@@ -382,6 +382,7 @@ pub async fn start_ingest(
 
     // The run loop
     loop {
+        debug!("running the runloop");
         // Consume the next message from the stream.
         // Timeout if the next message is not received before the next flush interval.
         let duration = ingest_processor.consume_timeout_duration();
@@ -417,6 +418,7 @@ pub async fn start_ingest(
                 // Startup can take significant time,
                 // so re-initialize the latency timer after consuming the first message.
                 if consumed == 0 {
+                    debug!("Latency timer reset ");
                     ingest_processor.latency_timer = Instant::now();
                 }
 
@@ -442,7 +444,7 @@ pub async fn start_ingest(
                 }
             }
             Err(_) => {
-                log::debug!("Latency timer expired.");
+                log::error!("Latency timer expired.");
                 // Set the latency timer expired flag to indicate that
                 // that the latency timer should be reset after flush checks.
                 latency_timer_expired = true;
@@ -506,6 +508,7 @@ pub async fn start_ingest(
         // Reset it to now so we don't run flush checks again
         // until the next appropriate interval.
         if latency_timer_expired {
+            debug!("latency timer expired, resetting");
             ingest_processor.latency_timer = Instant::now();
         }
 
@@ -1107,10 +1110,13 @@ impl IngestProcessor {
     /// Returns a boolean indicating whether a record batch should be written based on current state.
     fn should_complete_record_batch(&self) -> bool {
         let elapsed_millis = self.latency_timer.elapsed().as_millis();
+        debug!("latency_timer {:?}", self.latency_timer);
+        debug!("elapsed_millis: {:?}", elapsed_millis);
+        debug!("Value buffers has {} items", self.value_buffers.len());
 
         let should = self.value_buffers.len() > 0
-            && (self.value_buffers.len() == self.opts.max_messages_per_batch
-                || elapsed_millis >= (self.opts.allowed_latency * 1000) as u128);
+            && (self.value_buffers.len() == self.opts.max_messages_per_batch)
+            || (elapsed_millis >= (self.opts.allowed_latency * 1000) as u128);
 
         debug!(
             "Should complete record batch - latency test: {} >= {}",
