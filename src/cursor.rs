@@ -116,37 +116,13 @@ pub(crate) struct InMemoryWriteableCursor {
 }
 
 impl InMemoryWriteableCursor {
-    /*
-    /// Consume this instance and return the underlying buffer as long as there are no other
-    /// references to this instance.
-    pub fn into_inner(self) -> Option<Vec<u8>> {
-        Arc::try_unwrap(self.buffer)
-            .ok()
-            .and_then(|mutex| mutex.into_inner().ok())
-            .map(|cursor| cursor.into_inner())
-    }*/
-
     /// Returns a clone of the underlying buffer
     pub fn data(&self) -> Vec<u8> {
         let inner = self.buffer.lock().unwrap();
         inner.get_ref().to_vec()
     }
-
-    /// Returns a length of the underlying buffer
-    pub fn len(&self) -> usize {
-        let inner = self.buffer.lock().unwrap();
-        inner.get_ref().len()
-    }
-
-    /*
-    /// Returns true if the underlying buffer contains no elements
-    pub fn is_empty(&self) -> bool {
-        let inner = self.buffer.lock().unwrap();
-        inner.get_ref().is_empty()
-    }*/
 }
 
-#[allow(deprecated)]
 impl Write for InMemoryWriteableCursor {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let mut inner = self.buffer.lock().unwrap();
@@ -159,7 +135,6 @@ impl Write for InMemoryWriteableCursor {
     }
 }
 
-#[allow(deprecated)]
 impl Seek for InMemoryWriteableCursor {
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
         let mut inner = self.buffer.lock().unwrap();
