@@ -316,6 +316,10 @@ pub fn create_runtime(name: &str) -> Runtime {
 }
 
 pub fn init_logger() {
+    // Any time the test_aws_endpoint() is being used the ability to hit HTTP hosts
+    // needs to be enabled
+    env::set_var("AWS_ALLOW_HTTP", "true");
+
     let _ = env_logger::Builder::new()
         .format(|buf, record| {
             let thread_name = std::thread::current()
