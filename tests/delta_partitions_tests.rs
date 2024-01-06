@@ -1,7 +1,8 @@
 #[allow(dead_code)]
 mod helpers;
 
-use deltalake::protocol::{Action, Add, DeltaOperation, SaveMode};
+use deltalake::kernel::{Action, Add};
+use deltalake::protocol::{DeltaOperation, SaveMode};
 use kafka_delta_ingest::writer::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -102,8 +103,8 @@ async fn test_delta_partitions() {
     };
 
     let version = deltalake::operations::transaction::commit(
-        &*table.object_store(),
-        &result.iter().cloned().map(Action::add).collect(),
+        table.log_store().clone().as_ref(),
+        &result.iter().cloned().map(Action::Add).collect(),
         operation,
         &table.state,
         None,
