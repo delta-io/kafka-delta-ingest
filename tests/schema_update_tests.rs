@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use serial_test::serial;
 use std::fs::File;
 use std::io::prelude::*;
 
@@ -20,6 +21,7 @@ struct MsgV2 {
 }
 
 #[tokio::test]
+#[serial]
 async fn schema_update_test() {
     let (topic, table, producer, kdi, token, rt) = helpers::create_and_run_kdi(
         "schema_update",

@@ -1,5 +1,5 @@
-use deltalake::kernel::Schema as DeltaSchema;
-use deltalake::kernel::{DataType, PrimitiveType};
+use deltalake_core::kernel::Schema as DeltaSchema;
+use deltalake_core::kernel::{DataType, PrimitiveType};
 
 use chrono::prelude::*;
 use serde_json::Value;

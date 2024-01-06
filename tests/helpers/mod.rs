@@ -9,13 +9,13 @@ use std::time::Duration;
 
 use bytes::Buf;
 use chrono::prelude::*;
-use deltalake::kernel::{Action, Add, Metadata, Protocol, Remove, Txn};
-use deltalake::parquet::{
+use deltalake_core::kernel::{Action, Add, Metadata, Protocol, Remove, Txn};
+use deltalake_core::parquet::{
     file::reader::{FileReader, SerializedFileReader},
     record::RowAccessor,
 };
-use deltalake::storage::ObjectStoreRef;
-use deltalake::{DeltaTable, Path};
+use deltalake_core::storage::ObjectStoreRef;
+use deltalake_core::{DeltaTable, Path};
 use kafka_delta_ingest::{start_ingest, IngestOptions};
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::client::DefaultClientContext;
@@ -401,13 +401,13 @@ pub async fn read_table_content_at_version_as<T: DeserializeOwned>(
 }
 
 pub async fn read_table_content_as_jsons(table_uri: &str) -> Vec<Value> {
-    let table = deltalake::open_table(table_uri).await.unwrap();
+    let table = deltalake_core::open_table(table_uri).await.unwrap();
     let store = table.object_store().clone();
     json_listify_table_content(table, store).await
 }
 
 pub async fn read_table_content_at_version_as_jsons(table_uri: &str, version: i64) -> Vec<Value> {
-    let table = deltalake::open_table_with_version(table_uri, version)
+    let table = deltalake_core::open_table_with_version(table_uri, version)
         .await
         .unwrap();
     let store = table.object_store().clone();
@@ -444,7 +444,7 @@ pub fn commit_file_path(table: &str, version: i64) -> String {
 }
 
 pub async fn inspect_table(path: &str) {
-    let table = deltalake::open_table(path).await.unwrap();
+    let table = deltalake_core::open_table(path).await.unwrap();
     println!("Inspecting table {}", path);
     for (k, v) in table.get_app_transaction_version().iter() {
         println!("  {}: {}", k, v);
@@ -616,7 +616,7 @@ impl TestScope {
     }
 
     pub async fn wait_on_total_offset(&self, apps: Vec<String>, offset: i32) {
-        let mut table = deltalake::open_table(&self.table).await.unwrap();
+        let mut table = deltalake_core::open_table(&self.table).await.unwrap();
         let expected_total = offset - TEST_PARTITIONS;
         loop {
             table.update().await.unwrap();
@@ -641,7 +641,7 @@ impl TestScope {
     }
 
     pub async fn validate_data(&self) {
-        let table = deltalake::open_table(&self.table).await.unwrap();
+        let table = deltalake_core::open_table(&self.table).await.unwrap();
         let result = read_files_from_store(&table).await;
         let r: Vec<i32> = (0..TEST_TOTAL_MESSAGES).collect();
         println!("Got messages {}/{}", result.len(), TEST_TOTAL_MESSAGES);

@@ -2,8 +2,8 @@ use crate::transforms::Transformer;
 use async_trait::async_trait;
 use chrono::prelude::*;
 use core::fmt::Debug;
-use deltalake::parquet::errors::ParquetError;
-use deltalake::{DeltaTable, DeltaTableError};
+use deltalake_core::parquet::errors::ParquetError;
+use deltalake_core::{DeltaTable, DeltaTableError};
 #[cfg(feature = "s3")]
 use dynamodb_lock::dynamo_lock_options;
 use log::{error, info, warn};

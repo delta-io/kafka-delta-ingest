@@ -1,4 +1,4 @@
-use deltalake::DeltaTable;
+use deltalake_core::DeltaTable;
 use kafka_delta_ingest::IngestOptions;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -44,7 +44,7 @@ async fn zero_offset_issue() {
 
     {
         // check that there's only 1 record in table
-        let table = deltalake::open_table(table).await.unwrap();
+        let table = deltalake_core::open_table(table).await.unwrap();
         assert_eq!(table.version(), 1);
         assert_eq!(count_records(table), 1);
     }
@@ -72,7 +72,7 @@ async fn zero_offset_issue() {
     rt.shutdown_background();
 
     // check that there's only 3 records
-    let table = deltalake::open_table(table).await.unwrap();
+    let table = deltalake_core::open_table(table).await.unwrap();
     assert_eq!(table.version(), 3);
     assert_eq!(count_records(table), 3);
 

@@ -1,4 +1,4 @@
-use deltalake::DeltaTable;
+use deltalake_core::DeltaTable;
 use kafka_delta_ingest::IngestOptions;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -67,7 +67,7 @@ async fn end_at_initial_offsets() {
 
     {
         // check that there's 3 records in table
-        let table = deltalake::open_table(table).await.unwrap();
+        let table = deltalake_core::open_table(table).await.unwrap();
         assert_eq!(table.version(), 1);
         assert_eq!(count_records(table), 15);
     }
@@ -86,7 +86,7 @@ async fn end_at_initial_offsets() {
     rt.shutdown_background();
 
     // check that there's only 3 records
-    let table = deltalake::open_table(table).await.unwrap();
+    let table = deltalake_core::open_table(table).await.unwrap();
     assert_eq!(table.version(), 1);
     assert_eq!(count_records(table), 15);
 }
