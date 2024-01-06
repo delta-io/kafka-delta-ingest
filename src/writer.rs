@@ -24,19 +24,19 @@ use deltalake::parquet::{
 use deltalake::protocol::DeltaOperation;
 use deltalake::protocol::SaveMode;
 use deltalake::{
-    protocol::{Action, Add, ColumnCountStat, ColumnValueStat, Stats},
-    storage::DeltaObjectStore,
+    kernel::{Action, Add, Schema},
+    protocol::{ColumnCountStat, ColumnValueStat, Stats},
+    storage::ObjectStoreRef,
     table::DeltaTableMetaData,
-    DeltaResult, DeltaTable, DeltaTableError, ObjectStoreError, Schema,
+    DeltaTable, DeltaTableError, ObjectStoreError,
 };
 use log::{error, info, warn};
 use serde_json::{Number, Value};
+use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::io::Write;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::{collections::HashMap, env};
-use url::Url;
 use uuid::Uuid;
 
 use crate::cursor::InMemoryWriteableCursor;
@@ -172,7 +172,7 @@ impl From<DeltaTableError> for Box<DataWriterError> {
 
 /// Writes messages to a delta lake table.
 pub struct DataWriter {
-    storage: DeltaObjectStore,
+    storage: ObjectStoreRef,
     arrow_schema_ref: Arc<deltalake::arrow::datatypes::Schema>,
     writer_properties: WriterProperties,
     partition_columns: Vec<String>,
@@ -339,13 +339,13 @@ impl DataWriter {
     /// Creates a DataWriter to write to the given table
     pub fn for_table(
         table: &DeltaTable,
-        options: HashMap<String, String>,
+        _options: HashMap<String, String>, // XXX: figure out if this is necessary
     ) -> Result<DataWriter, Box<DataWriterError>> {
-        let storage = load_object_store_from_uri(table.table_uri().as_str(), Some(options))?;
+        let storage = table.object_store();
 
         // Initialize an arrow schema ref from the delta table schema
-        let metadata = table.get_metadata()?;
-        let arrow_schema = ArrowSchema::try_from(&metadata.schema)?;
+        let metadata = table.metadata()?;
+        let arrow_schema = ArrowSchema::try_from(table.schema().unwrap())?;
         let arrow_schema_ref = Arc::new(arrow_schema);
         let partition_columns = metadata.partition_columns.clone();
 
@@ -462,7 +462,6 @@ impl DataWriter {
             //
 
             self.storage
-                .storage_backend()
                 .put(
                     &deltalake::Path::parse(&path).unwrap(),
                     bytes::Bytes::copy_from_slice(obj_bytes.as_slice()),
@@ -585,9 +584,9 @@ impl DataWriter {
     ) -> Result<i64, Box<DataWriterError>> {
         self.write(values).await?;
         let mut adds = self.write_parquet_files(&table.table_uri()).await?;
-        let actions = adds.drain(..).map(Action::add).collect();
+        let actions = adds.drain(..).map(Action::Add).collect();
         let version = deltalake::operations::transaction::commit(
-            (table.object_store().storage_backend()).as_ref(),
+            table.log_store().clone().as_ref(),
             &actions,
             DeltaOperation::Write {
                 mode: SaveMode::Append,
@@ -613,41 +612,6 @@ pub fn record_batch_from_json(
     decoder
         .flush()?
         .ok_or(Box::new(DataWriterError::EmptyRecordBatch))
-}
-
-/// Creates an object store from a uri while normalizing file system paths
-pub fn load_object_store_from_uri(
-    path: &str,
-    options: Option<HashMap<String, String>>,
-) -> DeltaResult<DeltaObjectStore> {
-    match Url::parse(path) {
-        Ok(table_uri) => DeltaObjectStore::try_new(table_uri, options.unwrap_or_default()),
-        Err(url::ParseError::RelativeUrlWithoutBase) => {
-            match std::path::Path::new(path).is_absolute() {
-                true => load_table_from_file_uri(path, options),
-                false => {
-                    let result = env::current_dir()?
-                        .join(path)
-                        .to_str()
-                        .unwrap_or(path)
-                        .to_string();
-                    load_table_from_file_uri(result.as_str(), options)
-                }
-            }
-        }
-        Err(e) => {
-            error!("unable to parse table uri: {}", e);
-            DeltaResult::Err(DeltaTableError::InvalidTableLocation(path.to_string()))
-        }
-    }
-}
-
-fn load_table_from_file_uri(
-    absolute_path: &str,
-    options: Option<HashMap<String, String>>,
-) -> DeltaResult<DeltaObjectStore> {
-    let url = Url::from_file_path(absolute_path).unwrap();
-    DeltaObjectStore::try_new(url, options.unwrap_or_default())
 }
 
 type BadValue = (Value, ParquetError);

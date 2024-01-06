@@ -9,14 +9,13 @@ use std::time::Duration;
 
 use bytes::Buf;
 use chrono::prelude::*;
+use deltalake::kernel::{Action, Add, Metadata, Protocol, Remove, Txn};
 use deltalake::parquet::{
     file::reader::{FileReader, SerializedFileReader},
     record::RowAccessor,
 };
-use deltalake::protocol::{Action, Add, MetaData, Protocol, Remove, Txn};
-use deltalake::storage::DeltaObjectStore;
+use deltalake::storage::ObjectStoreRef;
 use deltalake::{DeltaTable, Path};
-use kafka_delta_ingest::writer::load_object_store_from_uri;
 use kafka_delta_ingest::{start_ingest, IngestOptions};
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::client::DefaultClientContext;
@@ -110,14 +109,13 @@ pub async fn send_bytes(producer: &FutureProducer, topic: &str, bytes: &Vec<u8>)
 // Example parquet read is taken from https://docs.rs/parquet/4.1.0/parquet/arrow/index.html#example-of-reading-parquet-file-into-arrow-record-batch
 // TODO Research whether it's possible to read parquet data from bytes but not from file
 pub async fn read_files_from_store(table: &DeltaTable) -> Vec<i32> {
-    let table_uri = table.table_uri();
-    let s3 = load_object_store_from_uri(&table_uri, None).unwrap();
-    let paths = table.get_files();
+    let s3 = table.object_store().clone();
+    let paths = table.get_files_iter();
     let tmp = format!(".test-{}.tmp", Uuid::new_v4());
     let mut list = Vec::new();
 
     for path in paths {
-        let get_result = s3.storage_backend().get(&path).await.unwrap();
+        let get_result = s3.get(&path).await.unwrap();
         let bytes = get_result.bytes().await.unwrap();
         {
             let mut file = OpenOptions::new()
@@ -404,7 +402,7 @@ pub async fn read_table_content_at_version_as<T: DeserializeOwned>(
 
 pub async fn read_table_content_as_jsons(table_uri: &str) -> Vec<Value> {
     let table = deltalake::open_table(table_uri).await.unwrap();
-    let store = load_object_store_from_uri(table_uri, None).unwrap();
+    let store = table.object_store().clone();
     json_listify_table_content(table, store).await
 }
 
@@ -412,16 +410,16 @@ pub async fn read_table_content_at_version_as_jsons(table_uri: &str, version: i6
     let table = deltalake::open_table_with_version(table_uri, version)
         .await
         .unwrap();
-    let store = load_object_store_from_uri(table_uri, None).unwrap();
+    let store = table.object_store().clone();
 
     json_listify_table_content(table, store).await
 }
 
-async fn json_listify_table_content(table: DeltaTable, store: DeltaObjectStore) -> Vec<Value> {
+async fn json_listify_table_content(table: DeltaTable, store: ObjectStoreRef) -> Vec<Value> {
     let tmp = format!(".test-{}.tmp", Uuid::new_v4());
     let mut list = Vec::new();
-    for file in table.get_files() {
-        let get_result = store.storage_backend().get(&file).await.unwrap();
+    for file in table.get_files_iter() {
+        let get_result = store.get(&file).await.unwrap();
         let bytes = get_result.bytes().await.unwrap();
         let mut file = File::create(&tmp).unwrap();
         file.write_all(bytes.chunk()).unwrap();
@@ -451,15 +449,11 @@ pub async fn inspect_table(path: &str) {
     for (k, v) in table.get_app_transaction_version().iter() {
         println!("  {}: {}", k, v);
     }
-    let store = load_object_store_from_uri(path, None).unwrap();
+    let store = table.object_store().clone();
 
     for version in 1..=table.version() {
         let log_path = format!("{}/_delta_log/{:020}.json", path, version);
-        let get_result = store
-            .storage_backend()
-            .get(&Path::parse(&log_path).unwrap())
-            .await
-            .unwrap();
+        let get_result = store.get(&Path::parse(&log_path).unwrap()).await.unwrap();
         let bytes = get_result.bytes().await.unwrap();
         let reader = BufReader::new(Cursor::new(bytes.chunk()));
 
@@ -468,15 +462,14 @@ pub async fn inspect_table(path: &str) {
         for line in reader.lines() {
             let action: Action = serde_json::from_str(line.unwrap().as_str()).unwrap();
             match action {
-                Action::txn(t) => {
+                Action::Txn(t) => {
                     println!("  Txn: {}: {}", t.app_id, t.version)
                 }
-                Action::add(a) => {
+                Action::Add(a) => {
                     let stats = a.get_stats().unwrap().unwrap();
                     println!("  Add: {}. Records: {}", &a.path, stats.num_records);
                     let full_path = format!("{}/{}", &path, &a.path);
                     let parquet_bytes = store
-                        .storage_backend()
                         .get(&Path::parse(&full_path).unwrap())
                         .await
                         .unwrap()
@@ -499,7 +492,6 @@ pub async fn inspect_table(path: &str) {
             println!("Version: {}", version);
             let log_path = format!("{}/_delta_log/{:020}.checkpoint.parquet", path, version);
             let bytes = store
-                .storage_backend()
                 .get(&Path::parse(&log_path).unwrap())
                 .await
                 .unwrap()
@@ -510,7 +502,7 @@ pub async fn inspect_table(path: &str) {
             let mut i = 0;
             for record in reader.get_row_iter(None).unwrap() {
                 let json = record.unwrap().to_json_value();
-                if let Some(m) = parse_json_field::<MetaData>(&json, "metaData") {
+                if let Some(m) = parse_json_field::<Metadata>(&json, "metaData") {
                     println!(" {}. metaData: {}", i, m.id);
                 }
                 if let Some(p) = parse_json_field::<Protocol>(&json, "protocol") {

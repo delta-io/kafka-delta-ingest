@@ -1,5 +1,5 @@
 use crate::{DataTypeOffset, DataTypePartition};
-use deltalake::protocol::{Action, Add, Txn};
+use deltalake::kernel::{Action, Add, Txn};
 use deltalake::{DeltaTable, DeltaTableError};
 use std::collections::HashMap;
 
@@ -22,12 +22,12 @@ pub(crate) fn build_actions(
         .map(|(partition, offset)| {
             create_txn_action(txn_app_id_for_partition(app_id, *partition), *offset)
         })
-        .chain(add.drain(..).map(Action::add))
+        .chain(add.drain(..).map(Action::Add))
         .collect()
 }
 
 pub(crate) fn create_txn_action(txn_app_id: String, offset: DataTypeOffset) -> Action {
-    Action::txn(Txn {
+    Action::Txn(Txn {
         app_id: txn_app_id,
         version: offset,
         last_updated: Some(
