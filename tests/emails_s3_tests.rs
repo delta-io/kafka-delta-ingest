@@ -31,6 +31,7 @@ async fn when_rebalance_happens() {
 }
 
 async fn run_emails_s3_tests(initiate_rebalance: bool) {
+    deltalake_aws::register_handlers(None);
     helpers::init_logger();
     let topic = format!("emails_s3-{}", Uuid::new_v4());
     let table = prepare_table(&topic).await;
@@ -80,7 +81,7 @@ fn create_options(name: &str) -> IngestOptions {
     env::set_var("AWS_S3_LOCKING_PROVIDER", "dynamodb");
     env::set_var("AWS_REGION", "us-east-2");
     env::set_var("AWS_STORAGE_ALLOW_HTTP", "true");
-    env::set_var("DYNAMO_LOCK_TABLE_NAME", "locks");
+    env::set_var("DELTA_DYNAMO_TABLE_NAME", "locks");
     env::set_var("DYNAMO_LOCK_OWNER_NAME", name);
     env::set_var("DYNAMO_LOCK_PARTITION_KEY_VALUE", "emails_s3_tests");
     env::set_var("DYNAMO_LOCK_REFRESH_PERIOD_MILLIS", "100");

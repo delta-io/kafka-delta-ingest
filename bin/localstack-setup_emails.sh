@@ -34,10 +34,11 @@ wait_for "DynamoDB" "aws dynamodb list-tables --endpoint-url=$ENDPOINT"
 
 echo "Create delta-rs lock table in dynamo"
 aws dynamodb delete-table --table-name locks --endpoint-url=$ENDPOINT > /dev/null 2>&1
-aws dynamodb create-table --table-name locks --endpoint-url=$ENDPOINT \
-    --attribute-definitions \
-        AttributeName=key,AttributeType=S \
-    --key-schema \
-        AttributeName=key,KeyType=HASH \
-    --provisioned-throughput \
-        ReadCapacityUnits=10,WriteCapacityUnits=10 > /dev/null
+aws dynamodb create-table \
+  --endpoint-url=$ENDPOINT \
+  --table-name locks \
+  --attribute-definitions AttributeName=tablePath,AttributeType=S \
+                          AttributeName=fileName,AttributeType=S \
+  --key-schema AttributeName=tablePath,KeyType=HASH \
+               AttributeName=fileName,KeyType=RANGE \
+  --billing-mode PAY_PER_REQUEST
