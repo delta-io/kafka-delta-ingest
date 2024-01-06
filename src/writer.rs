@@ -1,6 +1,6 @@
 //! High-level writer implementations for [`deltalake`].
 #[allow(deprecated)]
-use deltalake::arrow::{
+use deltalake_core::arrow::{
     array::{
         as_boolean_array, as_primitive_array, as_struct_array, make_array, Array, ArrayData,
         StructArray,
@@ -12,8 +12,8 @@ use deltalake::arrow::{
     json::reader::ReaderBuilder,
     record_batch::*,
 };
-use deltalake::parquet::format::FileMetaData;
-use deltalake::parquet::{
+use deltalake_core::parquet::format::FileMetaData;
+use deltalake_core::parquet::{
     arrow::ArrowWriter,
     basic::{Compression, LogicalType},
     errors::ParquetError,
@@ -21,9 +21,9 @@ use deltalake::parquet::{
     format::TimeUnit,
     schema::types::{ColumnDescriptor, SchemaDescriptor},
 };
-use deltalake::protocol::DeltaOperation;
-use deltalake::protocol::SaveMode;
-use deltalake::{
+use deltalake_core::protocol::DeltaOperation;
+use deltalake_core::protocol::SaveMode;
+use deltalake_core::{
     kernel::{Action, Add, Schema},
     protocol::{ColumnCountStat, ColumnValueStat, Stats},
     storage::ObjectStoreRef,
@@ -63,7 +63,7 @@ pub enum DataWriterError {
         /// The record batch schema.
         record_batch_schema: SchemaRef,
         /// The schema of the target delta table.
-        expected_schema: Arc<deltalake::arrow::datatypes::Schema>,
+        expected_schema: Arc<ArrowSchema>,
     },
 
     /// An Arrow RecordBatch could not be created from the JSON buffer.
@@ -173,7 +173,7 @@ impl From<DeltaTableError> for Box<DataWriterError> {
 /// Writes messages to a delta lake table.
 pub struct DataWriter {
     storage: ObjectStoreRef,
-    arrow_schema_ref: Arc<deltalake::arrow::datatypes::Schema>,
+    arrow_schema_ref: Arc<ArrowSchema>,
     writer_properties: WriterProperties,
     partition_columns: Vec<String>,
     arrow_writers: HashMap<String, DataArrowWriter>,
@@ -463,7 +463,7 @@ impl DataWriter {
 
             self.storage
                 .put(
-                    &deltalake::Path::parse(&path).unwrap(),
+                    &deltalake_core::Path::parse(&path).unwrap(),
                     bytes::Bytes::copy_from_slice(obj_bytes.as_slice()),
                 )
                 .await?;
@@ -497,7 +497,7 @@ impl DataWriter {
 
     /// Returns the arrow schema representation of the delta table schema defined for the wrapped
     /// table.
-    pub fn arrow_schema(&self) -> Arc<deltalake::arrow::datatypes::Schema> {
+    pub fn arrow_schema(&self) -> Arc<ArrowSchema> {
         self.arrow_schema_ref.clone()
     }
 
@@ -585,7 +585,7 @@ impl DataWriter {
         self.write(values).await?;
         let mut adds = self.write_parquet_files(&table.table_uri()).await?;
         let actions = adds.drain(..).map(Action::Add).collect();
-        let version = deltalake::operations::transaction::commit(
+        let version = deltalake_core::operations::transaction::commit(
             table.log_store().clone().as_ref(),
             &actions,
             DeltaOperation::Write {
@@ -658,7 +658,8 @@ fn min_max_values_from_file_metadata(
     partition_values: &HashMap<String, Option<String>>,
     file_metadata: &FileMetaData,
 ) -> Result<MinAndMaxValues, ParquetError> {
-    let type_ptr = deltalake::parquet::schema::types::from_thrift(file_metadata.schema.as_slice());
+    let type_ptr =
+        deltalake_core::parquet::schema::types::from_thrift(file_metadata.schema.as_slice());
     let schema_descriptor = type_ptr.map(|type_| Arc::new(SchemaDescriptor::new(type_)))?;
 
     let mut min_values: HashMap<String, ColumnValueStat> = HashMap::new();
@@ -853,7 +854,7 @@ fn min_and_max_from_parquet_statistics(
     statistics: &[&Statistics],
     column_descr: Arc<ColumnDescriptor>,
 ) -> Result<(Option<Value>, Option<Value>), ParquetError> {
-    use deltalake::arrow::compute::*;
+    use deltalake_core::arrow::compute::*;
 
     let stats_with_min_max: Vec<&Statistics> = statistics
         .iter()
@@ -914,12 +915,12 @@ fn min_and_max_from_parquet_statistics(
         }
         DataType::Int32 => {
             let min_array =
-                as_primitive_array::<deltalake::arrow::datatypes::Int32Type>(&min_array);
+                as_primitive_array::<deltalake_core::arrow::datatypes::Int32Type>(&min_array);
             let min = min(min_array);
             let min = min.map(|i| Value::Number(Number::from(i)));
 
             let max_array =
-                as_primitive_array::<deltalake::arrow::datatypes::Int32Type>(&max_array);
+                as_primitive_array::<deltalake_core::arrow::datatypes::Int32Type>(&max_array);
             let max = max(max_array);
             let max = max.map(|i| Value::Number(Number::from(i)));
 
@@ -927,10 +928,10 @@ fn min_and_max_from_parquet_statistics(
         }
         DataType::Int64 => {
             let min_array =
-                as_primitive_array::<deltalake::arrow::datatypes::Int64Type>(&min_array);
+                as_primitive_array::<deltalake_core::arrow::datatypes::Int64Type>(&min_array);
             let min = min(min_array);
             let max_array =
-                as_primitive_array::<deltalake::arrow::datatypes::Int64Type>(&max_array);
+                as_primitive_array::<deltalake_core::arrow::datatypes::Int64Type>(&max_array);
             let max = max(max_array);
 
             match column_descr.logical_type().as_ref() {
@@ -953,12 +954,12 @@ fn min_and_max_from_parquet_statistics(
         }
         DataType::Float32 => {
             let min_array =
-                as_primitive_array::<deltalake::arrow::datatypes::Float32Type>(&min_array);
+                as_primitive_array::<deltalake_core::arrow::datatypes::Float32Type>(&min_array);
             let min = min(min_array);
             let min = min.and_then(|f| Number::from_f64(f as f64).map(Value::Number));
 
             let max_array =
-                as_primitive_array::<deltalake::arrow::datatypes::Float32Type>(&max_array);
+                as_primitive_array::<deltalake_core::arrow::datatypes::Float32Type>(&max_array);
             let max = max(max_array);
             let max = max.and_then(|f| Number::from_f64(f as f64).map(Value::Number));
 
@@ -966,12 +967,12 @@ fn min_and_max_from_parquet_statistics(
         }
         DataType::Float64 => {
             let min_array =
-                as_primitive_array::<deltalake::arrow::datatypes::Float64Type>(&min_array);
+                as_primitive_array::<deltalake_core::arrow::datatypes::Float64Type>(&min_array);
             let min = min(min_array);
             let min = min.and_then(|f| Number::from_f64(f).map(Value::Number));
 
             let max_array =
-                as_primitive_array::<deltalake::arrow::datatypes::Float64Type>(&max_array);
+                as_primitive_array::<deltalake_core::arrow::datatypes::Float64Type>(&max_array);
             let max = max(max_array);
             let max = max.and_then(|f| Number::from_f64(f).map(Value::Number));
 
@@ -1112,7 +1113,7 @@ fn stringified_partition_value(
         DataType::UInt32 => as_primitive_array::<UInt32Type>(arr).value(0).to_string(),
         DataType::UInt64 => as_primitive_array::<UInt64Type>(arr).value(0).to_string(),
         DataType::Utf8 => {
-            let data = deltalake::arrow::array::as_string_array(arr);
+            let data = deltalake_core::arrow::array::as_string_array(arr);
 
             data.value(0).to_string()
         }
@@ -1127,7 +1128,7 @@ fn stringified_partition_value(
 
 /// Vendored from delta-rs since it's no longer a public API
 fn timestamp_to_delta_stats_string(n: i64, time_unit: &TimeUnit) -> Option<String> {
-    use deltalake::arrow::temporal_conversions;
+    use deltalake_core::arrow::temporal_conversions;
 
     let dt = match time_unit {
         TimeUnit::MILLIS(_) => temporal_conversions::timestamp_ms_to_datetime(n),

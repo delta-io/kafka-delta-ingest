@@ -1,13 +1,13 @@
 use crate::{DataTypeOffset, DataTypePartition};
-use deltalake::kernel::{Action, Add, Txn};
-use deltalake::{DeltaTable, DeltaTableError};
+use deltalake_core::kernel::{Action, Add, Txn};
+use deltalake_core::{DeltaTable, DeltaTableError};
 use std::collections::HashMap;
 
 pub(crate) async fn load_table(
     table_uri: &str,
     options: HashMap<String, String>,
 ) -> Result<DeltaTable, DeltaTableError> {
-    let mut table = deltalake::open_table_with_storage_options(table_uri, options).await?;
+    let mut table = deltalake_core::open_table_with_storage_options(table_uri, options).await?;
     table.load().await?;
     Ok(table)
 }
@@ -52,10 +52,10 @@ pub(crate) async fn try_create_checkpoint(
             table.load_version(version).await?;
         }
 
-        deltalake::checkpoints::create_checkpoint(table).await?;
+        deltalake_core::checkpoints::create_checkpoint(table).await?;
         log::info!("Created checkpoint version {}.", version);
 
-        let removed = deltalake::checkpoints::cleanup_metadata(table).await?;
+        let removed = deltalake_core::checkpoints::cleanup_metadata(table).await?;
         if removed > 0 {
             log::info!("Metadata cleanup, removed {} obsolete logs.", removed);
         }

@@ -17,9 +17,9 @@ extern crate strum_macros;
 extern crate serde_json;
 
 use coercions::CoercionTree;
-use deltalake::protocol::DeltaOperation;
-use deltalake::protocol::OutputMode;
-use deltalake::{DeltaTable, DeltaTableError};
+use deltalake_core::protocol::DeltaOperation;
+use deltalake_core::protocol::OutputMode;
+use deltalake_core::{DeltaTable, DeltaTableError};
 use futures::stream::StreamExt;
 use log::{debug, error, info, warn};
 use rdkafka::{
@@ -945,10 +945,9 @@ impl IngestProcessor {
             return Err(IngestError::ConflictingOffsets);
         }
 
-        /* XXX: update_schema has been removed because it just swaps the schema
         if self
             .delta_writer
-            .update_schema(self.table.metadata().unwrap())
+            .update_schema(self.table.state.delta_metadata().unwrap())?
         {
             info!("Table schema has been updated");
             // Update the coercion tree to reflect the new schema
@@ -957,7 +956,6 @@ impl IngestProcessor {
 
             return Err(IngestError::DeltaSchemaChanged);
         }
-            */
 
         // Try to commit
         let mut attempt_number: u32 = 0;
@@ -967,7 +965,7 @@ impl IngestProcessor {
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("Time went backwards")
                 .as_millis() as i64;
-            match deltalake::operations::transaction::commit(
+            match deltalake_core::operations::transaction::commit(
                 self.table.log_store().clone().as_ref(),
                 &actions,
                 DeltaOperation::StreamingUpdate {

@@ -1,8 +1,8 @@
 #[allow(dead_code)]
 mod helpers;
 
-use deltalake::kernel::{Action, Add};
-use deltalake::protocol::{DeltaOperation, SaveMode};
+use deltalake_core::kernel::{Action, Add};
+use deltalake_core::protocol::{DeltaOperation, SaveMode};
 use kafka_delta_ingest::writer::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -38,7 +38,7 @@ async fn test_delta_partitions() {
         "test_delta_partitions",
     );
 
-    let mut table = deltalake::open_table(&table_path).await.unwrap();
+    let mut table = deltalake_core::open_table(&table_path).await.unwrap();
     let mut delta_writer = DataWriter::for_table(&table, HashMap::new()).unwrap();
 
     let batch1 = vec![
@@ -102,7 +102,7 @@ async fn test_delta_partitions() {
         predicate: None,
     };
 
-    let version = deltalake::operations::transaction::commit(
+    let version = deltalake_core::operations::transaction::commit(
         table.log_store().clone().as_ref(),
         &result.iter().cloned().map(Action::Add).collect(),
         operation,
@@ -112,11 +112,11 @@ async fn test_delta_partitions() {
     .await
     .expect("Failed to create transaction");
 
-    deltalake::checkpoints::create_checkpoint(&table)
+    deltalake_core::checkpoints::create_checkpoint(&table)
         .await
         .unwrap();
 
-    let table = deltalake::open_table(&table_path).await.unwrap();
+    let table = deltalake_core::open_table(&table_path).await.unwrap();
     assert_eq!(table.version(), version);
 
     std::fs::remove_dir_all(&table_path).unwrap();
