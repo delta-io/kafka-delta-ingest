@@ -213,6 +213,11 @@ pub async fn create_and_run_kdi(
     Runtime,
 ) {
     init_logger();
+
+    #[cfg(feature = "s3")]
+    deltalake_aws::register_handlers(None);
+    #[cfg(feature = "azure")]
+    deltalake_azure::register_handlers(None);
     println!("OPTS!: {:?}", opts);
     let topic = format!("{}-{}", app_id, Uuid::new_v4());
     let table = create_local_table(schema, delta_partitions, &topic);
