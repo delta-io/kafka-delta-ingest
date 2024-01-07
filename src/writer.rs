@@ -180,162 +180,6 @@ pub struct DataWriter {
     arrow_writers: HashMap<String, DataArrowWriter>,
 }
 
-/// Writes messages to an underlying arrow buffer.
-pub(crate) struct DataArrowWriter {
-    arrow_schema: Arc<ArrowSchema>,
-    writer_properties: WriterProperties,
-    cursor: InMemoryWriteableCursor,
-    arrow_writer: ArrowWriter<InMemoryWriteableCursor>,
-    partition_values: HashMap<String, Option<String>>,
-    null_counts: NullCounts,
-    buffered_record_batch_count: usize,
-}
-
-impl DataArrowWriter {
-    /// Writes the given JSON buffer and updates internal state accordingly.
-    /// This method buffers the write stream internally so it can be invoked for many json buffers and flushed after the appropriate number of bytes has been written.
-    async fn write_values(
-        &mut self,
-        partition_columns: &[String],
-        arrow_schema: Arc<ArrowSchema>,
-        json_buffer: Vec<Value>,
-    ) -> Result<(), Box<DataWriterError>> {
-        let record_batch = record_batch_from_json(arrow_schema.clone(), json_buffer.as_slice())?;
-
-        if record_batch.schema() != arrow_schema {
-            return Err(Box::new(DataWriterError::SchemaMismatch {
-                record_batch_schema: record_batch.schema(),
-                expected_schema: arrow_schema,
-            }));
-        }
-
-        let result = self
-            .write_record_batch(partition_columns, record_batch)
-            .await;
-
-        match result {
-            Err(e) => match *e {
-                DataWriterError::Parquet { source } => {
-                    self.write_partial(partition_columns, arrow_schema, json_buffer, source)
-                        .await
-                }
-                _ => Err(e),
-            },
-            Ok(_) => result,
-        }
-    }
-
-    async fn write_partial(
-        &mut self,
-        partition_columns: &[String],
-        arrow_schema: Arc<ArrowSchema>,
-        json_buffer: Vec<Value>,
-        parquet_error: ParquetError,
-    ) -> Result<(), Box<DataWriterError>> {
-        warn!("Failed with parquet error while writing record batch. Attempting quarantine of bad records.");
-        let (good, bad) = quarantine_failed_parquet_rows(arrow_schema.clone(), json_buffer)?;
-        let record_batch = record_batch_from_json(arrow_schema, good.as_slice())?;
-        self.write_record_batch(partition_columns, record_batch)
-            .await?;
-        info!(
-            "Wrote {} good records to record batch and quarantined {} bad records.",
-            good.len(),
-            bad.len()
-        );
-        Err(Box::new(DataWriterError::PartialParquetWrite {
-            skipped_values: bad,
-            sample_error: parquet_error,
-        }))
-    }
-
-    /// Writes the record batch in-memory and updates internal state accordingly.
-    /// This method buffers the write stream internally so it can be invoked for many record batches and flushed after the appropriate number of bytes has been written.
-    async fn write_record_batch(
-        &mut self,
-        partition_columns: &[String],
-        record_batch: RecordBatch,
-    ) -> Result<(), Box<DataWriterError>> {
-        if self.partition_values.is_empty() {
-            let partition_values = extract_partition_values(partition_columns, &record_batch)?;
-            self.partition_values = partition_values;
-        }
-
-        // Copy current cursor bytes so we can recover from failures
-        let current_cursor_bytes = self.cursor.data();
-
-        let result = self.arrow_writer.write(&record_batch);
-        self.arrow_writer.flush()?;
-
-        match result {
-            Ok(_) => {
-                self.buffered_record_batch_count += 1;
-
-                apply_null_counts(
-                    partition_columns,
-                    &record_batch.into(),
-                    &mut self.null_counts,
-                    0,
-                );
-                Ok(())
-            }
-            // If a write fails we need to reset the state of the DeltaArrowWriter
-            Err(e) => {
-                let new_cursor = Self::cursor_from_bytes(current_cursor_bytes.as_slice())?;
-                let _ = std::mem::replace(&mut self.cursor, new_cursor.clone());
-                let arrow_writer = Self::new_underlying_writer(
-                    new_cursor,
-                    self.arrow_schema.clone(),
-                    self.writer_properties.clone(),
-                )?;
-                let _ = std::mem::replace(&mut self.arrow_writer, arrow_writer);
-                self.partition_values.clear();
-
-                Err(e.into())
-            }
-        }
-    }
-
-    fn new(
-        arrow_schema: Arc<ArrowSchema>,
-        writer_properties: WriterProperties,
-    ) -> Result<Self, ParquetError> {
-        let cursor = InMemoryWriteableCursor::default();
-        let arrow_writer = Self::new_underlying_writer(
-            cursor.clone(),
-            arrow_schema.clone(),
-            writer_properties.clone(),
-        )?;
-
-        let partition_values = HashMap::new();
-        let null_counts = NullCounts::new();
-        let buffered_record_batch_count = 0;
-
-        Ok(Self {
-            arrow_schema,
-            writer_properties,
-            cursor,
-            arrow_writer,
-            partition_values,
-            null_counts,
-            buffered_record_batch_count,
-        })
-    }
-
-    fn cursor_from_bytes(bytes: &[u8]) -> Result<InMemoryWriteableCursor, std::io::Error> {
-        let mut cursor = InMemoryWriteableCursor::default();
-        cursor.write_all(bytes)?;
-        Ok(cursor)
-    }
-
-    fn new_underlying_writer(
-        cursor: InMemoryWriteableCursor,
-        arrow_schema: Arc<ArrowSchema>,
-        writer_properties: WriterProperties,
-    ) -> Result<ArrowWriter<InMemoryWriteableCursor>, ParquetError> {
-        ArrowWriter::try_new(cursor, arrow_schema, Some(writer_properties))
-    }
-}
-
 impl DataWriter {
     /// Creates a DataWriter to write to the given table
     pub fn for_table(
@@ -605,6 +449,162 @@ impl DataWriter {
         .await?;
 
         Ok(version)
+    }
+}
+
+/// Writes messages to an underlying arrow buffer.
+pub(crate) struct DataArrowWriter {
+    arrow_schema: Arc<ArrowSchema>,
+    writer_properties: WriterProperties,
+    cursor: InMemoryWriteableCursor,
+    arrow_writer: ArrowWriter<InMemoryWriteableCursor>,
+    partition_values: HashMap<String, Option<String>>,
+    null_counts: NullCounts,
+    buffered_record_batch_count: usize,
+}
+
+impl DataArrowWriter {
+    /// Writes the given JSON buffer and updates internal state accordingly.
+    /// This method buffers the write stream internally so it can be invoked for many json buffers and flushed after the appropriate number of bytes has been written.
+    async fn write_values(
+        &mut self,
+        partition_columns: &[String],
+        arrow_schema: Arc<ArrowSchema>,
+        json_buffer: Vec<Value>,
+    ) -> Result<(), Box<DataWriterError>> {
+        let record_batch = record_batch_from_json(arrow_schema.clone(), json_buffer.as_slice())?;
+
+        if record_batch.schema() != arrow_schema {
+            return Err(Box::new(DataWriterError::SchemaMismatch {
+                record_batch_schema: record_batch.schema(),
+                expected_schema: arrow_schema,
+            }));
+        }
+
+        let result = self
+            .write_record_batch(partition_columns, record_batch)
+            .await;
+
+        match result {
+            Err(e) => match *e {
+                DataWriterError::Parquet { source } => {
+                    self.write_partial(partition_columns, arrow_schema, json_buffer, source)
+                        .await
+                }
+                _ => Err(e),
+            },
+            Ok(_) => result,
+        }
+    }
+
+    async fn write_partial(
+        &mut self,
+        partition_columns: &[String],
+        arrow_schema: Arc<ArrowSchema>,
+        json_buffer: Vec<Value>,
+        parquet_error: ParquetError,
+    ) -> Result<(), Box<DataWriterError>> {
+        warn!("Failed with parquet error while writing record batch. Attempting quarantine of bad records.");
+        let (good, bad) = quarantine_failed_parquet_rows(arrow_schema.clone(), json_buffer)?;
+        let record_batch = record_batch_from_json(arrow_schema, good.as_slice())?;
+        self.write_record_batch(partition_columns, record_batch)
+            .await?;
+        info!(
+            "Wrote {} good records to record batch and quarantined {} bad records.",
+            good.len(),
+            bad.len()
+        );
+        Err(Box::new(DataWriterError::PartialParquetWrite {
+            skipped_values: bad,
+            sample_error: parquet_error,
+        }))
+    }
+
+    /// Writes the record batch in-memory and updates internal state accordingly.
+    /// This method buffers the write stream internally so it can be invoked for many record batches and flushed after the appropriate number of bytes has been written.
+    async fn write_record_batch(
+        &mut self,
+        partition_columns: &[String],
+        record_batch: RecordBatch,
+    ) -> Result<(), Box<DataWriterError>> {
+        if self.partition_values.is_empty() {
+            let partition_values = extract_partition_values(partition_columns, &record_batch)?;
+            self.partition_values = partition_values;
+        }
+
+        // Copy current cursor bytes so we can recover from failures
+        let current_cursor_bytes = self.cursor.data();
+
+        let result = self.arrow_writer.write(&record_batch);
+        self.arrow_writer.flush()?;
+
+        match result {
+            Ok(_) => {
+                self.buffered_record_batch_count += 1;
+
+                apply_null_counts(
+                    partition_columns,
+                    &record_batch.into(),
+                    &mut self.null_counts,
+                    0,
+                );
+                Ok(())
+            }
+            // If a write fails we need to reset the state of the DeltaArrowWriter
+            Err(e) => {
+                let new_cursor = Self::cursor_from_bytes(current_cursor_bytes.as_slice())?;
+                let _ = std::mem::replace(&mut self.cursor, new_cursor.clone());
+                let arrow_writer = Self::new_underlying_writer(
+                    new_cursor,
+                    self.arrow_schema.clone(),
+                    self.writer_properties.clone(),
+                )?;
+                let _ = std::mem::replace(&mut self.arrow_writer, arrow_writer);
+                self.partition_values.clear();
+
+                Err(e.into())
+            }
+        }
+    }
+
+    fn new(
+        arrow_schema: Arc<ArrowSchema>,
+        writer_properties: WriterProperties,
+    ) -> Result<Self, ParquetError> {
+        let cursor = InMemoryWriteableCursor::default();
+        let arrow_writer = Self::new_underlying_writer(
+            cursor.clone(),
+            arrow_schema.clone(),
+            writer_properties.clone(),
+        )?;
+
+        let partition_values = HashMap::new();
+        let null_counts = NullCounts::new();
+        let buffered_record_batch_count = 0;
+
+        Ok(Self {
+            arrow_schema,
+            writer_properties,
+            cursor,
+            arrow_writer,
+            partition_values,
+            null_counts,
+            buffered_record_batch_count,
+        })
+    }
+
+    fn cursor_from_bytes(bytes: &[u8]) -> Result<InMemoryWriteableCursor, std::io::Error> {
+        let mut cursor = InMemoryWriteableCursor::default();
+        cursor.write_all(bytes)?;
+        Ok(cursor)
+    }
+
+    fn new_underlying_writer(
+        cursor: InMemoryWriteableCursor,
+        arrow_schema: Arc<ArrowSchema>,
+        writer_properties: WriterProperties,
+    ) -> Result<ArrowWriter<InMemoryWriteableCursor>, ParquetError> {
+        ArrowWriter::try_new(cursor, arrow_schema, Some(writer_properties))
     }
 }
 
