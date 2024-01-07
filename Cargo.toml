@@ -7,7 +7,6 @@ edition = "2018"
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
-apache-avro = "^0.14"
 base64 = "0.13"
 bytes = "1"
 chrono = "0.4.31"
@@ -20,7 +19,6 @@ lazy_static = "1"
 log = "0"
 maplit = "1"
 rdkafka = { version = "0.28", features = ["ssl-vendored"] }
-schema_registry_converter = { version = "3.1.0", features = ["easy", "json", "avro"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 strum = "0.20"
@@ -46,13 +44,21 @@ rusoto_s3 = { version = "0.47", default-features = false, features = ["rustls"],
 # sentry
 sentry = { version = "0.23.0", optional = true }
 
+# avro
+apache-avro = { version =  "^0.14", optional = true }
+schema_registry_converter = { version = "3.1.0", optional = true, features = ["easy", "json", "avro"] }
+
 # azure feature enabled, mostly used for tests
 azure_core = { version = "0.18.0", optional = true }
 azure_storage = { version = "0.18.0", optional = true }
 azure_storage_blobs = { version = "0.18.0", optional = true }
 
 [features]
-default = []
+default = ["avro"]
+avro = [
+    "apache-avro",
+    "schema_registry_converter",
+]
 sentry-ext = ["sentry"]
 dynamic-linking = [ "rdkafka/dynamic-linking" ]
 azure = [
