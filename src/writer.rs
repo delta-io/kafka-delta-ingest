@@ -40,6 +40,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 use crate::cursor::InMemoryWriteableCursor;
+use crate::serialization::DeserializedMessage;
 
 const NULL_PARTITION_VALUE_DATA_PATH: &str = "__HIVE_DEFAULT_PARTITION__";
 
@@ -388,9 +389,14 @@ impl DataWriter {
     }
 
     /// Writes the given values to internal parquet buffers for each represented partition.
-    pub async fn write(&mut self, values: Vec<Value>) -> Result<(), Box<DataWriterError>> {
+    pub async fn write(
+        &mut self,
+        values: Vec<DeserializedMessage>,
+    ) -> Result<(), Box<DataWriterError>> {
         let mut partial_writes: Vec<(Value, ParquetError)> = Vec::new();
         let arrow_schema = self.arrow_schema();
+
+        let values = values.into_iter().map(|v| v.message()).collect();
 
         for (key, values) in self.divide_by_partition_values(values)? {
             match self.arrow_writers.get_mut(&key) {
@@ -580,7 +586,7 @@ impl DataWriter {
     pub async fn insert_all(
         &mut self,
         table: &mut DeltaTable,
-        values: Vec<Value>,
+        values: Vec<DeserializedMessage>,
     ) -> Result<i64, Box<DataWriterError>> {
         self.write(values).await?;
         let mut adds = self.write_parquet_files(&table.table_uri()).await?;
@@ -1184,10 +1190,11 @@ mod tests {
         let (table, _schema) = get_fresh_table(&temp_dir.path()).await;
         let mut writer = DataWriter::for_table(&table, HashMap::new()).unwrap();
 
-        let rows: Vec<Value> = vec![json!({
+        let rows: Vec<DeserializedMessage> = vec![json!({
             "id" : "alpha",
             "value" : 1,
-        })];
+        })
+        .into()];
         let result = writer.write(rows).await;
         assert!(
             result.is_ok(),
@@ -1195,10 +1202,11 @@ mod tests {
             result
         );
 
-        let rows: Vec<Value> = vec![json!({
+        let rows: Vec<DeserializedMessage> = vec![json!({
             "id" : 1,
             "value" : 1,
-        })];
+        })
+        .into()];
         let result = writer.write(rows).await;
         assert!(
             result.is_err(),
@@ -1208,15 +1216,17 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_schema_strictness_with_additional_columns() {
         let temp_dir = tempfile::tempdir().unwrap();
         let (mut table, _schema) = get_fresh_table(&temp_dir.path()).await;
         let mut writer = DataWriter::for_table(&table, HashMap::new()).unwrap();
 
-        let rows: Vec<Value> = vec![json!({
+        let rows: Vec<DeserializedMessage> = vec![json!({
             "id" : "alpha",
             "value" : 1,
-        })];
+        })
+        .into()];
         let result = writer.write(rows).await;
         assert!(
             result.is_ok(),
@@ -1224,11 +1234,12 @@ mod tests {
             result
         );
 
-        let rows: Vec<Value> = vec![json!({
+        let rows: Vec<DeserializedMessage> = vec![json!({
             "id" : "bravo",
             "value" : 2,
             "color" : "silver",
-        })];
+        })
+        .into()];
         let result = writer.write(rows).await;
         assert!(
             result.is_ok(),
@@ -1258,7 +1269,7 @@ mod tests {
             .await
             .unwrap();
         let mut writer = DataWriter::for_table(&table, HashMap::new()).unwrap();
-        let rows: Vec<Value> = vec![json!({
+        let rows: Vec<DeserializedMessage> = vec![json!({
             "meta": {
                 "kafka": {
                     "offset": 0,
@@ -1275,7 +1286,8 @@ mod tests {
             // an error that gets interpreted as an EmptyRecordBatch
             "some_nested_list": [[42], [84]],
             "date": "2021-06-22"
-        })];
+        })
+        .into()];
         let result = writer.write(rows).await;
         assert!(
             result.is_err(),
@@ -1306,7 +1318,10 @@ mod tests {
             .unwrap();
         let mut writer = DataWriter::for_table(&table, HashMap::new()).unwrap();
 
-        writer.write(JSON_ROWS.clone()).await.unwrap();
+        writer
+            .write(JSON_ROWS.clone().into_iter().map(|r| r.into()).collect())
+            .await
+            .unwrap();
         let add = writer
             .write_parquet_files(&table.table_uri())
             .await

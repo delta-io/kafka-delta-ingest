@@ -3,6 +3,7 @@ mod helpers;
 
 use deltalake_core::kernel::{Action, Add};
 use deltalake_core::protocol::{DeltaOperation, SaveMode};
+use kafka_delta_ingest::serialization::DeserializedMessage;
 use kafka_delta_ingest::writer::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -122,10 +123,10 @@ async fn test_delta_partitions() {
     std::fs::remove_dir_all(&table_path).unwrap();
 }
 
-fn msgs_to_values(values: Vec<TestMsg>) -> Vec<Value> {
+fn msgs_to_values(values: Vec<TestMsg>) -> Vec<DeserializedMessage> {
     values
         .iter()
-        .map(|j| serde_json::to_value(j).unwrap())
+        .map(|j| serde_json::to_value(j).unwrap().into())
         .collect()
 }
 

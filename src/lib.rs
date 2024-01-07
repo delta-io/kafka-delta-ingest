@@ -45,7 +45,8 @@ mod dead_letters;
 mod delta_helpers;
 mod metrics;
 mod offsets;
-mod serialization;
+#[allow(missing_docs)]
+pub mod serialization;
 mod transforms;
 mod value_buffers;
 /// Doc
@@ -56,6 +57,7 @@ use crate::value_buffers::{ConsumedBuffers, ValueBuffers};
 use crate::{
     dead_letters::*,
     metrics::*,
+    serialization::*,
     transforms::*,
     writer::{DataWriter, DataWriterError},
 };
@@ -207,8 +209,9 @@ pub enum IngestError {
 }
 
 /// Formats for message parsing
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub enum MessageFormat {
+    #[default]
     /// Parses messages as json and uses the inferred schema
     DefaultJson,
 
@@ -733,7 +736,7 @@ struct IngestProcessor {
     coercion_tree: CoercionTree,
     table: DeltaTable,
     delta_writer: DataWriter,
-    value_buffers: ValueBuffers,
+    value_buffers: ValueBuffers<DeserializedMessage>,
     delta_partition_offsets: HashMap<DataTypePartition, Option<DataTypeOffset>>,
     latency_timer: Instant,
     dlq: Box<dyn DeadLetterQueue>,
@@ -864,7 +867,7 @@ impl IngestProcessor {
     async fn deserialize_message<M>(
         &mut self,
         msg: &M,
-    ) -> Result<Value, MessageDeserializationError>
+    ) -> Result<DeserializedMessage, MessageDeserializationError>
     where
         M: Message + Send + Sync,
     {

@@ -8,12 +8,53 @@ use serde_json::Value;
 
 use crate::{dead_letters::DeadLetter, MessageDeserializationError, MessageFormat};
 
+use deltalake_core::arrow::datatypes::Schema as ArrowSchema;
+
+/// Structure which contains the [serde_json::Value] and the inferred schema of the message
+///
+/// The [ArrowSchema] helps with schema evolution
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DeserializedMessage {
+    message: Value,
+    schema: Option<ArrowSchema>,
+}
+
+impl DeserializedMessage {
+    pub fn schema(&self) -> &Option<ArrowSchema> {
+        &self.schema
+    }
+    pub fn message(self) -> Value {
+        self.message
+    }
+    pub fn get(&self, key: &str) -> Option<&Value> {
+        self.message.get(key)
+    }
+    pub fn as_object_mut(&mut self) -> Option<&mut serde_json::Map<String, Value>> {
+        self.message.as_object_mut()
+    }
+}
+
+/// Allow for `.into()` on [Value] for ease of use
+impl From<Value> for DeserializedMessage {
+    fn from(message: Value) -> Self {
+        // XXX: This seems wasteful, this function should go away, and the deserializers should
+        // infer straight from the buffer stream
+        let iter = vec![message.clone()].into_iter().map(|v| Ok(v));
+        let schema =
+            match deltalake_core::arrow::json::reader::infer_json_schema_from_iterator(iter) {
+                Ok(schema) => Some(schema),
+                _ => None,
+            };
+        Self { message, schema }
+    }
+}
+
 #[async_trait]
 pub(crate) trait MessageDeserializer {
     async fn deserialize(
         &mut self,
         message_bytes: &[u8],
-    ) -> Result<Value, MessageDeserializationError>;
+    ) -> Result<DeserializedMessage, MessageDeserializationError>;
 }
 
 pub(crate) struct MessageDeserializerFactory {}
@@ -80,11 +121,15 @@ impl MessageDeserializerFactory {
     }
 }
 
+#[derive(Clone, Debug, Default)]
 struct DefaultDeserializer {}
 
 #[async_trait]
 impl MessageDeserializer for DefaultDeserializer {
-    async fn deserialize(&mut self, payload: &[u8]) -> Result<Value, MessageDeserializationError> {
+    async fn deserialize(
+        &mut self,
+        payload: &[u8],
+    ) -> Result<DeserializedMessage, MessageDeserializationError> {
         let value: Value = match serde_json::from_slice(payload) {
             Ok(v) => v,
             Err(e) => {
@@ -94,7 +139,41 @@ impl MessageDeserializer for DefaultDeserializer {
             }
         };
 
-        Ok(value)
+        Ok(value.into())
+    }
+}
+
+#[cfg(test)]
+mod default_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn deserialize_with_schema() {
+        let mut deser = DefaultDeserializer::default();
+        let message = deser
+            .deserialize(r#"{"hello" : "world"}"#.as_bytes())
+            .await
+            .expect("Failed to deserialize trivial JSON");
+        assert!(
+            message.schema().is_some(),
+            "The DeserializedMessage doesn't have a schema!"
+        );
+    }
+
+    #[tokio::test]
+    async fn deserialize_simple_json() {
+        #[derive(serde::Deserialize)]
+        struct HW {
+            hello: String,
+        }
+
+        let mut deser = DefaultDeserializer::default();
+        let message = deser
+            .deserialize(r#"{"hello" : "world"}"#.as_bytes())
+            .await
+            .expect("Failed to deserialize trivial JSON");
+        let value: HW = serde_json::from_value(message.message).expect("Failed to coerce");
+        assert_eq!("world", value.hello);
     }
 }
 
@@ -116,11 +195,11 @@ impl MessageDeserializer for AvroDeserializer {
     async fn deserialize(
         &mut self,
         message_bytes: &[u8],
-    ) -> Result<Value, MessageDeserializationError> {
+    ) -> Result<DeserializedMessage, MessageDeserializationError> {
         match self.decoder.decode_with_schema(Some(message_bytes)).await {
             Ok(drs) => match drs {
                 Some(v) => match Value::try_from(v.value) {
-                    Ok(v) => Ok(v),
+                    Ok(v) => Ok(v.into()),
                     Err(e) => Err(MessageDeserializationError::AvroDeserialization {
                         dead_letter: DeadLetter::from_failed_deserialization(
                             message_bytes,
@@ -147,7 +226,7 @@ impl MessageDeserializer for AvroSchemaDeserializer {
     async fn deserialize(
         &mut self,
         message_bytes: &[u8],
-    ) -> Result<Value, MessageDeserializationError> {
+    ) -> Result<DeserializedMessage, MessageDeserializationError> {
         let reader_result = match &self.schema {
             None => apache_avro::Reader::new(Cursor::new(message_bytes)),
             Some(schema) => apache_avro::Reader::with_schema(schema, Cursor::new(message_bytes)),
@@ -162,7 +241,7 @@ impl MessageDeserializer for AvroSchemaDeserializer {
                     };
 
                     return match v {
-                        Ok(value) => Ok(value),
+                        Ok(value) => Ok(value.into()),
                         Err(e) => Err(MessageDeserializationError::AvroDeserialization {
                             dead_letter: DeadLetter::from_failed_deserialization(
                                 message_bytes,
@@ -221,11 +300,11 @@ impl MessageDeserializer for JsonDeserializer {
     async fn deserialize(
         &mut self,
         message_bytes: &[u8],
-    ) -> Result<Value, MessageDeserializationError> {
+    ) -> Result<DeserializedMessage, MessageDeserializationError> {
         let decoder = self.decoder.borrow_mut();
         match decoder.decode(Some(message_bytes)).await {
             Ok(drs) => match drs {
-                Some(v) => Ok(v.value),
+                Some(v) => Ok(v.value.into()),
                 None => return Err(MessageDeserializationError::EmptyPayload),
             },
             Err(e) => {
