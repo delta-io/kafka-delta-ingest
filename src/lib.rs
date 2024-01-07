@@ -718,6 +718,7 @@ enum MessageDeserializationError {
     EmptyPayload,
     #[error("Kafka message deserialization failed")]
     JsonDeserialization { dead_letter: DeadLetter },
+    #[cfg(feature = "avro")]
     #[error("Kafka message deserialization failed")]
     AvroDeserialization { dead_letter: DeadLetter },
 }
@@ -845,10 +846,18 @@ impl IngestProcessor {
                     partition, offset
                 );
             }
-            Err(
-                MessageDeserializationError::JsonDeserialization { dead_letter }
-                | MessageDeserializationError::AvroDeserialization { dead_letter },
-            ) => {
+            Err(MessageDeserializationError::JsonDeserialization { dead_letter }) => {
+                warn!(
+                    "Deserialization failed - partition {}, offset {}, dead_letter {}",
+                    partition,
+                    offset,
+                    dead_letter.error.as_ref().unwrap_or(&String::from("_")),
+                );
+                self.ingest_metrics.message_deserialization_failed();
+                self.dlq.write_dead_letter(dead_letter).await?;
+            }
+            #[cfg(feature = "avro")]
+            Err(MessageDeserializationError::AvroDeserialization { dead_letter }) => {
                 warn!(
                     "Deserialization failed - partition {}, offset {}, dead_letter {}",
                     partition,

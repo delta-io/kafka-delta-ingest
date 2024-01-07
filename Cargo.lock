@@ -1781,6 +1781,7 @@ dependencies = [
  "rdkafka",
  "rusoto_core",
  "rusoto_credential",
+ "rusoto_s3",
  "schema_registry_converter",
  "sentry",
  "serde",
@@ -2879,6 +2880,19 @@ dependencies = [
  "rusoto_core",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "rusoto_s3"
+version = "0.47.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "048c2fe811a823ad5a9acc976e8bf4f1d910df719dcf44b15c3e96c5b7a51027"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "futures",
+ "rusoto_core",
+ "xml-rs",
 ]
 
 [[package]]
