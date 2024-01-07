@@ -130,6 +130,7 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or(HashMap::new());
 
             let write_checkpoints = ingest_matches.get_flag("checkpoints");
+            let schema_evolution = ingest_matches.get_flag("schema_evolution");
 
             let additional_kafka_settings = ingest_matches
                 .get_many::<String>("kafka_setting")
@@ -158,6 +159,7 @@ async fn main() -> anyhow::Result<()> {
                 dlq_table_uri: dlq_table_location,
                 dlq_transforms,
                 write_checkpoints,
+                schema_evolution,
                 additional_kafka_settings,
                 statsd_endpoint,
                 input_format: format,
@@ -345,6 +347,10 @@ fn build_app() -> Command {
                                  .help(r#"The default offset reset policy, which is either 'earliest' or 'latest'.
 The configuration is applied when offsets are not found in delta table or not specified with 'seek_offsets'. This also overrides the kafka consumer's 'auto.offset.reset' config."#)
                                  .default_value("earliest"))
+                            .arg(Arg::new("schema_evolution")
+                                .short('S')
+                                .action(ArgAction::SetTrue)
+                                .help("Enable schema evolution of the Delta table based on message content"))
                             .arg(Arg::new("allowed_latency")
                                  .short('l')
                                  .long("allowed_latency")
@@ -434,7 +440,7 @@ This can be used to provide TLS configuration as in:
                                 .required(false)
                                 .num_args(0)
                                 .action(ArgAction::SetTrue)
-                                .help(""))
+                                .help("Exit kafka-delta-ingest when the latest offset has been reached"))
                         )
                 .arg_required_else_help(true)
 }

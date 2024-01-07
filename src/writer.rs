@@ -30,9 +30,9 @@ use deltalake_core::{
     table::DeltaTableMetaData,
     DeltaTable, DeltaTableError, ObjectStoreError,
 };
-use log::{error, info, warn};
+use log::*;
 use serde_json::{Number, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::io::Write;
 use std::sync::Arc;
@@ -171,20 +171,50 @@ impl From<DeltaTableError> for Box<DataWriterError> {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+/// Strongly typed set of options for the ]DataWriter]
+pub struct DataWriterOptions {
+    /// Set to true when the writer should perform schema evolution on writes
+    ///
+    /// This defaults to fauls
+    pub schema_evolution: bool,
+}
+
+#[cfg(test)]
+mod datawriteroptions_tests {
+    use super::*;
+
+    #[test]
+    fn test_default() {
+        let d = DataWriterOptions::default();
+        assert_eq!(false, d.schema_evolution);
+    }
+
+    #[test]
+    fn test_schema_evolution() {
+        let d = DataWriterOptions {
+            schema_evolution: true,
+        };
+        assert_eq!(true, d.schema_evolution);
+    }
+}
+
 /// Writes messages to a delta lake table.
 pub struct DataWriter {
     storage: ObjectStoreRef,
+    options: DataWriterOptions,
     arrow_schema_ref: Arc<ArrowSchema>,
+    original_arrow_schema_ref: Arc<ArrowSchema>,
     writer_properties: WriterProperties,
     partition_columns: Vec<String>,
     arrow_writers: HashMap<String, DataArrowWriter>,
 }
 
 impl DataWriter {
-    /// Creates a DataWriter to write to the given table
-    pub fn for_table(
+    /// Create a DataWriter with the given options
+    pub fn with_options(
         table: &DeltaTable,
-        _options: HashMap<String, String>, // XXX: figure out if this is necessary
+        options: DataWriterOptions,
     ) -> Result<DataWriter, Box<DataWriterError>> {
         let storage = table.object_store();
 
@@ -202,11 +232,29 @@ impl DataWriter {
 
         Ok(Self {
             storage,
+            original_arrow_schema_ref: arrow_schema_ref.clone(),
             arrow_schema_ref,
             writer_properties,
             partition_columns,
             arrow_writers: HashMap::new(),
+            options,
         })
+    }
+
+    /// Creates a DataWriter to write to the given table
+    pub fn for_table(
+        table: &DeltaTable,
+        options: HashMap<String, String>,
+    ) -> Result<DataWriter, Box<DataWriterError>> {
+        if !options.is_empty() {
+            warn!("DataWriter is being given options which are no longer used");
+        }
+        DataWriter::with_options(table, DataWriterOptions::default())
+    }
+
+    /// Returns true if the schema has deviated since this [DataWriter] was first created
+    pub fn has_schema_changed(&self) -> bool {
+        self.original_arrow_schema_ref != self.arrow_schema_ref
     }
 
     /// Retrieves the latest schema from table, compares to the current and updates if changed.
@@ -239,6 +287,44 @@ impl DataWriter {
     ) -> Result<(), Box<DataWriterError>> {
         let mut partial_writes: Vec<(Value, ParquetError)> = Vec::new();
         let arrow_schema = self.arrow_schema();
+
+        if self.options.schema_evolution {
+            let existing_cols: HashSet<String> = arrow_schema
+                .fields()
+                .iter()
+                .filter(|f| f.is_nullable())
+                .map(|f| f.name().to_string())
+                .collect();
+
+            for v in values.iter() {
+                if let Some(schema) = v.schema() {
+                    if schema != arrow_schema.as_ref() {
+                        let new_cols: HashSet<String> = schema
+                            .fields()
+                            .iter()
+                            .map(|f| f.name().to_string())
+                            .collect();
+
+                        if existing_cols != new_cols {
+                            debug!("The schemas do look different between th DataWriter and the message, considering schema evolution");
+                            for c in new_cols.difference(&existing_cols) {
+                                debug!("Adding a new column to the schema of DataWriter: {c}");
+                                let field = schema
+                                    .field_with_name(c)
+                                    .expect("Failed to get the field by name");
+
+                                let merged = ArrowSchema::try_merge(vec![
+                                    arrow_schema.as_ref().clone(),
+                                    ArrowSchema::new(vec![field.clone()]),
+                                ])?;
+
+                                self.arrow_schema_ref = Arc::new(merged);
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         let values = values.into_iter().map(|v| v.message()).collect();
 
@@ -475,6 +561,7 @@ impl DataArrowWriter {
         let record_batch = record_batch_from_json(arrow_schema.clone(), json_buffer.as_slice())?;
 
         if record_batch.schema() != arrow_schema {
+            error!("Schema mismatched on the write in DataArrowWriter");
             return Err(Box::new(DataWriterError::SchemaMismatch {
                 record_batch_schema: record_batch.schema(),
                 expected_schema: arrow_schema,
@@ -1216,11 +1303,16 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore]
     async fn test_schema_strictness_with_additional_columns() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let (mut table, _schema) = get_fresh_table(&temp_dir.path()).await;
-        let mut writer = DataWriter::for_table(&table, HashMap::new()).unwrap();
+        let (table, _schema) = get_fresh_table(&temp_dir.path()).await;
+        let mut writer = DataWriter::with_options(
+            &table,
+            DataWriterOptions {
+                schema_evolution: true,
+            },
+        )
+        .unwrap();
 
         let rows: Vec<DeserializedMessage> = vec![json!({
             "id" : "alpha",
@@ -1247,9 +1339,9 @@ mod tests {
             result
         );
 
-        // Reload the table to look at it
-        table.load().await.unwrap();
-        let new_schema = table.schema().unwrap();
+        assert_eq!(true, writer.has_schema_changed());
+
+        let new_schema = writer.arrow_schema_ref;
         let columns: Vec<String> = new_schema
             .fields()
             .iter()

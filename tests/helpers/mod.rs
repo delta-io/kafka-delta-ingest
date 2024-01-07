@@ -140,7 +140,7 @@ pub async fn read_files_from_store(table: &DeltaTable) -> Vec<i32> {
         }
     }
 
-    std::fs::remove_file(tmp).unwrap();
+    std::fs::remove_file(tmp.clone()).expect(&format!("Failed to remove {tmp:?}"));
 
     list.sort();
     list
@@ -339,9 +339,11 @@ pub fn init_logger() {
                 record.args(),
             )
         })
-        // .filter(Some("dipstick"), log::LevelFilter::Info)
-        // .filter(Some("rusoto_core"), log::LevelFilter::Info)
-        // .filter(Some("deltalake"), log::LevelFilter::Info)
+        .filter(Some("dipstick"), log::LevelFilter::Info)
+        .filter(Some("rusoto_core"), log::LevelFilter::Info)
+        .filter(Some("reqwest"), log::LevelFilter::Info)
+        .filter(Some("hyper"), log::LevelFilter::Info)
+        .filter(Some("deltalake"), log::LevelFilter::Info)
         .filter(None, log::LevelFilter::Info)
         .try_init();
 }
@@ -603,7 +605,7 @@ impl TestScope {
         })
     }
 
-    pub async fn send_messages(&self, amount: i32) {
+    pub async fn send_messages(&self, amount: i32) -> FutureProducer {
         let producer = create_producer();
         let now: DateTime<Utc> = Utc::now();
 
@@ -618,6 +620,7 @@ impl TestScope {
             send_json(&producer, &self.topic, json).await;
         }
         println!("All messages are sent");
+        producer
     }
 
     pub async fn wait_on_total_offset(&self, apps: Vec<String>, offset: i32) {
@@ -645,16 +648,22 @@ impl TestScope {
         }
     }
 
-    pub async fn validate_data(&self) {
-        let table = deltalake_core::open_table(&self.table).await.unwrap();
+    pub async fn validate_data_amount(&self, amount: i32) {
+        let table = deltalake_core::open_table(&self.table)
+            .await
+            .expect("Failed to open table");
         let result = read_files_from_store(&table).await;
-        let r: Vec<i32> = (0..TEST_TOTAL_MESSAGES).collect();
-        println!("Got messages {}/{}", result.len(), TEST_TOTAL_MESSAGES);
+        let r: Vec<i32> = (0..amount).collect();
+        println!("Got messages {}/{}", result.len(), amount);
 
-        if result.len() != TEST_TOTAL_MESSAGES as usize {
+        if result.len() != amount as usize {
             inspect_table(&self.table).await;
         }
 
         assert_eq!(result, r);
+    }
+
+    pub async fn validate_data(&self) {
+        self.validate_data_amount(TEST_TOTAL_MESSAGES).await;
     }
 }

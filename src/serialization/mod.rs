@@ -64,41 +64,51 @@ pub(crate) struct MessageDeserializerFactory {}
 impl MessageDeserializerFactory {
     pub fn try_build(
         input_format: &MessageFormat,
+        schema_evolution: bool,
     ) -> Result<Box<dyn MessageDeserializer + Send>, anyhow::Error> {
         match input_format {
             #[cfg(feature = "avro")]
             MessageFormat::Json(data) => match data {
-                crate::SchemaSource::None => Ok(Self::json_default()),
+                crate::SchemaSource::None => Ok(Self::json_default(schema_evolution)),
                 crate::SchemaSource::SchemaRegistry(sr) => {
+                    if schema_evolution {
+                        warn!("Schema evolution is not currently implemented for Avro enabled topics!");
+                    }
                     match Self::build_sr_settings(sr).map(JsonDeserializer::from_schema_registry) {
                         Ok(s) => Ok(Box::new(s)),
                         Err(e) => Err(e),
                     }
                 }
-                crate::SchemaSource::File(_) => Ok(Self::json_default()),
+                crate::SchemaSource::File(_) => Ok(Self::json_default(schema_evolution)),
             },
             #[cfg(feature = "avro")]
             MessageFormat::Avro(data) => match data {
                 crate::SchemaSource::None => Ok(Box::<AvroSchemaDeserializer>::default()),
                 crate::SchemaSource::SchemaRegistry(sr) => {
+                    if schema_evolution {
+                        warn!("Schema evolution is not currently implemented for Avro enabled topics!");
+                    }
                     match Self::build_sr_settings(sr).map(AvroDeserializer::from_schema_registry) {
                         Ok(s) => Ok(Box::new(s)),
                         Err(e) => Err(e),
                     }
                 }
                 crate::SchemaSource::File(f) => {
+                    if schema_evolution {
+                        warn!("Schema evolution is not currently implemented for Avro enabled topics!");
+                    }
                     match AvroSchemaDeserializer::try_from_schema_file(f) {
                         Ok(s) => Ok(Box::new(s)),
                         Err(e) => Err(e),
                     }
                 }
             },
-            _ => Ok(Self::json_default()),
+            _ => Ok(Self::json_default(schema_evolution)),
         }
     }
 
-    fn json_default() -> Box<dyn MessageDeserializer + Send> {
-        Box::new(DefaultDeserializer {})
+    fn json_default(schema_evolution: bool) -> Box<dyn MessageDeserializer + Send> {
+        Box::new(DefaultDeserializer { schema_evolution })
     }
 
     #[cfg(feature = "avro")]
@@ -127,8 +137,21 @@ impl MessageDeserializerFactory {
     }
 }
 
+#[allow(unused)]
 #[derive(Clone, Debug, Default)]
-struct DefaultDeserializer {}
+struct DefaultDeserializer {
+    /// Whether the serializer can support schema evolution or not
+    schema_evolution: bool,
+}
+
+#[allow(unused)]
+impl DefaultDeserializer {
+    // TODO: This would be good to move into the trait itself
+    /// Return true if the serializer provides schemas to enable schema evolution
+    pub fn can_evolve_schema(&self) -> bool {
+        self.schema_evolution
+    }
+}
 
 #[async_trait]
 impl MessageDeserializer for DefaultDeserializer {
@@ -152,6 +175,11 @@ impl MessageDeserializer for DefaultDeserializer {
 #[cfg(test)]
 mod default_tests {
     use super::*;
+    #[test]
+    fn deserializer_default_evolution() {
+        let deser = DefaultDeserializer::default();
+        assert_eq!(false, deser.can_evolve_schema());
+    }
 
     #[tokio::test]
     async fn deserialize_with_schema() {

@@ -59,7 +59,7 @@ use crate::{
     metrics::*,
     serialization::*,
     transforms::*,
-    writer::{DataWriter, DataWriterError},
+    writer::{DataWriter, DataWriterError, DataWriterOptions},
 };
 use delta_helpers::*;
 use rdkafka::message::BorrowedMessage;
@@ -296,6 +296,8 @@ pub struct IngestOptions {
     pub input_format: MessageFormat,
     /// Terminates when initial offsets are reached
     pub end_at_last_offsets: bool,
+    /// Enable schema evolution based on message contents
+    pub schema_evolution: bool,
 }
 
 impl Default for IngestOptions {
@@ -317,6 +319,7 @@ impl Default for IngestOptions {
             statsd_endpoint: "localhost:8125".to_string(),
             input_format: MessageFormat::DefaultJson,
             end_at_last_offsets: false,
+            schema_evolution: false,
         }
     }
 }
@@ -359,6 +362,10 @@ pub async fn start_ingest(
     } else {
         None
     };
+
+    if opts.schema_evolution {
+        warn!("Schema evolution has been enabled, kafka-delta-ingest will automatically extend the Delta schema based on message contents");
+    }
 
     // Initialize metrics
     let ingest_metrics = IngestMetrics::new(opts.statsd_endpoint.as_str())?;
@@ -489,6 +496,7 @@ pub async fn start_ingest(
             let timer = Instant::now();
             match ingest_processor.complete_file(&partition_assignment).await {
                 Err(IngestError::ConflictingOffsets) | Err(IngestError::DeltaSchemaChanged) => {
+                    warn!("kafka-delta-ingest detected a schema change! resetting state and trying again");
                     ingest_processor.reset_state(&mut partition_assignment)?;
                     continue;
                 }
@@ -759,8 +767,16 @@ impl IngestProcessor {
         let transformer = Transformer::from_transforms(&opts.transforms)?;
         let table = delta_helpers::load_table(table_uri, HashMap::new()).await?;
         let coercion_tree = coercions::create_coercion_tree(table.schema().unwrap());
-        let delta_writer = DataWriter::for_table(&table, HashMap::new())?;
-        let deserializer = match MessageDeserializerFactory::try_build(&opts.input_format) {
+        let delta_writer = DataWriter::with_options(
+            &table,
+            DataWriterOptions {
+                schema_evolution: opts.schema_evolution,
+            },
+        )?;
+        let deserializer = match MessageDeserializerFactory::try_build(
+            &opts.input_format,
+            opts.schema_evolution,
+        ) {
             Ok(deserializer) => deserializer,
             Err(e) => return Err(IngestError::UnableToCreateDeserializer { source: e }),
         };
@@ -957,21 +973,79 @@ impl IngestProcessor {
             return Err(IngestError::ConflictingOffsets);
         }
 
-        if self
-            .delta_writer
-            .update_schema(self.table.state.delta_metadata().unwrap())?
-        {
-            info!("Table schema has been updated");
-            // Update the coercion tree to reflect the new schema
-            let coercion_tree = coercions::create_coercion_tree(self.table.schema().unwrap());
-            let _ = std::mem::replace(&mut self.coercion_tree, coercion_tree);
+        let mut attempt_number: u32 = 0;
+        let mut actions = build_actions(&partition_offsets, self.opts.app_id.as_str(), add);
+        let table_schema = self.table.state.delta_metadata().unwrap();
 
-            return Err(IngestError::DeltaSchemaChanged);
+        // If schema evolution is enabled and then kafka-delta-ingest must ensure that the new
+        // `table_schema` is compatible with the evolved schema in the writer
+        if self.opts.schema_evolution && self.delta_writer.has_schema_changed() {
+            use deltalake_core::arrow::datatypes::Schema as ArrowSchema;
+            use deltalake_core::kernel::Schema;
+            use std::convert::TryFrom;
+            let arrow_schema: ArrowSchema =
+                <ArrowSchema as TryFrom<&Schema>>::try_from(&table_schema.schema)
+                    .expect("Failed to convert arrow schema somehow");
+            let merged_schema = ArrowSchema::try_merge(vec![
+                arrow_schema,
+                self.delta_writer.arrow_schema().as_ref().clone(),
+            ]);
+
+            if let Ok(merged) = merged_schema {
+            } else {
+                if self
+                    .delta_writer
+                    .update_schema(self.table.state.delta_metadata().unwrap())?
+                {
+                    info!("Table schema has been updated");
+                    // Update the coercion tree to reflect the new schema
+                    let coercion_tree =
+                        coercions::create_coercion_tree(self.table.schema().unwrap());
+                    let _ = std::mem::replace(&mut self.coercion_tree, coercion_tree);
+
+                    return Err(IngestError::DeltaSchemaChanged);
+                }
+            }
+        } else {
+            if self
+                .delta_writer
+                .update_schema(self.table.state.delta_metadata().unwrap())?
+            {
+                info!("Table schema has been updated");
+                // Update the coercion tree to reflect the new schema
+                let coercion_tree = coercions::create_coercion_tree(self.table.schema().unwrap());
+                let _ = std::mem::replace(&mut self.coercion_tree, coercion_tree);
+
+                return Err(IngestError::DeltaSchemaChanged);
+            }
         }
 
         // Try to commit
-        let mut attempt_number: u32 = 0;
-        let actions = build_actions(&partition_offsets, self.opts.app_id.as_str(), add);
+        if self.opts.schema_evolution && self.delta_writer.has_schema_changed() {
+            info!("TRYING TO ADD METADATA");
+            use deltalake_core::kernel::*;
+            use std::convert::TryInto;
+            use uuid::Uuid;
+            let schema: StructType = self
+                .delta_writer
+                .arrow_schema()
+                .clone()
+                .try_into()
+                .expect("Failed to convert schema");
+            let schema_string: String = serde_json::to_string(&schema)?;
+            // TODO: Handle partition columns somehow? Can we even evolve partition columns? Maybe
+            // this should just propagate the existing columns in the new action
+            let part_cols: Vec<String> = vec![];
+            let metadata = Metadata::new(
+                Uuid::new_v4(),
+                Format::default(),
+                schema_string,
+                part_cols,
+                None,
+            );
+            info!("Wouldn't it be interesting to push: {metadata:?}");
+            actions.push(Action::Metadata(metadata));
+        }
         loop {
             let epoch_id = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
