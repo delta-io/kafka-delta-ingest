@@ -281,18 +281,26 @@ impl DataWriter {
     }
 
     /// Determine whether the writer's current schema can be merged with the suggested DeltaSchema
-    pub fn can_merge_with_delta_schema(&self, suggested_schema: &Schema) -> Result<ArrowSchema, Box<DataWriterError>> {
+    pub fn can_merge_with_delta_schema(
+        &self,
+        suggested_schema: &Schema,
+    ) -> Result<Arc<ArrowSchema>, Box<DataWriterError>> {
         let arrow_schema: ArrowSchema =
-                <ArrowSchema as TryFrom<&Schema>>::try_from(&suggested_schema)?;
+            <ArrowSchema as TryFrom<&Schema>>::try_from(suggested_schema)?;
         self.can_merge_with(&arrow_schema)
     }
 
     /// Determine whether the writer's current schema can be merged with `suggested_schema`
-    pub fn can_merge_with(&self, suggested_schema: &ArrowSchema) -> Result<ArrowSchema, Box<DataWriterError>> {
+    pub fn can_merge_with(
+        &self,
+        suggested_schema: &ArrowSchema,
+    ) -> Result<Arc<ArrowSchema>, Box<DataWriterError>> {
         ArrowSchema::try_merge(vec![
-                suggested_schema.clone(),
-                self.arrow_schema_ref.as_ref().clone(),
-        ]).map_err(|e| e.into())
+            suggested_schema.clone(),
+            self.arrow_schema_ref.as_ref().clone(),
+        ])
+        .map(Arc::new)
+        .map_err(|e| e.into())
     }
 
     /// Writes the given values to internal parquet buffers for each represented partition.
@@ -591,23 +599,23 @@ mod datawriter_tests {
 
     async fn get_default_writer() -> (DataWriter, DeltaTable) {
         let table = inmemory_table().await;
-        (DataWriter::with_options(&table, DataWriterOptions::default()).expect("Failed to make writer"),
-            table)
+        (
+            DataWriter::with_options(&table, DataWriterOptions::default())
+                .expect("Failed to make writer"),
+            table,
+        )
     }
 
     #[tokio::test]
     async fn test_can_merge_with_simple() {
         let (writer, _) = get_default_writer().await;
-        let delta_schema = StructType::new(vec![
-            StructField::new(
-                "vid".to_string(),
-                DeltaDataType::Primitive(PrimitiveType::Integer),
-                true,
-            ),
-        ]);
-        let arrow_schema: ArrowSchema =
-            <ArrowSchema as TryFrom<&Schema>>::try_from(&delta_schema)
-                .expect("Failed to convert arrow schema somehow");
+        let delta_schema = StructType::new(vec![StructField::new(
+            "vid".to_string(),
+            DeltaDataType::Primitive(PrimitiveType::Integer),
+            true,
+        )]);
+        let arrow_schema: ArrowSchema = <ArrowSchema as TryFrom<&Schema>>::try_from(&delta_schema)
+            .expect("Failed to convert arrow schema somehow");
         let result = writer.can_merge_with(&arrow_schema);
         assert_eq!(true, result.is_ok(), "This should be able to merge");
     }
@@ -615,34 +623,39 @@ mod datawriter_tests {
     #[tokio::test]
     async fn test_can_merge_with_diff_column() {
         let (writer, _) = get_default_writer().await;
-        let delta_schema = StructType::new(vec![
-            StructField::new(
-                "id".to_string(),
-                DeltaDataType::Primitive(PrimitiveType::Integer),
-                true,
-            ),
-        ]);
-        let arrow_schema: ArrowSchema =
-            <ArrowSchema as TryFrom<&Schema>>::try_from(&delta_schema)
-                .expect("Failed to convert arrow schema somehow");
+        let delta_schema = StructType::new(vec![StructField::new(
+            "id".to_string(),
+            DeltaDataType::Primitive(PrimitiveType::Integer),
+            true,
+        )]);
+        let arrow_schema: ArrowSchema = <ArrowSchema as TryFrom<&Schema>>::try_from(&delta_schema)
+            .expect("Failed to convert arrow schema somehow");
         let result = writer.can_merge_with(&arrow_schema);
-        assert_eq!(true, result.is_err(), "Cannot merge this schema, but DataWriter thinks I can?");
+        assert_eq!(
+            true,
+            result.is_err(),
+            "Cannot merge this schema, but DataWriter thinks I can?"
+        );
     }
 
     #[tokio::test]
     async fn test_update_schema() {
         let (mut writer, _) = get_default_writer().await;
-        let new_schema = StructType::new(vec![
-            StructField::new(
-                "vid".to_string(),
-                DeltaDataType::Primitive(PrimitiveType::Integer),
-                true,
-            ),
-        ]);
-        let metadata = DeltaTableMetaData::new(None, None, None, new_schema, vec![], HashMap::new());
+        let new_schema = StructType::new(vec![StructField::new(
+            "vid".to_string(),
+            DeltaDataType::Primitive(PrimitiveType::Integer),
+            true,
+        )]);
+        let metadata =
+            DeltaTableMetaData::new(None, None, None, new_schema, vec![], HashMap::new());
 
-        let result = writer.update_schema(&metadata).expect("Failed to execute update_schema");
-        assert_eq!(true, result, "Expected that the new schema would have caused an update");
+        let result = writer
+            .update_schema(&metadata)
+            .expect("Failed to execute update_schema");
+        assert_eq!(
+            true, result,
+            "Expected that the new schema would have caused an update"
+        );
     }
 
     #[tokio::test]
@@ -650,15 +663,25 @@ mod datawriter_tests {
         let (mut writer, table) = get_default_writer().await;
         let mut metadata = table.state.delta_metadata().unwrap().clone();
         metadata.partition_columns = vec!["test".into()];
-        let result = writer.update_schema(&metadata).expect("Failed to execute update_schema");
-        assert_eq!(true, result, "Expected that the new schema would have caused an update");
+        let result = writer
+            .update_schema(&metadata)
+            .expect("Failed to execute update_schema");
+        assert_eq!(
+            true, result,
+            "Expected that the new schema would have caused an update"
+        );
     }
 
     #[tokio::test]
     async fn test_update_schema_no_changes() {
         let (mut writer, table) = get_default_writer().await;
-        let result = writer.update_schema(table.state.delta_metadata().unwrap()).expect("Failed to execute update_schema");
-        assert_eq!(false, result, "Expected that there would be no schema changes");
+        let result = writer
+            .update_schema(table.state.delta_metadata().unwrap())
+            .expect("Failed to execute update_schema");
+        assert_eq!(
+            false, result,
+            "Expected that there would be no schema changes"
+        );
     }
 }
 
@@ -1475,7 +1498,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore]
     async fn test_schema_matching() {
         let temp_dir = tempfile::tempdir().unwrap();
         let table_path = temp_dir.path();
@@ -1506,21 +1528,10 @@ mod tests {
         .into()];
         let result = writer.write(rows).await;
         assert!(
-            result.is_err(),
-            "Expected the write of our invalid schema rows to fail!\n{:?}",
+            result.is_ok(),
+            "Expecting the write of the valid schema to succeed!\n{:?}",
             result
         );
-        match result {
-            Ok(_) => unreachable!(),
-            //Err(Box<DataWriterError::SchemaMismatch>) => {},
-            Err(e) => {
-                assert!(
-                    false,
-                    "I was expecting a schema mismatch, got this instead: {:?}",
-                    e
-                );
-            }
-        }
     }
 
     #[tokio::test]

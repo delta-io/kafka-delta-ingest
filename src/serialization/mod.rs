@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use serde_json::Value;
+use log::*;
 
 use crate::{dead_letters::DeadLetter, MessageDeserializationError, MessageFormat};
 

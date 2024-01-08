@@ -503,7 +503,7 @@ mod test {
         ));
     }
 
-    #[cfg(feature="avro")]
+    #[cfg(feature = "avro")]
     #[test]
     fn get_avro_argument() {
         let schema_registry_url: url::Url = url::Url::parse(SCHEMA_REGISTRY_ADDRESS).unwrap();
