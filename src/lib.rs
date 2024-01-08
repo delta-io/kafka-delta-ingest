@@ -17,6 +17,7 @@ extern crate strum_macros;
 extern crate serde_json;
 
 use coercions::CoercionTree;
+use deltalake_core::kernel::{Action, Metadata, Format, StructType};
 use deltalake_core::protocol::DeltaOperation;
 use deltalake_core::protocol::OutputMode;
 use deltalake_core::{DeltaTable, DeltaTableError};
@@ -31,11 +32,13 @@ use rdkafka::{
 };
 use serde_json::Value;
 use serialization::{MessageDeserializer, MessageDeserializerFactory};
+use std::convert::TryInto;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, path::PathBuf};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 use url::Url;
 
 mod coercions;
@@ -975,77 +978,52 @@ impl IngestProcessor {
 
         let mut attempt_number: u32 = 0;
         let mut actions = build_actions(&partition_offsets, self.opts.app_id.as_str(), add);
-        let table_schema = self.table.state.delta_metadata().unwrap();
+        let delta_metadata = self.table.state.delta_metadata().unwrap();
+        // Determine whether an attempt to update the delta_writer's schema should be performed
+        // 
+        // In most cases, this is desired behavior, except when the table is evolving
+        let mut update_schema = true;
 
         // If schema evolution is enabled and then kafka-delta-ingest must ensure that the new
         // `table_schema` is compatible with the evolved schema in the writer
         if self.opts.schema_evolution && self.delta_writer.has_schema_changed() {
-            use deltalake_core::arrow::datatypes::Schema as ArrowSchema;
-            use deltalake_core::kernel::Schema;
-            use std::convert::TryFrom;
-            let arrow_schema: ArrowSchema =
-                <ArrowSchema as TryFrom<&Schema>>::try_from(&table_schema.schema)
-                    .expect("Failed to convert arrow schema somehow");
-            let merged_schema = ArrowSchema::try_merge(vec![
-                arrow_schema,
-                self.delta_writer.arrow_schema().as_ref().clone(),
-            ]);
-
-            if let Ok(merged) = merged_schema {
-            } else {
-                if self
+            if let Ok(arrow_schema) = self.delta_writer.can_merge_with_delta_schema(&delta_metadata.schema) {
+                debug!("The schema has changed *AND* the schema is evolving..this transaction will include a Metadata action");
+                update_schema = false;
+                let new_delta_schema: StructType = self
                     .delta_writer
-                    .update_schema(self.table.state.delta_metadata().unwrap())?
-                {
-                    info!("Table schema has been updated");
-                    // Update the coercion tree to reflect the new schema
-                    let coercion_tree =
-                        coercions::create_coercion_tree(self.table.schema().unwrap());
-                    let _ = std::mem::replace(&mut self.coercion_tree, coercion_tree);
-
-                    return Err(IngestError::DeltaSchemaChanged);
-                }
+                    .arrow_schema()
+                    .clone()
+                    .try_into()
+                    .expect("The delta_writer schema was unable to be coerced into a delta schema, this is fatal!");
+                let schema_string: String = serde_json::to_string(&new_delta_schema)?;
+                // TODO: Handle partition columns somehow? Can we even evolve partition columns? Maybe
+                // this should just propagate the existing columns in the new action
+                let part_cols: Vec<String> = vec![];
+                let metadata = Metadata::new(
+                    Uuid::new_v4(),
+                    Format::default(),
+                    schema_string,
+                    part_cols,
+                    None,
+                );
+                actions.push(Action::Metadata(metadata));
             }
-        } else {
-            if self
-                .delta_writer
-                .update_schema(self.table.state.delta_metadata().unwrap())?
-            {
-                info!("Table schema has been updated");
-                // Update the coercion tree to reflect the new schema
-                let coercion_tree = coercions::create_coercion_tree(self.table.schema().unwrap());
-                let _ = std::mem::replace(&mut self.coercion_tree, coercion_tree);
+        }
 
-                return Err(IngestError::DeltaSchemaChanged);
-            }
+        if update_schema && self
+            .delta_writer
+            .update_schema(delta_metadata)?
+        {
+            info!("Table schema has been updated");
+            // Update the coercion tree to reflect the new schema
+            let coercion_tree = coercions::create_coercion_tree(self.table.schema().unwrap());
+            let _ = std::mem::replace(&mut self.coercion_tree, coercion_tree);
+
+            return Err(IngestError::DeltaSchemaChanged);
         }
 
         // Try to commit
-        if self.opts.schema_evolution && self.delta_writer.has_schema_changed() {
-            info!("TRYING TO ADD METADATA");
-            use deltalake_core::kernel::*;
-            use std::convert::TryInto;
-            use uuid::Uuid;
-            let schema: StructType = self
-                .delta_writer
-                .arrow_schema()
-                .clone()
-                .try_into()
-                .expect("Failed to convert schema");
-            let schema_string: String = serde_json::to_string(&schema)?;
-            // TODO: Handle partition columns somehow? Can we even evolve partition columns? Maybe
-            // this should just propagate the existing columns in the new action
-            let part_cols: Vec<String> = vec![];
-            let metadata = Metadata::new(
-                Uuid::new_v4(),
-                Format::default(),
-                schema_string,
-                part_cols,
-                None,
-            );
-            info!("Wouldn't it be interesting to push: {metadata:?}");
-            actions.push(Action::Metadata(metadata));
-        }
         loop {
             let epoch_id = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
