@@ -6,6 +6,7 @@
 
 #![deny(warnings)]
 #![deny(missing_docs)]
+#![allow(unused)]
 
 #[macro_use]
 extern crate lazy_static;

@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use serde_json::Value;
 use log::*;
+use serde_json::Value;
 
 use crate::{dead_letters::DeadLetter, MessageDeserializationError, MessageFormat};
 
@@ -24,6 +24,13 @@ pub struct DeserializedMessage {
 }
 
 impl DeserializedMessage {
+    fn new(message: Value) -> Self {
+        Self {
+            message,
+            ..Default::default()
+        }
+    }
+
     pub fn schema(&self) -> &Option<ArrowSchema> {
         &self.schema
     }
@@ -41,9 +48,7 @@ impl DeserializedMessage {
 /// Allow for `.into()` on [Value] for ease of use
 impl From<Value> for DeserializedMessage {
     fn from(message: Value) -> Self {
-        // XXX: This seems wasteful, this function should go away, and the deserializers should
-        // infer straight from the buffer stream
-        let iter = vec![message.clone()].into_iter().map(Ok);
+        let iter = std::iter::once(&message).map(Ok);
         let schema =
             match deltalake_core::arrow::json::reader::infer_json_schema_from_iterator(iter) {
                 Ok(schema) => Some(schema),
@@ -169,7 +174,10 @@ impl MessageDeserializer for DefaultDeserializer {
             }
         };
 
-        Ok(value.into())
+        match self.can_evolve_schema() {
+            true => Ok(value.into()),
+            false => Ok(DeserializedMessage::new(value)),
+        }
     }
 }
 
@@ -183,8 +191,20 @@ mod default_tests {
     }
 
     #[tokio::test]
-    async fn deserialize_with_schema() {
+    async fn deserializer_default_without_evolution() {
         let mut deser = DefaultDeserializer::default();
+        let dm = deser
+            .deserialize(r#"{"hello" : "world"}"#.as_bytes())
+            .await
+            .unwrap();
+        assert_eq!(true, dm.schema().is_none());
+    }
+
+    #[tokio::test]
+    async fn deserialize_with_schema() {
+        let mut deser = DefaultDeserializer {
+            schema_evolution: true,
+        };
         let message = deser
             .deserialize(r#"{"hello" : "world"}"#.as_bytes())
             .await
