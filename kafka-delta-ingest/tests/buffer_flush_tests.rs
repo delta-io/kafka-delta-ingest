@@ -97,7 +97,7 @@ async fn test_dont_write_an_empty_buffer() {
     // verify that an empty version _was not_ created.
     // i.e. we should still be at version 1
 
-    let t = deltalake::open_table(&table).await.unwrap();
+    let t = deltalake_core::open_table(&table).await.unwrap();
 
     assert_eq!(1, t.version());
 

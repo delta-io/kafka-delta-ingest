@@ -1,9 +1,9 @@
 use crate::delta_helpers::*;
 use crate::{DataTypeOffset, DataTypePartition};
-use deltalake::protocol::Action;
-use deltalake::protocol::DeltaOperation;
-use deltalake::protocol::OutputMode;
-use deltalake::{DeltaTable, DeltaTableError};
+use deltalake_core::kernel::Action;
+use deltalake_core::protocol::DeltaOperation;
+use deltalake_core::protocol::OutputMode;
+use deltalake_core::{DeltaTable, DeltaTableError};
 use log::{error, info};
 
 /// Errors returned by `write_offsets_to_delta` function.
@@ -115,8 +115,8 @@ async fn commit_partition_offsets(
         .as_millis() as i64;
 
     table.update().await?;
-    match deltalake::operations::transaction::commit(
-        (table.object_store().storage_backend()).as_ref(),
+    match deltalake_core::operations::transaction::commit(
+        table.log_store().clone().as_ref(),
         &actions,
         DeltaOperation::StreamingUpdate {
             output_mode: OutputMode::Complete,
@@ -221,6 +221,6 @@ mod tests {
         let v0_path = format!("{}/_delta_log/00000000000000000000.json", &table_path);
         std::fs::create_dir_all(Path::new(&v0_path).parent().unwrap()).unwrap();
         std::fs::write(&v0_path, VERSION_0).unwrap();
-        deltalake::open_table(&table_path).await.unwrap()
+        deltalake_core::open_table(&table_path).await.unwrap()
     }
 }

@@ -44,6 +44,11 @@ use std::str::FromStr;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
+    #[cfg(feature = "s3")]
+    deltalake_aws::register_handlers(None);
+    #[cfg(feature = "azure")]
+    deltalake_azure::register_handlers(None);
+
     #[cfg(feature = "sentry-ext")]
     {
         let _guard = std::env::var("SENTRY_DSN").ok().map(|dsn| {

@@ -2,8 +2,8 @@ use crate::transforms::Transformer;
 use async_trait::async_trait;
 use chrono::prelude::*;
 use core::fmt::Debug;
-use deltalake::parquet::errors::ParquetError;
-use deltalake::{DeltaTable, DeltaTableError};
+use deltalake_core::parquet::errors::ParquetError;
+use deltalake_core::{DeltaTable, DeltaTableError};
 #[cfg(feature = "s3")]
 use dynamodb_lock::dynamo_lock_options;
 use log::{error, info, warn};
@@ -254,7 +254,7 @@ impl DeltaSinkDeadLetterQueue {
                     dynamo_lock_options::DYNAMO_LOCK_PARTITION_KEY_VALUE.to_string() => std::env::var(env_vars::DEAD_LETTER_DYNAMO_LOCK_PARTITION_KEY_VALUE)
                     .unwrap_or_else(|_| "kafka_delta_ingest-dead_letters".to_string()),
                 };
-                #[cfg(feature = "azure")]
+                #[cfg(all(feature = "azure", not(feature = "s3")))]
                 let opts = HashMap::default();
 
                 let table = crate::delta_helpers::load_table(table_uri, opts.clone()).await?;

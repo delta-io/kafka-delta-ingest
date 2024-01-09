@@ -4,7 +4,7 @@ members = [
     "kafka-delta-ingest-wasm",
     "kafka-delta-ingest-wasm-sdk",
 ]
-exclude = ["proofs"]
+
 resolver = "2"
 
 [profile.release-with-debug]

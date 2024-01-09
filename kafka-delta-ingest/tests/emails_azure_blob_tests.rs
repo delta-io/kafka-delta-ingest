@@ -30,6 +30,7 @@ async fn when_rebalance_happens_azure() {
 }
 
 async fn run_emails_s3_tests(initiate_rebalance: bool) {
+    deltalake_azure::register_handlers(None);
     helpers::init_logger();
     let topic = format!("emails_azure-{}", Uuid::new_v4());
     let table = prepare_table(&topic).await;

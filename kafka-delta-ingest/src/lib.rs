@@ -17,9 +17,9 @@ extern crate strum_macros;
 extern crate serde_json;
 
 use coercions::CoercionTree;
-use deltalake::protocol::DeltaOperation;
-use deltalake::protocol::OutputMode;
-use deltalake::{DeltaTable, DeltaTableError};
+use deltalake_core::protocol::DeltaOperation;
+use deltalake_core::protocol::OutputMode;
+use deltalake_core::{DeltaTable, DeltaTableError};
 use futures::stream::StreamExt;
 use log::{debug, error, info, warn};
 use rdkafka::{
@@ -754,7 +754,7 @@ impl IngestProcessor {
         let dlq = dead_letter_queue_from_options(&opts).await?;
         let transformer = Transformer::from_transforms(&opts.transforms)?;
         let table = delta_helpers::load_table(table_uri, HashMap::new()).await?;
-        let coercion_tree = coercions::create_coercion_tree(&table.get_metadata()?.schema);
+        let coercion_tree = coercions::create_coercion_tree(table.schema().unwrap());
         let delta_writer = DataWriter::for_table(&table, HashMap::new())?;
         let deserializer = match MessageDeserializerFactory::try_build(&opts.input_format) {
             Ok(deserializer) => deserializer,
@@ -947,11 +947,11 @@ impl IngestProcessor {
 
         if self
             .delta_writer
-            .update_schema(self.table.get_metadata()?)?
+            .update_schema(self.table.state.delta_metadata().unwrap())?
         {
             info!("Table schema has been updated");
             // Update the coercion tree to reflect the new schema
-            let coercion_tree = coercions::create_coercion_tree(&self.table.get_metadata()?.schema);
+            let coercion_tree = coercions::create_coercion_tree(self.table.schema().unwrap());
             let _ = std::mem::replace(&mut self.coercion_tree, coercion_tree);
 
             return Err(IngestError::DeltaSchemaChanged);
@@ -961,25 +961,12 @@ impl IngestProcessor {
         let mut attempt_number: u32 = 0;
         let actions = build_actions(&partition_offsets, self.opts.app_id.as_str(), add);
         loop {
-            /*let partition_columns = self.table.get_metadata().unwrap().partition_columns.clone();
-            match deltalake::operations::transaction::commit(
-                (self.table.object_store().storage_backend()).as_ref(),
-                &actions,
-                deltalake::action::DeltaOperation::Write {
-                    mode: deltalake::action::SaveMode::Append,
-                    partition_by: Some(partition_columns),
-                    predicate: None,
-                },
-                &self.table.state,
-                None,
-            )*/
-
             let epoch_id = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("Time went backwards")
                 .as_millis() as i64;
-            match deltalake::operations::transaction::commit(
-                (self.table.object_store().storage_backend()).as_ref(),
+            match deltalake_core::operations::transaction::commit(
+                self.table.log_store().clone().as_ref(),
                 &actions,
                 DeltaOperation::StreamingUpdate {
                     output_mode: OutputMode::Append,

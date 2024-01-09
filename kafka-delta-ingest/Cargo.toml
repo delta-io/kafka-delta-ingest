@@ -68,6 +68,7 @@ s3 = [
     "rusoto_credential",
     "rusoto_s3",
 ]
+wasm = []
 
 [dev-dependencies]
 utime = "0.3"

@@ -1,4 +1,5 @@
-use deltalake::{Schema as DeltaSchema, SchemaDataType as DeltaDataType};
+use deltalake_core::kernel::Schema as DeltaSchema;
+use deltalake_core::kernel::{DataType, PrimitiveType};
 
 use chrono::prelude::*;
 use serde_json::Value;
@@ -34,33 +35,32 @@ pub(crate) struct CoercionArray {
 pub(crate) fn create_coercion_tree(schema: &DeltaSchema) -> CoercionTree {
     let mut root = HashMap::new();
 
-    for field in schema.get_fields() {
-        if let Some(node) = build_coercion_node(field.get_type()) {
-            root.insert(field.get_name().to_string(), node);
+    for field in schema.fields() {
+        if let Some(node) = build_coercion_node(field.data_type()) {
+            root.insert(field.name().to_string(), node);
         }
     }
 
     CoercionTree { root }
 }
 
-fn build_coercion_node(r#type: &DeltaDataType) -> Option<CoercionNode> {
-    match r#type {
-        DeltaDataType::primitive(r#type) if r#type == "string" => {
-            Some(CoercionNode::Coercion(Coercion::ToString))
-        }
-        DeltaDataType::primitive(r#type) if r#type == "timestamp" => {
-            Some(CoercionNode::Coercion(Coercion::ToTimestamp))
-        }
-        DeltaDataType::r#struct(schema) => {
-            let nested_context = create_coercion_tree(schema);
+fn build_coercion_node(data_type: &DataType) -> Option<CoercionNode> {
+    match data_type {
+        DataType::Primitive(primitive) => match primitive {
+            PrimitiveType::String => Some(CoercionNode::Coercion(Coercion::ToString)),
+            PrimitiveType::Timestamp => Some(CoercionNode::Coercion(Coercion::ToTimestamp)),
+            _ => None,
+        },
+        DataType::Struct(st) => {
+            let nested_context = create_coercion_tree(st);
             if !nested_context.root.is_empty() {
                 Some(CoercionNode::Tree(nested_context))
             } else {
                 None
             }
         }
-        DeltaDataType::array(schema) => {
-            build_coercion_node(schema.get_element_type()).and_then(|node| match node {
+        DataType::Array(array) => {
+            build_coercion_node(array.element_type()).and_then(|node| match node {
                 CoercionNode::Coercion(c) => Some(CoercionNode::ArrayPrimitive(c)),
                 CoercionNode::Tree(t) => Some(CoercionNode::ArrayTree(t)),
                 _ => None,
