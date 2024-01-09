@@ -1146,6 +1146,56 @@ mod tests {
     use std::path::Path;
 
     #[tokio::test]
+    async fn test_schema_matching() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let table_path = temp_dir.path();
+        create_temp_table(table_path);
+
+        let table = crate::delta_helpers::load_table(table_path.to_str().unwrap(), HashMap::new())
+            .await
+            .unwrap();
+        let mut writer = DataWriter::for_table(&table, HashMap::new()).unwrap();
+        let rows: Vec<Value> = vec![json!({
+            "meta": {
+                "kafka": {
+                    "offset": 0,
+                    "partition": 0,
+                    "topic": "some_topic"
+                },
+                "producer": {
+                    "timestamp": "2021-06-22"
+                },
+            },
+            "twitch": "is the best",
+            "why" : "does this succeed?!",
+            // If `some_nested_list` is removed, the Decoder ends up outputing
+            // an error that gets interpreted as an EmptyRecordBatch
+            "some_nested_list": [[42], [84]],
+            "date": "2021-06-22"
+        })];
+        let result = writer.write(rows).await;
+        assert!(
+            result.is_err(),
+            "Expected the write of our invalid schema rows to fail!\n{:?}",
+            result
+        );
+        match result {
+            Ok(_) => unreachable!(),
+            Err(DataWriterError::SchemaMismatch {
+                record_batch_schema: _,
+                expected_schema: _,
+            }) => {}
+            Err(e) => {
+                assert!(
+                    false,
+                    "I was expecting a schema mismatch, got this instead: {:?}",
+                    e
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn delta_stats_test() {
         let temp_dir = tempfile::tempdir().unwrap();
         let table_path = temp_dir.path();
