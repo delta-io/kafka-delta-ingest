@@ -30,10 +30,8 @@ jobs:
         profile: default
         toolchain: stable
         override: true
-    - name: Build and lint for S3
-      run: cargo clippy --features s3
-    - name: Build and lint for Azure
-      run: cargo clippy --features azure
+    - name: Build and lint
+      run: cargo clippy --features s3,azure,avro
 
   test:
     runs-on: ubuntu-latest
@@ -47,8 +45,6 @@ jobs:
         override: true
     - name: Teststack setup
       run: docker-compose up setup
-    - name: Run s3 feature tests
-      run: cargo test --features s3
-    - name: Run azure feature tests
-      run: cargo test --features azure
+    - name: Run all tests
+      run: cargo test --features s3,azure,avro
 

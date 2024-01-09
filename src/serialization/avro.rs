@@ -1,113 +1,23 @@
 use std::{borrow::BorrowMut, convert::TryFrom, io::Cursor, path::PathBuf};
 
+use super::{DeserializedMessage, MessageDeserializationError, MessageDeserializer};
+use crate::dead_letters::DeadLetter;
 use async_trait::async_trait;
 use schema_registry_converter::async_impl::{
     easy_avro::EasyAvroDecoder, easy_json::EasyJsonDecoder, schema_registry::SrSettings,
 };
 use serde_json::Value;
 
-use crate::{dead_letters::DeadLetter, MessageDeserializationError, MessageFormat};
-
-#[async_trait]
-pub(crate) trait MessageDeserializer {
-    async fn deserialize(
-        &mut self,
-        message_bytes: &[u8],
-    ) -> Result<Value, MessageDeserializationError>;
-}
-
-pub(crate) struct MessageDeserializerFactory {}
-impl MessageDeserializerFactory {
-    pub fn try_build(
-        input_format: &MessageFormat,
-    ) -> Result<Box<dyn MessageDeserializer + Send>, anyhow::Error> {
-        match input_format {
-            MessageFormat::Json(data) => match data {
-                crate::SchemaSource::None => Ok(Self::json_default()),
-                crate::SchemaSource::SchemaRegistry(sr) => {
-                    match Self::build_sr_settings(sr).map(JsonDeserializer::from_schema_registry) {
-                        Ok(s) => Ok(Box::new(s)),
-                        Err(e) => Err(e),
-                    }
-                }
-                crate::SchemaSource::File(_) => Ok(Self::json_default()),
-            },
-            MessageFormat::Avro(data) => match data {
-                crate::SchemaSource::None => Ok(Box::<AvroSchemaDeserializer>::default()),
-                crate::SchemaSource::SchemaRegistry(sr) => {
-                    match Self::build_sr_settings(sr).map(AvroDeserializer::from_schema_registry) {
-                        Ok(s) => Ok(Box::new(s)),
-                        Err(e) => Err(e),
-                    }
-                }
-                crate::SchemaSource::File(f) => {
-                    match AvroSchemaDeserializer::try_from_schema_file(f) {
-                        Ok(s) => Ok(Box::new(s)),
-                        Err(e) => Err(e),
-                    }
-                }
-            },
-            _ => Ok(Box::new(DefaultDeserializer {})),
-        }
-    }
-
-    fn json_default() -> Box<dyn MessageDeserializer + Send> {
-        Box::new(DefaultDeserializer {})
-    }
-
-    fn build_sr_settings(registry_url: &url::Url) -> Result<SrSettings, anyhow::Error> {
-        let mut url_string = registry_url.as_str();
-        if url_string.ends_with('/') {
-            url_string = &url_string[0..url_string.len() - 1];
-        }
-
-        let mut builder = SrSettings::new_builder(url_string.to_owned());
-        if let Ok(username) = std::env::var("SCHEMA_REGISTRY_USERNAME") {
-            builder.set_basic_authorization(
-                username.as_str(),
-                std::option_env!("SCHEMA_REGISTRY_PASSWORD"),
-            );
-        }
-
-        if let Ok(proxy_url) = std::env::var("SCHEMA_REGISTRY_PROXY") {
-            builder.set_proxy(proxy_url.as_str());
-        }
-
-        match builder.build() {
-            Ok(s) => Ok(s),
-            Err(e) => Err(anyhow::Error::new(e)),
-        }
-    }
-}
-
-struct DefaultDeserializer {}
-
-#[async_trait]
-impl MessageDeserializer for DefaultDeserializer {
-    async fn deserialize(&mut self, payload: &[u8]) -> Result<Value, MessageDeserializationError> {
-        let value: Value = match serde_json::from_slice(payload) {
-            Ok(v) => v,
-            Err(e) => {
-                return Err(MessageDeserializationError::JsonDeserialization {
-                    dead_letter: DeadLetter::from_failed_deserialization(payload, e.to_string()),
-                });
-            }
-        };
-
-        Ok(value)
-    }
-}
-
-struct AvroDeserializer {
+pub(crate) struct AvroDeserializer {
     decoder: EasyAvroDecoder,
 }
 
 #[derive(Default)]
-struct AvroSchemaDeserializer {
+pub(crate) struct AvroSchemaDeserializer {
     schema: Option<apache_avro::Schema>,
 }
 
-struct JsonDeserializer {
+pub(crate) struct JsonDeserializer {
     decoder: EasyJsonDecoder,
 }
 
@@ -116,11 +26,11 @@ impl MessageDeserializer for AvroDeserializer {
     async fn deserialize(
         &mut self,
         message_bytes: &[u8],
-    ) -> Result<Value, MessageDeserializationError> {
+    ) -> Result<DeserializedMessage, MessageDeserializationError> {
         match self.decoder.decode_with_schema(Some(message_bytes)).await {
             Ok(drs) => match drs {
                 Some(v) => match Value::try_from(v.value) {
-                    Ok(v) => Ok(v),
+                    Ok(v) => Ok(v.into()),
                     Err(e) => Err(MessageDeserializationError::AvroDeserialization {
                         dead_letter: DeadLetter::from_failed_deserialization(
                             message_bytes,
@@ -147,7 +57,7 @@ impl MessageDeserializer for AvroSchemaDeserializer {
     async fn deserialize(
         &mut self,
         message_bytes: &[u8],
-    ) -> Result<Value, MessageDeserializationError> {
+    ) -> Result<DeserializedMessage, MessageDeserializationError> {
         let reader_result = match &self.schema {
             None => apache_avro::Reader::new(Cursor::new(message_bytes)),
             Some(schema) => apache_avro::Reader::with_schema(schema, Cursor::new(message_bytes)),
@@ -162,7 +72,7 @@ impl MessageDeserializer for AvroSchemaDeserializer {
                     };
 
                     return match v {
-                        Ok(value) => Ok(value),
+                        Ok(value) => Ok(value.into()),
                         Err(e) => Err(MessageDeserializationError::AvroDeserialization {
                             dead_letter: DeadLetter::from_failed_deserialization(
                                 message_bytes,
@@ -221,11 +131,11 @@ impl MessageDeserializer for JsonDeserializer {
     async fn deserialize(
         &mut self,
         message_bytes: &[u8],
-    ) -> Result<Value, MessageDeserializationError> {
+    ) -> Result<DeserializedMessage, MessageDeserializationError> {
         let decoder = self.decoder.borrow_mut();
         match decoder.decode(Some(message_bytes)).await {
             Ok(drs) => match drs {
-                Some(v) => Ok(v.value),
+                Some(v) => Ok(v.value.into()),
                 None => return Err(MessageDeserializationError::EmptyPayload),
             },
             Err(e) => {

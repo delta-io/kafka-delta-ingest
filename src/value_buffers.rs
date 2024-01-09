@@ -1,21 +1,20 @@
 use crate::{DataTypeOffset, DataTypePartition, IngestError};
-use serde_json::Value;
 use std::collections::HashMap;
 
 /// Provides a single interface into the multiple [`ValueBuffer`] instances used to buffer data for each assigned partition.
 #[derive(Debug, Default)]
-pub(crate) struct ValueBuffers {
-    buffers: HashMap<DataTypePartition, ValueBuffer>,
+pub(crate) struct ValueBuffers<T> {
+    buffers: HashMap<DataTypePartition, ValueBuffer<T>>,
     len: usize,
 }
 
-impl ValueBuffers {
+impl<T> ValueBuffers<T> {
     /// Adds a value to in-memory buffers and tracks the partition and offset.
     pub(crate) fn add(
         &mut self,
         partition: DataTypePartition,
         offset: DataTypeOffset,
-        value: Value,
+        value: T,
     ) -> Result<(), IngestError> {
         let buffer = self
             .buffers
@@ -40,7 +39,7 @@ impl ValueBuffers {
     }
 
     /// Returns values, partition offsets and partition counts currently held in buffer and resets buffers to empty.
-    pub(crate) fn consume(&mut self) -> ConsumedBuffers {
+    pub(crate) fn consume(&mut self) -> ConsumedBuffers<T> {
         let mut partition_offsets = HashMap::new();
         let mut partition_counts = HashMap::new();
 
@@ -76,14 +75,14 @@ impl ValueBuffers {
 
 /// Buffer of values held in memory for a single Kafka partition.
 #[derive(Debug)]
-struct ValueBuffer {
+struct ValueBuffer<T> {
     /// The offset of the last message stored in the buffer.
     last_offset: DataTypeOffset,
-    /// The buffer of [`Value`] instances.
-    values: Vec<Value>,
+    /// The buffer of `T` instances.
+    values: Vec<T>,
 }
 
-impl ValueBuffer {
+impl<T> ValueBuffer<T> {
     /// Creates a new [`ValueBuffer`] to store messages from a Kafka partition.
     pub(crate) fn new() -> Self {
         Self {
@@ -97,13 +96,13 @@ impl ValueBuffer {
     }
 
     /// Adds the value to buffer and stores its offset as the `last_offset` of the buffer.
-    pub(crate) fn add(&mut self, value: Value, offset: DataTypeOffset) {
+    pub(crate) fn add(&mut self, value: T, offset: DataTypeOffset) {
         self.last_offset = offset;
         self.values.push(value);
     }
 
     /// Consumes and returns the buffer and last offset so it may be written to delta and clears internal state.
-    pub(crate) fn consume(&mut self) -> Option<(Vec<Value>, DataTypeOffset)> {
+    pub(crate) fn consume(&mut self) -> Option<(Vec<T>, DataTypeOffset)> {
         if !self.values.is_empty() {
             assert!(self.last_offset >= 0);
             Some((std::mem::take(&mut self.values), self.last_offset))
@@ -114,9 +113,9 @@ impl ValueBuffer {
 }
 
 /// A struct that wraps the data consumed from [`ValueBuffers`] before writing to a [`arrow::record_batch::RecordBatch`].
-pub(crate) struct ConsumedBuffers {
-    /// The vector of [`Value`] instances consumed.
-    pub(crate) values: Vec<Value>,
+pub(crate) struct ConsumedBuffers<T> {
+    /// The vector of `T` instances consumed.
+    pub(crate) values: Vec<T>,
     /// A [`HashMap`] from partition to last offset represented by the consumed buffers.
     pub(crate) partition_offsets: HashMap<DataTypePartition, DataTypeOffset>,
     /// A [`HashMap`] from partition to number of messages consumed for each partition.
@@ -133,7 +132,7 @@ mod tests {
         let mut buffers = ValueBuffers::default();
         let mut add = |p, o| {
             buffers
-                .add(p, o, Value::String(format!("{}:{}", p, o)))
+                .add(p, o, serde_json::Value::String(format!("{}:{}", p, o)))
                 .unwrap();
         };
 
@@ -188,7 +187,7 @@ mod tests {
 
     #[test]
     fn value_buffers_conflict_offsets_test() {
-        let mut buffers = ValueBuffers::default();
+        let mut buffers: ValueBuffers<serde_json::Value> = ValueBuffers::default();
 
         let verify_error = |res: Result<(), IngestError>, o: i64| {
             match res.err().unwrap() {
@@ -234,7 +233,7 @@ mod tests {
         );
     }
 
-    fn add(buffers: &mut ValueBuffers, offset: i64) -> Result<(), IngestError> {
-        buffers.add(0, offset, Value::Number(offset.into()))
+    fn add(buffers: &mut ValueBuffers<serde_json::Value>, offset: i64) -> Result<(), IngestError> {
+        buffers.add(0, offset, serde_json::Value::Number(offset.into()))
     }
 }

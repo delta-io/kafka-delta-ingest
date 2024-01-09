@@ -1,3 +1,4 @@
+use crate::serialization::DeserializedMessage;
 use chrono::prelude::*;
 use jmespatch::{
     functions::{ArgumentType, CustomFunction, Signature},
@@ -348,13 +349,13 @@ impl Transformer {
     /// The optional `kafka_message` must be provided to include well known Kafka properties in the value.
     pub(crate) fn transform<M>(
         &self,
-        value: &mut Value,
+        value: &mut DeserializedMessage,
         kafka_message: Option<&M>,
     ) -> Result<(), TransformError>
     where
         M: Message,
     {
-        let data = Variable::try_from(value.clone())?;
+        let data = Variable::try_from(value.clone().message())?;
 
         match value.as_object_mut() {
             Some(map) => {
@@ -378,7 +379,7 @@ impl Transformer {
                 Ok(())
             }
             _ => Err(TransformError::ValueNotAnObject {
-                value: value.to_owned(),
+                value: value.clone().message(),
             }),
         }
     }
@@ -510,7 +511,7 @@ mod tests {
 
     #[test]
     fn transforms_with_substr() {
-        let mut test_value = json!({
+        let test_value = json!({
             "name": "A",
             "modified": "2021-03-16T14:38:58Z",
         });
@@ -524,6 +525,7 @@ mod tests {
             0,
             None,
         );
+        let mut test_value: DeserializedMessage = test_value.into();
 
         let mut transforms = HashMap::new();
 
@@ -540,6 +542,7 @@ mod tests {
 
         let name = test_value.get("name").unwrap().as_str().unwrap();
         let modified = test_value.get("modified").unwrap().as_str().unwrap();
+        println!("TEST: {test_value:?}");
         let modified_date = test_value.get("modified_date").unwrap().as_str().unwrap();
 
         assert_eq!("A", name);
@@ -567,7 +570,7 @@ mod tests {
     fn test_transforms_with_epoch_seconds_to_iso8601() {
         let expected_iso = "2021-07-20T23:18:18Z";
 
-        let mut test_value = json!({
+        let test_value = json!({
             "name": "A",
             "epoch_seconds_float": 1626823098.51995,
             "epoch_seconds_int": 1626823098,
@@ -584,6 +587,7 @@ mod tests {
             0,
             None,
         );
+        let mut test_value: DeserializedMessage = test_value.into();
 
         let mut transforms = HashMap::new();
         transforms.insert(
@@ -640,7 +644,7 @@ mod tests {
 
     #[test]
     fn test_transforms_with_kafka_meta() {
-        let mut test_value = json!({
+        let test_value = json!({
             "name": "A",
             "modified": "2021-03-16T14:38:58Z",
         });
@@ -655,6 +659,7 @@ mod tests {
             None,
         );
 
+        let mut test_value: DeserializedMessage = test_value.into();
         let mut transforms = HashMap::new();
 
         transforms.insert("_kafka_offset".to_string(), "kafka.offset".to_string());
