@@ -4,7 +4,7 @@ export AWS_ENDPOINT_URL=http://0.0.0.0:4566
 export AWS_ACCESS_KEY_ID=test
 export AWS_SECRET_ACCESS_KEY=test
 
-RUST_LOG=debug ./target/debug/kafka-delta-ingest ingest web_requests ./tests/data/web_requests \
+RUST_LOG=debug ./target/debug/kafka-delta-ingest ingest web_requests ./tests/tests/data/web_requests \
   -l 60 \
   -a web_requests \
   -K "auto.offset.reset=earliest" \

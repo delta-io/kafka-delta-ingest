@@ -29,6 +29,13 @@ pub enum TransformError {
         #[from]
         source: serde_json::Error,
     },
+
+    #[cfg(feature = "wasm")]
+    #[error("webassembly error: {source}")]
+    Wasm {
+        #[from]
+        source: Box<dyn std::error::Error>,
+    },
 }
 
 // Error thrown from custom functions registered in the jmespath Runtime

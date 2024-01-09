@@ -1,4 +1,4 @@
 #!/bin/bash
 
-tar -xzvf tests/json/web_requests-100K.json.tar.gz -C tests/json
+tar -xzvf kafka-delta-ingest/tests/json/web_requests-100K.json.tar.gz -C kafka-delta-ingest/tests/json
 

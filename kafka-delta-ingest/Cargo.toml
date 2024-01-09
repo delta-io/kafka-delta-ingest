@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 [package]
 name = "kafka-delta-ingest"
 version = "0.2.0"
@@ -68,20 +67,13 @@ s3 = [
     "rusoto_core",
     "rusoto_credential",
     "rusoto_s3",
-=======
-[workspace]
-members = [
-    "kafka-delta-ingest",
-    "kafka-delta-ingest-wasm",
-    "kafka-delta-ingest-wasm-sdk",
->>>>>>> f0be312 (initial web assembly implementation)
 ]
-exclude = ["proofs"]
-resolver = "2"
 
-[profile.release-with-debug]
-inherits = "release"
-debug = true
+[dev-dependencies]
+utime = "0.3"
+serial_test = "*"
+tempfile = "3"
+time = "0.3.20"
 
-[workspace.dependencies]
-log = "0"
+[profile.release]
+lto = true

@@ -1,2 +1,0 @@
-{"txn":{"appId":"zero_offset-0","version":0,"lastUpdated":1628003413471}}
-{"add":{"path":"color=default/part-00000-0f324a9e-6066-4f14-970e-c174ca2299c6-c000.snappy.parquet","size":710,"partitionValues":{"color":"default"},"modificationTime":1628003413471,"dataChange":true,"stats":"{\"numRecords\":1,\"minValues\":{\"color\":\"default\",\"id\":0},\"maxValues\":{\"color\":\"default\",\"id\":0},\"nullCount\":{\"id\":0,\"color\":0}}","tags":null}}

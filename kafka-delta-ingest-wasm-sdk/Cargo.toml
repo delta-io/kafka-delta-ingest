@@ -1,0 +1,26 @@
+[package]
+name = "kafka-delta-ingest-wasm-sdk"
+version = "0.2.1"
+authors = ["KyJah Keys <kyjah.keys@gmail.com>"]
+rust-version = "1.61"
+description = "WebAssembly for Proxies"
+readme = "README.md"
+license = "Apache-2.0"
+repository = "https://github.com/delta-io/kafka-delta-ingest"
+edition = "2018"
+build = "build.rs"
+
+[lib]
+crate-type = ["cdylib"]
+bench = false
+
+[dependencies]
+hashbrown = "0.14"
+log = { workspace = true }
+
+[profile.release]
+lto = true
+opt-level = 3
+codegen-units = 1
+panic = "abort"
+strip = "debuginfo"

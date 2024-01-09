@@ -1,5 +1,5 @@
 ---
-version: '3.9'
+version: "3.9"
 services:
   kafka:
     image: docker.redpanda.com/redpandadata/redpanda:v23.1.13
@@ -7,12 +7,12 @@ services:
       - redpanda
       - start
       - --smp
-      - '1'
+      - "1"
       - --reserve-memory
       - 0M
       - --overprovisioned
       - --node-id
-      - '0'
+      - "0"
       - --kafka-addr
       - PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
       - --advertise-kafka-addr
@@ -41,7 +41,7 @@ services:
       - "8081:8081"
     environment:
       SCHEMA_REGISTRY_HOST_NAME: schema-registry
-      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: 'redpanda:29092'
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: "redpanda:29092"
       SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
 
   localstack:
@@ -55,7 +55,7 @@ services:
       - DOCKER_HOST=unix:///var/run/docker.sock
       - HOST_TMP_FOLDER=${TMPDIR}
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:4566/health" ]
+      test: ["CMD", "curl", "-f", "http://localhost:4566/health"]
   azurite:
     image: mcr.microsoft.com/azure-storage/azurite
     ports:
@@ -75,4 +75,4 @@ services:
       - /localstack-setup_emails.sh
     volumes:
       - ./bin/localstack-setup_emails.sh:/localstack-setup_emails.sh
-      - "./tests/data/emails/:/data/emails"
+      - "./kafka-delta-ingest/tests/data/emails/:/data/emails"

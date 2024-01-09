@@ -1,0 +1,50 @@
+[package]
+name = "kafka-delta-ingest-wasm"
+version = "0.2.0"
+authors = ["R. Tyler Croy <rtyler@brokenco.de>", "Christian Williams <christianw@scribd.com>"]
+edition = "2018"
+
+[lib]
+crate-type = ["cdylib"]
+bench = false
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+apache-avro = "^0.14"
+base64 = "0.13"
+bytes = "1"
+chrono = "0.4.31"
+clap = { version = "4", features = ["color"] }
+dipstick = "0.9"
+env_logger = "0"
+futures = "0.3"
+jmespatch = { version = "0.3", features = ["sync"] }
+lazy_static = "1"
+log = { workspace = true }
+maplit = "1"
+rdkafka = { version = "0.28", features = ["ssl-vendored"] }
+schema_registry_converter = { version = "3.1.0", features = ["easy", "json", "avro"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+strum = "0.20"
+strum_macros = "0.20"
+thiserror = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0", features = ["fs"] }
+tokio-util = "0.6.3"
+uuid = { version = "0.8", features = ["serde", "v4"] }
+url = "2.3"
+
+# wasm feature enabled
+lazy-init = {version = "0.5.1" }
+wasmtime = { version="16.0.0" }
+
+[dev-dependencies]
+utime = "0.3"
+serial_test = "*"
+tempfile = "3"
+time = "0.3.20"
+
+[profile.release]
+lto = true
