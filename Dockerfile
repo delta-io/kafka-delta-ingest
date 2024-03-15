@@ -1,15 +1,14 @@
-FROM rust:1.67 AS builder
+FROM rust:1.75 AS builder
 
+RUN mkdir /build
 WORKDIR /build
-
 COPY ./ .
 
-RUN cargo build --release
+RUN cargo build --release --features s3
 
-FROM ubuntu
+FROM alpine
 
-RUN apt-get update
-RUN apt-get install -y ca-certificates
+RUN apk add -U ca-certificates
 
 WORKDIR /build
 
