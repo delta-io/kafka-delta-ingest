@@ -1,6 +1,7 @@
 use crate::delta_helpers::*;
 use crate::{DataTypeOffset, DataTypePartition};
 use deltalake_core::kernel::Action;
+use deltalake_core::operations::transaction::TableReference;
 use deltalake_core::protocol::DeltaOperation;
 use deltalake_core::protocol::OutputMode;
 use deltalake_core::{DeltaTable, DeltaTableError};
@@ -115,23 +116,24 @@ async fn commit_partition_offsets(
         .as_millis() as i64;
 
     table.update().await?;
-    match deltalake_core::operations::transaction::commit(
-        table.log_store().clone().as_ref(),
-        &actions,
-        DeltaOperation::StreamingUpdate {
-            output_mode: OutputMode::Complete,
-            query_id: app_id,
-            epoch_id,
-        },
-        &table.state,
-        None,
-    )
-    .await
-    {
+    let commit = deltalake_core::operations::transaction::CommitBuilder::default()
+        .with_actions(actions)
+        .build(
+            table.state.as_ref().map(|s| s as &dyn TableReference),
+            table.log_store().clone(),
+            DeltaOperation::StreamingUpdate {
+                output_mode: OutputMode::Complete,
+                query_id: app_id,
+                epoch_id,
+            },
+        )
+        .map_err(DeltaTableError::from)?
+        .await;
+    match commit {
         Ok(v) => {
             info!(
                 "Delta version {} completed with new txn offsets {}.",
-                v, offsets_as_str
+                v.version, offsets_as_str
             );
             Ok(())
         }

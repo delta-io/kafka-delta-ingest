@@ -33,7 +33,8 @@ uuid = { version = "0.8", features = ["serde", "v4"] }
 url = "2.3"
 
 #deltalake = { version = "0.16.5", features = ["arrow", "json", "parquet"], optional = true }
-deltalake-core = { git = "https://github.com/delta-io/delta-rs", branch = "main", features = ["json"]}
+# datafusion feature is required for writer version 2
+deltalake-core = { git = "https://github.com/delta-io/delta-rs", branch = "main", features = ["json", "datafusion"]}
 deltalake-aws = { git = "https://github.com/delta-io/delta-rs", branch = "main", optional = true }
 deltalake-azure = { git = "https://github.com/delta-io/delta-rs", branch = "main", optional = true }
 
