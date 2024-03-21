@@ -2,7 +2,9 @@
 mod helpers;
 
 use deltalake_core::kernel::{Action, Add};
+use deltalake_core::operations::transaction::TableReference;
 use deltalake_core::protocol::{DeltaOperation, SaveMode};
+use deltalake_core::DeltaTableError;
 use kafka_delta_ingest::writer::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -102,15 +104,18 @@ async fn test_delta_partitions() {
         predicate: None,
     };
 
-    let version = deltalake_core::operations::transaction::commit(
-        table.log_store().clone().as_ref(),
-        &result.iter().cloned().map(Action::Add).collect(),
-        operation,
-        &table.state,
-        None,
-    )
-    .await
-    .expect("Failed to create transaction");
+    let version = deltalake_core::operations::transaction::CommitBuilder::default()
+        .with_actions(result.iter().cloned().map(Action::Add).collect())
+        .build(
+            table.state.as_ref().map(|s| s as &dyn TableReference),
+            table.log_store().clone(),
+            operation,
+        )
+        .map_err(DeltaTableError::from)
+        .unwrap()
+        .await
+        .expect("Failed to create transaction")
+        .version;
 
     deltalake_core::checkpoints::create_checkpoint(&table)
         .await

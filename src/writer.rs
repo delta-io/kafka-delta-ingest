@@ -12,7 +12,6 @@ use deltalake_core::arrow::{
     json::reader::ReaderBuilder,
     record_batch::*,
 };
-use deltalake_core::parquet::format::FileMetaData;
 use deltalake_core::parquet::{
     arrow::ArrowWriter,
     basic::{Compression, LogicalType},
@@ -27,9 +26,9 @@ use deltalake_core::{
     kernel::{Action, Add, Schema},
     protocol::{ColumnCountStat, ColumnValueStat, Stats},
     storage::ObjectStoreRef,
-    table::DeltaTableMetaData,
     DeltaTable, DeltaTableError, ObjectStoreError,
 };
+use deltalake_core::{operations::transaction::TableReference, parquet::format::FileMetaData};
 use log::{error, info, warn};
 use serde_json::{Number, Value};
 use std::collections::HashMap;
@@ -367,11 +366,10 @@ impl DataWriter {
     /// Retrieves the latest schema from table, compares to the current and updates if changed.
     /// When schema is updated then `true` is returned which signals the caller that parquet
     /// created file or arrow batch should be revisited.
-    pub fn update_schema(
-        &mut self,
-        metadata: &DeltaTableMetaData,
-    ) -> Result<bool, Box<DataWriterError>> {
-        let schema: ArrowSchema = <ArrowSchema as TryFrom<&Schema>>::try_from(&metadata.schema)?;
+    pub fn update_schema(&mut self, table: &DeltaTable) -> Result<bool, Box<DataWriterError>> {
+        let metadata = table.metadata().unwrap();
+        let schema: ArrowSchema =
+            <ArrowSchema as TryFrom<&Schema>>::try_from(table.schema().unwrap())?;
 
         let schema_updated = self.arrow_schema_ref.as_ref() != &schema
             || self.partition_columns != metadata.partition_columns;
@@ -585,20 +583,20 @@ impl DataWriter {
         self.write(values).await?;
         let mut adds = self.write_parquet_files(&table.table_uri()).await?;
         let actions = adds.drain(..).map(Action::Add).collect();
-        let version = deltalake_core::operations::transaction::commit(
-            table.log_store().clone().as_ref(),
-            &actions,
-            DeltaOperation::Write {
-                mode: SaveMode::Append,
-                partition_by: Some(self.partition_columns.clone()),
-                predicate: None,
-            },
-            &table.state,
-            None,
-        )
-        .await?;
-
-        Ok(version)
+        let commit = deltalake_core::operations::transaction::CommitBuilder::default()
+            .with_actions(actions)
+            .build(
+                table.state.as_ref().map(|s| s as &dyn TableReference),
+                table.log_store().clone(),
+                DeltaOperation::Write {
+                    mode: SaveMode::Append,
+                    partition_by: Some(self.partition_columns.clone()),
+                    predicate: None,
+                },
+            )
+            .map_err(DeltaTableError::from)?
+            .await?;
+        Ok(commit.version)
     }
 }
 
@@ -1058,7 +1056,6 @@ fn create_add(
         path,
         size,
         partition_values: partition_values.to_owned(),
-        partition_values_parsed: None,
         modification_time,
         data_change: true,
         stats: Some(stats_string),
@@ -1244,12 +1241,12 @@ mod tests {
                     let timestamp = producer.get("timestamp").unwrap().as_value().unwrap();
                     assert_eq!(0, timestamp);
                 }
-                ("some_int", ColumnCountStat::Value(v)) => assert_eq!(100, *v),
-                ("some_bool", ColumnCountStat::Value(v)) => assert_eq!(100, *v),
-                ("some_string", ColumnCountStat::Value(v)) => assert_eq!(100, *v),
-                ("some_list", ColumnCountStat::Value(v)) => assert_eq!(100, *v),
-                ("some_nested_list", ColumnCountStat::Value(v)) => assert_eq!(0, *v),
-                ("date", ColumnCountStat::Value(v)) => assert_eq!(0, *v),
+                ("some_int", ColumnCountStat::Value(v)) => assert_eq!(100, v),
+                ("some_bool", ColumnCountStat::Value(v)) => assert_eq!(100, v),
+                ("some_string", ColumnCountStat::Value(v)) => assert_eq!(100, v),
+                ("some_list", ColumnCountStat::Value(v)) => assert_eq!(100, v),
+                ("some_nested_list", ColumnCountStat::Value(v)) => assert_eq!(0, v),
+                ("date", ColumnCountStat::Value(v)) => assert_eq!(0, v),
                 _ => assert!(false, "Key should not be present"),
             }
         }

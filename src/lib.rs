@@ -17,6 +17,7 @@ extern crate strum_macros;
 extern crate serde_json;
 
 use coercions::CoercionTree;
+use deltalake_core::operations::transaction::TableReference;
 use deltalake_core::protocol::DeltaOperation;
 use deltalake_core::protocol::OutputMode;
 use deltalake_core::{DeltaTable, DeltaTableError};
@@ -945,10 +946,7 @@ impl IngestProcessor {
             return Err(IngestError::ConflictingOffsets);
         }
 
-        if self
-            .delta_writer
-            .update_schema(self.table.state.delta_metadata().unwrap())?
-        {
+        if self.delta_writer.update_schema(&self.table)? {
             info!("Table schema has been updated");
             // Update the coercion tree to reflect the new schema
             let coercion_tree = coercions::create_coercion_tree(self.table.schema().unwrap());
@@ -965,19 +963,20 @@ impl IngestProcessor {
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("Time went backwards")
                 .as_millis() as i64;
-            match deltalake_core::operations::transaction::commit(
-                self.table.log_store().clone().as_ref(),
-                &actions,
-                DeltaOperation::StreamingUpdate {
-                    output_mode: OutputMode::Append,
-                    query_id: self.opts.app_id.clone(),
-                    epoch_id,
-                },
-                &self.table.state,
-                None,
-            )
-            .await
-            {
+            let commit = deltalake_core::operations::transaction::CommitBuilder::default()
+                .with_actions(actions.clone())
+                .build(
+                    self.table.state.as_ref().map(|s| s as &dyn TableReference),
+                    self.table.log_store().clone(),
+                    DeltaOperation::StreamingUpdate {
+                        output_mode: OutputMode::Append,
+                        query_id: self.opts.app_id.clone(),
+                        epoch_id,
+                    },
+                )
+                .map_err(DeltaTableError::from)?
+                .await;
+            match commit {
                 Ok(v) => {
                     /*if v != version {
                         return Err(IngestError::UnexpectedVersionMismatch {
@@ -990,7 +989,7 @@ impl IngestProcessor {
                         self.delta_partition_offsets.insert(*p, Some(*o));
                     }
                     if self.opts.write_checkpoints {
-                        try_create_checkpoint(&mut self.table, v).await?;
+                        try_create_checkpoint(&mut self.table, v.version).await?;
                     }
                     record_write_lag(
                         self.topic.as_str(),
@@ -998,7 +997,7 @@ impl IngestProcessor {
                         &partition_offsets,
                         &self.ingest_metrics,
                     )?;
-                    return Ok(v);
+                    return Ok(v.version);
                 }
                 Err(e) => match e {
                     DeltaTableError::VersionAlreadyExists(_) => {
