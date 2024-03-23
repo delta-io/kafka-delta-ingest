@@ -114,11 +114,14 @@ async fn main() -> anyhow::Result<()> {
                 .get_one::<usize>("min_bytes_per_file")
                 .unwrap();
 
-            let transforms: HashMap<String, String> = ingest_matches
+            let transforms: HashMap<String, String> =
+            ingest_matches
                 .get_many::<String>("transform")
-                .expect("Failed to parse transforms")
-                .map(|t| parse_transform(t).unwrap())
-                .collect();
+                .map(|list| {
+                    list.map(|t| parse_transform(t).unwrap())
+                    .collect()
+
+                }).unwrap_or_else(|| HashMap::new());
 
             let dlq_table_location = ingest_matches
                 .get_one::<String>("dlq_table_location")
