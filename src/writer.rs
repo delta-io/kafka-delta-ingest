@@ -369,7 +369,7 @@ impl DataWriter {
     pub fn update_schema(&mut self, table: &DeltaTable) -> Result<bool, Box<DataWriterError>> {
         let metadata = table.metadata().unwrap();
         let schema: ArrowSchema =
-            <ArrowSchema as TryFrom<&Schema>>::try_from(&table.schema().unwrap())?;
+            <ArrowSchema as TryFrom<&Schema>>::try_from(table.schema().unwrap())?;
 
         let schema_updated = self.arrow_schema_ref.as_ref() != &schema
             || self.partition_columns != metadata.partition_columns;
