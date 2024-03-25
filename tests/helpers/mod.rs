@@ -110,7 +110,7 @@ pub async fn send_bytes(producer: &FutureProducer, topic: &str, bytes: &Vec<u8>)
 // TODO Research whether it's possible to read parquet data from bytes but not from file
 pub async fn read_files_from_store(table: &DeltaTable) -> Vec<i32> {
     let s3 = table.object_store().clone();
-    let paths = table.get_files_iter();
+    let paths = table.get_files_iter().unwrap();
     let tmp = format!(".test-{}.tmp", Uuid::new_v4());
     let mut list = Vec::new();
 
@@ -423,7 +423,7 @@ pub async fn read_table_content_at_version_as_jsons(table_uri: &str, version: i6
 async fn json_listify_table_content(table: DeltaTable, store: ObjectStoreRef) -> Vec<Value> {
     let tmp = format!(".test-{}.tmp", Uuid::new_v4());
     let mut list = Vec::new();
-    for file in table.get_files_iter() {
+    for file in table.get_files_iter().unwrap() {
         let get_result = store.get(&file).await.unwrap();
         let bytes = get_result.bytes().await.unwrap();
         let mut file = File::create(&tmp).unwrap();
