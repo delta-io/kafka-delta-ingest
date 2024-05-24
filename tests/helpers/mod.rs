@@ -471,7 +471,7 @@ pub async fn inspect_table(path: &str) {
                     println!("  Txn: {}: {}", t.app_id, t.version)
                 }
                 Action::Add(a) => {
-                    let stats = a.get_stats().unwrap().unwrap();
+                    let stats = a.get_stats_parsed().unwrap().unwrap();
                     println!("  Add: {}. Records: {}", &a.path, stats.num_records);
                     let full_path = format!("{}/{}", &path, &a.path);
                     let parquet_bytes = store
@@ -524,7 +524,7 @@ pub async fn inspect_table(path: &str) {
                 }
                 if let Some(a) = parse_json_field::<Add>(&json, "add") {
                     let records = a
-                        .get_stats()
+                        .get_stats_parsed()
                         .ok()
                         .flatten()
                         .map(|s| s.num_records)
