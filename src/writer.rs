@@ -1159,7 +1159,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(add.len(), 1);
-        let stats = add[0].get_stats().unwrap().unwrap();
+        let stats: deltalake_core::protocol::Stats =
+            serde_json::from_str(&add[0].stats.as_ref().unwrap()).expect("Failed to parse stats");
 
         let min_max_keys = vec!["meta", "some_int", "some_string", "some_bool"];
         let mut null_count_keys = vec!["some_list", "some_nested_list"];
@@ -1241,12 +1242,12 @@ mod tests {
                     let timestamp = producer.get("timestamp").unwrap().as_value().unwrap();
                     assert_eq!(0, timestamp);
                 }
-                ("some_int", ColumnCountStat::Value(v)) => assert_eq!(100, v),
-                ("some_bool", ColumnCountStat::Value(v)) => assert_eq!(100, v),
-                ("some_string", ColumnCountStat::Value(v)) => assert_eq!(100, v),
-                ("some_list", ColumnCountStat::Value(v)) => assert_eq!(100, v),
-                ("some_nested_list", ColumnCountStat::Value(v)) => assert_eq!(0, v),
-                ("date", ColumnCountStat::Value(v)) => assert_eq!(0, v),
+                ("some_int", ColumnCountStat::Value(v)) => assert_eq!(100, *v),
+                ("some_bool", ColumnCountStat::Value(v)) => assert_eq!(100, *v),
+                ("some_string", ColumnCountStat::Value(v)) => assert_eq!(100, *v),
+                ("some_list", ColumnCountStat::Value(v)) => assert_eq!(100, *v),
+                ("some_nested_list", ColumnCountStat::Value(v)) => assert_eq!(0, *v),
+                ("date", ColumnCountStat::Value(v)) => assert_eq!(0, *v),
                 _ => assert!(false, "Key should not be present"),
             }
         }

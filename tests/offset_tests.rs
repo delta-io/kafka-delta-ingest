@@ -87,8 +87,11 @@ async fn zero_offset_issue() {
 
 fn count_records(table: DeltaTable) -> i64 {
     let mut count = 0;
-    for x in table.get_stats() {
-        count += x.as_ref().unwrap().as_ref().unwrap().num_records;
+
+    if let Ok(adds) = table.state.unwrap().file_actions() {
+        for add in adds.iter() {
+            count += add.get_stats_parsed().unwrap().unwrap().num_records;
+        }
     }
     count
 }

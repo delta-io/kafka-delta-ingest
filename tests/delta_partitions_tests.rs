@@ -40,7 +40,7 @@ async fn test_delta_partitions() {
         "test_delta_partitions",
     );
 
-    let mut table = deltalake_core::open_table(&table_path).await.unwrap();
+    let table = deltalake_core::open_table(&table_path).await.unwrap();
     let mut delta_writer = DataWriter::for_table(&table, HashMap::new()).unwrap();
 
     let batch1 = vec![
