@@ -64,7 +64,7 @@ services:
   setup:
     build:
       context: .
-      dockerfile: Dockerfile.setup
+      dockerfile: contrib/Dockerfile.setup
     depends_on:
       - kafka
       - localstack
