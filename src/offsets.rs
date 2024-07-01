@@ -61,8 +61,8 @@ pub(crate) async fn write_offsets_to_delta(
 
         for (txn_app_id, offset) in mapped_offsets {
             match table.get_app_transaction_version().get(&txn_app_id) {
-                Some(stored_offset) if *stored_offset < offset => {
-                    conflict_offsets.push((txn_app_id, *stored_offset, offset));
+                Some(stored_offset) if stored_offset.version < offset => {
+                    conflict_offsets.push((txn_app_id, stored_offset.version, offset));
                 }
                 _ => (),
             }
@@ -127,8 +127,8 @@ async fn commit_partition_offsets(
                 epoch_id,
             },
         )
-        .map_err(DeltaTableError::from)?
-        .await;
+        .await
+        .map_err(DeltaTableError::from);
     match commit {
         Ok(v) => {
             info!(
@@ -185,12 +185,20 @@ mod tests {
         table.update().await.unwrap();
         assert_eq!(table.version(), 1);
         assert_eq!(
-            table.get_app_transaction_version().get("test-0").unwrap(),
-            &5
+            table
+                .get_app_transaction_version()
+                .get("test-0")
+                .unwrap()
+                .version,
+            5
         );
         assert_eq!(
-            table.get_app_transaction_version().get("test-1").unwrap(),
-            &10
+            table
+                .get_app_transaction_version()
+                .get("test-1")
+                .unwrap()
+                .version,
+            10
         );
 
         // Test ignored write

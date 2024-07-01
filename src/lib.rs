@@ -974,8 +974,8 @@ impl IngestProcessor {
                         epoch_id,
                     },
                 )
-                .map_err(DeltaTableError::from)?
-                .await;
+                .await
+                .map_err(DeltaTableError::from);
             match commit {
                 Ok(v) => {
                     /*if v != version {
