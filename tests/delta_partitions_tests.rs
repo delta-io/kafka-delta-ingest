@@ -111,9 +111,8 @@ async fn test_delta_partitions() {
             table.log_store().clone(),
             operation,
         )
-        .map_err(DeltaTableError::from)
-        .unwrap()
         .await
+        .map_err(DeltaTableError::from)
         .expect("Failed to create transaction")
         .version;
 

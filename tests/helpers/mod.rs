@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use bytes::Buf;
 use chrono::prelude::*;
-use deltalake_core::kernel::{Action, Add, Metadata, Protocol, Remove, Txn};
+use deltalake_core::kernel::{Action, Add, Metadata, Protocol, Remove, Transaction};
 use deltalake_core::parquet::{
     file::reader::{FileReader, SerializedFileReader},
     record::RowAccessor,
@@ -452,7 +452,7 @@ pub async fn inspect_table(path: &str) {
     let table = deltalake_core::open_table(path).await.unwrap();
     println!("Inspecting table {}", path);
     for (k, v) in table.get_app_transaction_version().iter() {
-        println!("  {}: {}", k, v);
+        println!("  {}: {}", k, v.version);
     }
     let store = table.object_store().clone();
 
@@ -516,7 +516,7 @@ pub async fn inspect_table(path: &str) {
                         i, p.min_reader_version, p.min_writer_version
                     );
                 }
-                if let Some(t) = parse_json_field::<Txn>(&json, "txn") {
+                if let Some(t) = parse_json_field::<Transaction>(&json, "txn") {
                     println!(" {}. txn: appId={}, version={}", i, t.app_id, t.version);
                 }
                 if let Some(r) = parse_json_field::<Remove>(&json, "remove") {
@@ -630,7 +630,7 @@ impl TestScope {
                 total += table
                     .get_app_transaction_version()
                     .get(key)
-                    .copied()
+                    .map(|txn| txn.version)
                     .unwrap_or(0);
             }
 

@@ -462,7 +462,7 @@ impl DataWriter {
             self.storage
                 .put(
                     &deltalake_core::Path::parse(&path).unwrap(),
-                    bytes::Bytes::copy_from_slice(obj_bytes.as_slice()),
+                    bytes::Bytes::copy_from_slice(obj_bytes.as_slice()).into(),
                 )
                 .await?;
 
@@ -594,8 +594,8 @@ impl DataWriter {
                     predicate: None,
                 },
             )
-            .map_err(DeltaTableError::from)?
-            .await?;
+            .await
+            .map_err(DeltaTableError::from)?;
         Ok(commit.version)
     }
 }
