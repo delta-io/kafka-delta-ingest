@@ -218,7 +218,6 @@ pub async fn create_and_run_kdi(
     deltalake_aws::register_handlers(None);
     #[cfg(feature = "azure")]
     deltalake_azure::register_handlers(None);
-    println!("OPTS!: {:?}", opts);
     let topic = format!("{}-{}", app_id, Uuid::new_v4());
     let table = create_local_table(schema, delta_partitions, &topic);
     create_topic(&topic, kafka_num_partitions).await;
@@ -423,9 +422,17 @@ pub async fn read_table_content_at_version_as_jsons(table_uri: &str, version: i6
 async fn json_listify_table_content(table: DeltaTable, store: ObjectStoreRef) -> Vec<Value> {
     let tmp = format!(".test-{}.tmp", Uuid::new_v4());
     let mut list = Vec::new();
-    for file in table.get_files_iter().unwrap() {
+    // XXX :confused: why is this reversed in 0.18+
+    for file in table
+        .get_files_iter()
+        .unwrap()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
         let get_result = store.get(&file).await.unwrap();
         let bytes = get_result.bytes().await.unwrap();
+        // lol what is this
         let mut file = File::create(&tmp).unwrap();
         file.write_all(bytes.chunk()).unwrap();
         drop(file);
