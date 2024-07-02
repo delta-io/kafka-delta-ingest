@@ -9,7 +9,8 @@ export AZURE_CONNECTION_STRING="DefaultEndpointsProtocol=http;AccountName=devsto
 function wait_for() {
   retries=10
   echo ">> running $2"
-  until eval $2 > /dev/null 2>&1
+  set -x
+  until eval $2 #> /dev/null 2>&1
   do
     if [ "$retries" -lt "0" ]; then
       echo "$1 is still offline after 10 retries";
