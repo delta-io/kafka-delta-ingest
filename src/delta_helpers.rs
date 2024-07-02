@@ -1,5 +1,5 @@
 use crate::{DataTypeOffset, DataTypePartition};
-use deltalake_core::kernel::{Action, Add, Txn};
+use deltalake_core::kernel::{Action, Add, Transaction};
 use deltalake_core::{DeltaTable, DeltaTableError};
 use std::collections::HashMap;
 
@@ -27,7 +27,7 @@ pub(crate) fn build_actions(
 }
 
 pub(crate) fn create_txn_action(txn_app_id: String, offset: DataTypeOffset) -> Action {
-    Action::Txn(Txn {
+    Action::Txn(Transaction {
         app_id: txn_app_id,
         version: offset,
         last_updated: Some(
@@ -76,5 +76,5 @@ pub(crate) fn last_txn_version(table: &DeltaTable, txn_id: &str) -> Option<i64> 
     table
         .get_app_transaction_version()
         .get(txn_id)
-        .map(|v| v.to_owned())
+        .map(|t| t.version)
 }

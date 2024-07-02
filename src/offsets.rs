@@ -1,6 +1,7 @@
 use crate::delta_helpers::*;
 use crate::{DataTypeOffset, DataTypePartition};
 use deltalake_core::kernel::Action;
+use deltalake_core::operations::transaction::TableReference;
 use deltalake_core::protocol::DeltaOperation;
 use deltalake_core::protocol::OutputMode;
 use deltalake_core::{DeltaTable, DeltaTableError};
@@ -60,8 +61,8 @@ pub(crate) async fn write_offsets_to_delta(
 
         for (txn_app_id, offset) in mapped_offsets {
             match table.get_app_transaction_version().get(&txn_app_id) {
-                Some(stored_offset) if *stored_offset < offset => {
-                    conflict_offsets.push((txn_app_id, *stored_offset, offset));
+                Some(stored_offset) if stored_offset.version < offset => {
+                    conflict_offsets.push((txn_app_id, stored_offset.version, offset));
                 }
                 _ => (),
             }
@@ -115,23 +116,24 @@ async fn commit_partition_offsets(
         .as_millis() as i64;
 
     table.update().await?;
-    match deltalake_core::operations::transaction::commit(
-        table.log_store().clone().as_ref(),
-        &actions,
-        DeltaOperation::StreamingUpdate {
-            output_mode: OutputMode::Complete,
-            query_id: app_id,
-            epoch_id,
-        },
-        &table.state,
-        None,
-    )
-    .await
-    {
+    let commit = deltalake_core::operations::transaction::CommitBuilder::default()
+        .with_actions(actions)
+        .build(
+            table.state.as_ref().map(|s| s as &dyn TableReference),
+            table.log_store().clone(),
+            DeltaOperation::StreamingUpdate {
+                output_mode: OutputMode::Complete,
+                query_id: app_id,
+                epoch_id,
+            },
+        )
+        .await
+        .map_err(DeltaTableError::from);
+    match commit {
         Ok(v) => {
             info!(
                 "Delta version {} completed with new txn offsets {}.",
-                v, offsets_as_str
+                v.version, offsets_as_str
             );
             Ok(())
         }
@@ -183,12 +185,20 @@ mod tests {
         table.update().await.unwrap();
         assert_eq!(table.version(), 1);
         assert_eq!(
-            table.get_app_transaction_version().get("test-0").unwrap(),
-            &5
+            table
+                .get_app_transaction_version()
+                .get("test-0")
+                .unwrap()
+                .version,
+            5
         );
         assert_eq!(
-            table.get_app_transaction_version().get("test-1").unwrap(),
-            &10
+            table
+                .get_app_transaction_version()
+                .get("test-1")
+                .unwrap()
+                .version,
+            10
         );
 
         // Test ignored write
