@@ -37,6 +37,12 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    env:
+      # Disable full debug symbol generation to speed up CI build and keep memory down
+      RUSTFLAGS: -C debuginfo=none
+      # Disable incremental builds by cargo for CI which should save disk space
+      # and hopefully avoid final link "No space left on device"
+      CARGO_INCREMENTAL: 0
     steps:
     - uses: actions/checkout@v2
     - name: Install minimum stable with clippy and rustfmt
