@@ -20,18 +20,18 @@ use azure_storage::{prelude::BlobSasPermissions, shared_access_signature::SasPro
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn when_both_workers_started_simultaneously_azure() {
-    run_emails_s3_tests(false).await;
+    run_emails_azure_tests(false).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn when_rebalance_happens_azure() {
-    run_emails_s3_tests(true).await;
+    run_emails_azure_tests(true).await;
 }
 
-async fn run_emails_s3_tests(initiate_rebalance: bool) {
-    deltalake_azure::register_handlers(None);
+async fn run_emails_azure_tests(initiate_rebalance: bool) {
     helpers::init_logger();
+    deltalake_azure::register_handlers(None);
     let topic = format!("emails_azure-{}", Uuid::new_v4());
     let table = prepare_table(&topic).await;
     let options = create_options();

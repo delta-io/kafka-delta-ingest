@@ -35,17 +35,12 @@ url = "2.3"
 # datafusion feature is required for writer version 2
 deltalake-core = { version = "~0.18.1", features = ["json", "datafusion"]}
 deltalake-aws = { version = "~0.1.2", optional = true }
-deltalake-azure = { version = "~0.1.2", optional = true }
+deltalake-azure = { version = "~0.1.3", optional = true }
 
-# s3 feature enabled
+# s3 feature enabled, helps for locking interactions with DLQ
 dynamodb_lock = { version = "0.6.0", optional = true }
 # sentry
 sentry = { version = "0.23.0", optional = true }
-
-# azure feature enabled, mostly used for tests
-azure_core = { version = "0.18.0", optional = true }
-azure_storage = { version = "0.18.0", optional = true }
-azure_storage_blobs = { version = "0.18.0", optional = true }
 
 [features]
 default = []
@@ -53,9 +48,6 @@ sentry-ext = ["sentry"]
 dynamic-linking = [ "rdkafka/dynamic-linking" ]
 azure = [
     "deltalake-azure",
-    "azure_core",
-    "azure_storage",
-    "azure_storage_blobs"
 ]
 s3 = [
     "deltalake-aws",
@@ -63,13 +55,16 @@ s3 = [
 ]
 
 [dev-dependencies]
-utime = "0.3"
-serial_test = "*"
-tempfile = "3"
-time = "0.3.20"
+azure_core = { version = "0.18.0" }
+azure_storage = { version = "0.18.0" }
+azure_storage_blobs = { version = "0.18.0" }
 rusoto_core = { version = "0.47", default-features = false, features = ["rustls"]}
 rusoto_credential = { version = "0.47"}
 rusoto_s3 = { version = "0.47", default-features = false, features = ["rustls"]}
+serial_test = "*"
+tempfile = "3"
+time = "0.3.20"
+utime = "0.3"
 
 [profile.release]
 lto = true
