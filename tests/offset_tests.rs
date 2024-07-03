@@ -1,11 +1,13 @@
+use deltalake_core::protocol::Stats;
 use deltalake_core::DeltaTable;
-use log::{debug, info};
+use log::*;
 use rdkafka::{producer::Producer, util::Timeout};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serial_test::serial;
-use std::path::Path;
 use uuid::Uuid;
+
+use std::path::Path;
 
 use kafka_delta_ingest::{AutoOffsetReset, IngestOptions};
 #[allow(dead_code)]
@@ -87,8 +89,16 @@ async fn zero_offset_issue() {
 
 fn count_records(table: DeltaTable) -> i64 {
     let mut count = 0;
-    for x in table.get_stats() {
-        count += x.as_ref().unwrap().as_ref().unwrap().num_records;
+
+    if let Ok(adds) = table.state.unwrap().file_actions() {
+        for add in adds.iter() {
+            if let Some(stats) = add.stats.as_ref() {
+                // as of deltalake-core 0.18.0 get_stats_parsed() only returns data when loaded
+                // from checkpoints so manual parsing is necessary
+                let stats: Stats = serde_json::from_str(stats).unwrap_or(Stats::default());
+                count += stats.num_records;
+            }
+        }
     }
     count
 }

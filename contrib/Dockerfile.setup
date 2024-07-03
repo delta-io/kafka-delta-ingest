@@ -1,4 +1,4 @@
-FROM python:alpine
+FROM python:3-alpine3.18
 
 RUN apk add --no-cache aws-cli bash openssh ca-certificates jq curl openssl perl git zip \
  && apk add --no-cache --virtual .build-deps gcc make openssl-dev libffi-dev musl-dev linux-headers \

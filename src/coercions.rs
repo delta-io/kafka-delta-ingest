@@ -26,11 +26,6 @@ pub(crate) struct CoercionTree {
     root: HashMap<String, CoercionNode>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct CoercionArray {
-    element: CoercionNode,
-}
-
 /// Returns a [`CoercionTree`] so the schema can be walked efficiently level by level when performing conversions.
 pub(crate) fn create_coercion_tree(schema: &DeltaSchema) -> CoercionTree {
     let mut root = HashMap::new();

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use bytes::Buf;
 use chrono::prelude::*;
-use deltalake_core::kernel::{Action, Add, Metadata, Protocol, Remove, Txn};
+use deltalake_core::kernel::{Action, Add, Metadata, Protocol, Remove, Transaction};
 use deltalake_core::parquet::{
     file::reader::{FileReader, SerializedFileReader},
     record::RowAccessor,
@@ -110,7 +110,7 @@ pub async fn send_bytes(producer: &FutureProducer, topic: &str, bytes: &Vec<u8>)
 // TODO Research whether it's possible to read parquet data from bytes but not from file
 pub async fn read_files_from_store(table: &DeltaTable) -> Vec<i32> {
     let s3 = table.object_store().clone();
-    let paths = table.get_files_iter();
+    let paths = table.get_files_iter().unwrap();
     let tmp = format!(".test-{}.tmp", Uuid::new_v4());
     let mut list = Vec::new();
 
@@ -218,7 +218,6 @@ pub async fn create_and_run_kdi(
     deltalake_aws::register_handlers(None);
     #[cfg(feature = "azure")]
     deltalake_azure::register_handlers(None);
-    println!("OPTS!: {:?}", opts);
     let topic = format!("{}-{}", app_id, Uuid::new_v4());
     let table = create_local_table(schema, delta_partitions, &topic);
     create_topic(&topic, kafka_num_partitions).await;
@@ -423,9 +422,17 @@ pub async fn read_table_content_at_version_as_jsons(table_uri: &str, version: i6
 async fn json_listify_table_content(table: DeltaTable, store: ObjectStoreRef) -> Vec<Value> {
     let tmp = format!(".test-{}.tmp", Uuid::new_v4());
     let mut list = Vec::new();
-    for file in table.get_files_iter() {
+    // XXX :confused: why is this reversed in 0.18+
+    for file in table
+        .get_files_iter()
+        .unwrap()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
         let get_result = store.get(&file).await.unwrap();
         let bytes = get_result.bytes().await.unwrap();
+        // lol what is this
         let mut file = File::create(&tmp).unwrap();
         file.write_all(bytes.chunk()).unwrap();
         drop(file);
@@ -452,7 +459,7 @@ pub async fn inspect_table(path: &str) {
     let table = deltalake_core::open_table(path).await.unwrap();
     println!("Inspecting table {}", path);
     for (k, v) in table.get_app_transaction_version().iter() {
-        println!("  {}: {}", k, v);
+        println!("  {}: {}", k, v.version);
     }
     let store = table.object_store().clone();
 
@@ -471,7 +478,7 @@ pub async fn inspect_table(path: &str) {
                     println!("  Txn: {}: {}", t.app_id, t.version)
                 }
                 Action::Add(a) => {
-                    let stats = a.get_stats().unwrap().unwrap();
+                    let stats = a.get_stats_parsed().unwrap().unwrap();
                     println!("  Add: {}. Records: {}", &a.path, stats.num_records);
                     let full_path = format!("{}/{}", &path, &a.path);
                     let parquet_bytes = store
@@ -516,7 +523,7 @@ pub async fn inspect_table(path: &str) {
                         i, p.min_reader_version, p.min_writer_version
                     );
                 }
-                if let Some(t) = parse_json_field::<Txn>(&json, "txn") {
+                if let Some(t) = parse_json_field::<Transaction>(&json, "txn") {
                     println!(" {}. txn: appId={}, version={}", i, t.app_id, t.version);
                 }
                 if let Some(r) = parse_json_field::<Remove>(&json, "remove") {
@@ -524,7 +531,7 @@ pub async fn inspect_table(path: &str) {
                 }
                 if let Some(a) = parse_json_field::<Add>(&json, "add") {
                     let records = a
-                        .get_stats()
+                        .get_stats_parsed()
                         .ok()
                         .flatten()
                         .map(|s| s.num_records)
@@ -630,7 +637,7 @@ impl TestScope {
                 total += table
                     .get_app_transaction_version()
                     .get(key)
-                    .copied()
+                    .map(|txn| txn.version)
                     .unwrap_or(0);
             }
 

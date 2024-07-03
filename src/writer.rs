@@ -12,7 +12,6 @@ use deltalake_core::arrow::{
     json::reader::ReaderBuilder,
     record_batch::*,
 };
-use deltalake_core::parquet::format::FileMetaData;
 use deltalake_core::parquet::{
     arrow::ArrowWriter,
     basic::{Compression, LogicalType},
@@ -27,9 +26,9 @@ use deltalake_core::{
     kernel::{Action, Add, Schema},
     protocol::{ColumnCountStat, ColumnValueStat, Stats},
     storage::ObjectStoreRef,
-    table::DeltaTableMetaData,
     DeltaTable, DeltaTableError, ObjectStoreError,
 };
+use deltalake_core::{operations::transaction::TableReference, parquet::format::FileMetaData};
 use log::{error, info, warn};
 use serde_json::{Number, Value};
 use std::collections::HashMap;
@@ -367,11 +366,10 @@ impl DataWriter {
     /// Retrieves the latest schema from table, compares to the current and updates if changed.
     /// When schema is updated then `true` is returned which signals the caller that parquet
     /// created file or arrow batch should be revisited.
-    pub fn update_schema(
-        &mut self,
-        metadata: &DeltaTableMetaData,
-    ) -> Result<bool, Box<DataWriterError>> {
-        let schema: ArrowSchema = <ArrowSchema as TryFrom<&Schema>>::try_from(&metadata.schema)?;
+    pub fn update_schema(&mut self, table: &DeltaTable) -> Result<bool, Box<DataWriterError>> {
+        let metadata = table.metadata().unwrap();
+        let schema: ArrowSchema =
+            <ArrowSchema as TryFrom<&Schema>>::try_from(table.schema().unwrap())?;
 
         let schema_updated = self.arrow_schema_ref.as_ref() != &schema
             || self.partition_columns != metadata.partition_columns;
@@ -464,7 +462,7 @@ impl DataWriter {
             self.storage
                 .put(
                     &deltalake_core::Path::parse(&path).unwrap(),
-                    bytes::Bytes::copy_from_slice(obj_bytes.as_slice()),
+                    bytes::Bytes::copy_from_slice(obj_bytes.as_slice()).into(),
                 )
                 .await?;
 
@@ -585,20 +583,20 @@ impl DataWriter {
         self.write(values).await?;
         let mut adds = self.write_parquet_files(&table.table_uri()).await?;
         let actions = adds.drain(..).map(Action::Add).collect();
-        let version = deltalake_core::operations::transaction::commit(
-            table.log_store().clone().as_ref(),
-            &actions,
-            DeltaOperation::Write {
-                mode: SaveMode::Append,
-                partition_by: Some(self.partition_columns.clone()),
-                predicate: None,
-            },
-            &table.state,
-            None,
-        )
-        .await?;
-
-        Ok(version)
+        let commit = deltalake_core::operations::transaction::CommitBuilder::default()
+            .with_actions(actions)
+            .build(
+                table.state.as_ref().map(|s| s as &dyn TableReference),
+                table.log_store().clone(),
+                DeltaOperation::Write {
+                    mode: SaveMode::Append,
+                    partition_by: Some(self.partition_columns.clone()),
+                    predicate: None,
+                },
+            )
+            .await
+            .map_err(DeltaTableError::from)?;
+        Ok(commit.version)
     }
 }
 
@@ -1058,7 +1056,6 @@ fn create_add(
         path,
         size,
         partition_values: partition_values.to_owned(),
-        partition_values_parsed: None,
         modification_time,
         data_change: true,
         stats: Some(stats_string),
@@ -1162,7 +1159,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(add.len(), 1);
-        let stats = add[0].get_stats().unwrap().unwrap();
+        let stats: deltalake_core::protocol::Stats =
+            serde_json::from_str(&add[0].stats.as_ref().unwrap()).expect("Failed to parse stats");
 
         let min_max_keys = vec!["meta", "some_int", "some_string", "some_bool"];
         let mut null_count_keys = vec!["some_list", "some_nested_list"];
