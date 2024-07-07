@@ -5,6 +5,7 @@ authors = ["R. Tyler Croy <rtyler@brokenco.de>", "Christian Williams <christianw
 edition = "2018"
 
 [dependencies]
+flate2 = "1.0"
 anyhow = "1"
 async-trait = "0.1"
 apache-avro = "^0.14"

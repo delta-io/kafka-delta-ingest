@@ -141,6 +141,8 @@ async fn main() -> anyhow::Result<()> {
 
             let end_at_last_offsets = ingest_matches.get_flag("end");
 
+            let decompress_gzip = ingest_matches.get_flag("decompress_gzip");
+
             // ingest_matches.get_flag("end")
             let format = convert_matches_to_message_format(ingest_matches).unwrap();
 
@@ -161,6 +163,7 @@ async fn main() -> anyhow::Result<()> {
                 statsd_endpoint,
                 input_format: format,
                 end_at_last_offsets,
+                decompress_gzip,
             };
 
             tokio::spawn(async move {
@@ -452,6 +455,11 @@ This can be used to provide TLS configuration as in:
                     .num_args(0)
                     .action(ArgAction::SetTrue)
                     .help(""))
+                .arg(Arg::new("decompress_gzip")
+                    .long("decompress_gzip")
+                    .env("DECOMPRESS_GZIP")
+                    .help("Enable gzip decompression for incoming messages")
+                    .action(ArgAction::SetTrue))
         )
         .arg_required_else_help(true)
 }

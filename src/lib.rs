@@ -294,6 +294,8 @@ pub struct IngestOptions {
     pub input_format: MessageFormat,
     /// Terminates when initial offsets are reached
     pub end_at_last_offsets: bool,
+    /// Assume that message payloads are gzip compressed and decompress them before processing.
+    pub decompress_gzip: bool,
 }
 
 impl Default for IngestOptions {
@@ -315,6 +317,7 @@ impl Default for IngestOptions {
             statsd_endpoint: "localhost:8125".to_string(),
             input_format: MessageFormat::DefaultJson,
             end_at_last_offsets: false,
+            decompress_gzip: false,
         }
     }
 }
@@ -757,10 +760,12 @@ impl IngestProcessor {
         let table = delta_helpers::load_table(table_uri, HashMap::new()).await?;
         let coercion_tree = coercions::create_coercion_tree(table.schema().unwrap());
         let delta_writer = DataWriter::for_table(&table, HashMap::new())?;
-        let deserializer = match MessageDeserializerFactory::try_build(&opts.input_format) {
-            Ok(deserializer) => deserializer,
-            Err(e) => return Err(IngestError::UnableToCreateDeserializer { source: e }),
-        };
+        let deserializer =
+            match MessageDeserializerFactory::try_build(&opts.input_format, opts.decompress_gzip) {
+                Ok(deserializer) => deserializer,
+                Err(e) => return Err(IngestError::UnableToCreateDeserializer { source: e }),
+            };
+
         Ok(IngestProcessor {
             topic,
             consumer,

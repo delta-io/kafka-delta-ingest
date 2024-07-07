@@ -2768,6 +2768,7 @@ dependencies = [
  "dipstick",
  "dynamodb_lock",
  "env_logger",
+ "flate2",
  "futures",
  "jmespatch",
  "lazy_static",

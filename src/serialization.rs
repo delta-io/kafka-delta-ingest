@@ -1,12 +1,11 @@
-use std::{borrow::BorrowMut, convert::TryFrom, io::Cursor, path::PathBuf};
-
+use crate::{dead_letters::DeadLetter, MessageDeserializationError, MessageFormat};
 use async_trait::async_trait;
+use flate2::read::GzDecoder;
 use schema_registry_converter::async_impl::{
     easy_avro::EasyAvroDecoder, easy_json::EasyJsonDecoder, schema_registry::SrSettings,
 };
 use serde_json::Value;
-
-use crate::{dead_letters::DeadLetter, MessageDeserializationError, MessageFormat};
+use std::{borrow::BorrowMut, convert::TryFrom, io::Cursor, io::Read, path::PathBuf};
 
 #[async_trait]
 pub(crate) trait MessageDeserializer {
@@ -17,20 +16,22 @@ pub(crate) trait MessageDeserializer {
 }
 
 pub(crate) struct MessageDeserializerFactory {}
+
 impl MessageDeserializerFactory {
     pub fn try_build(
         input_format: &MessageFormat,
+        decompress_gzip: bool, // Add this parameter
     ) -> Result<Box<dyn MessageDeserializer + Send>, anyhow::Error> {
         match input_format {
             MessageFormat::Json(data) => match data {
-                crate::SchemaSource::None => Ok(Self::json_default()),
+                crate::SchemaSource::None => Ok(Self::json_default(decompress_gzip)),
                 crate::SchemaSource::SchemaRegistry(sr) => {
                     match Self::build_sr_settings(sr).map(JsonDeserializer::from_schema_registry) {
                         Ok(s) => Ok(Box::new(s)),
                         Err(e) => Err(e),
                     }
                 }
-                crate::SchemaSource::File(_) => Ok(Self::json_default()),
+                crate::SchemaSource::File(_) => Ok(Self::json_default(decompress_gzip)),
             },
             MessageFormat::Avro(data) => match data {
                 crate::SchemaSource::None => Ok(Box::<AvroSchemaDeserializer>::default()),
@@ -47,12 +48,12 @@ impl MessageDeserializerFactory {
                     }
                 }
             },
-            _ => Ok(Box::new(DefaultDeserializer {})),
+            _ => Ok(Box::new(DefaultDeserializer::new(decompress_gzip))),
         }
     }
 
-    fn json_default() -> Box<dyn MessageDeserializer + Send> {
-        Box::new(DefaultDeserializer {})
+    fn json_default(decompress_gzip: bool) -> Box<dyn MessageDeserializer + Send> {
+        Box::new(DefaultDeserializer::new(decompress_gzip))
     }
 
     fn build_sr_settings(registry_url: &url::Url) -> Result<SrSettings, anyhow::Error> {
@@ -80,16 +81,41 @@ impl MessageDeserializerFactory {
     }
 }
 
-struct DefaultDeserializer {}
+struct DefaultDeserializer {
+    decompress_gzip: bool,
+}
+
+impl DefaultDeserializer {
+    pub fn new(decompress_gzip: bool) -> Self {
+        DefaultDeserializer { decompress_gzip }
+    }
+
+    fn decompress(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
+        let mut decoder = GzDecoder::new(bytes);
+        let mut decompressed_data = Vec::new();
+        decoder.read_to_end(&mut decompressed_data)?;
+        Ok(decompressed_data)
+    }
+}
 
 #[async_trait]
 impl MessageDeserializer for DefaultDeserializer {
     async fn deserialize(&mut self, payload: &[u8]) -> Result<Value, MessageDeserializationError> {
-        let value: Value = match serde_json::from_slice(payload) {
+        let payload = if self.decompress_gzip {
+            Self::decompress(payload).map_err(|e| {
+                MessageDeserializationError::JsonDeserialization {
+                    dead_letter: DeadLetter::from_failed_deserialization(payload, e.to_string()),
+                }
+            })?
+        } else {
+            payload.to_vec()
+        };
+
+        let value: Value = match serde_json::from_slice(&payload) {
             Ok(v) => v,
             Err(e) => {
                 return Err(MessageDeserializationError::JsonDeserialization {
-                    dead_letter: DeadLetter::from_failed_deserialization(payload, e.to_string()),
+                    dead_letter: DeadLetter::from_failed_deserialization(&payload, e.to_string()),
                 });
             }
         };
