@@ -216,22 +216,6 @@ kafka-delta-ingest now supports ingestion of gzip-compressed messages. This can 
 
 To enable gzip decompression, use the `--decompress_gzip` flag when starting the ingestion process.
 
-Example usage:
-
-```bash
-RUST_LOG=debug cargo run ingest web_requests ./tests/data/web_requests \
-  --allowed_latency 60 \
-  --app_id web_requests \
-  --decompress_gzip \
-  --transform 'date: substr(meta.producer.timestamp, `0`, `10`)' \
-  --transform 'meta.kafka.offset: kafka.offset' \
-  --transform 'meta.kafka.partition: kafka.partition' \
-  --transform 'meta.kafka.topic: kafka.topic' \
-  --auto_offset_reset earliest
-```
-
-The --decompress_gzip flag tells kafka-delta-ingest to decompress gzip-compressed Kafka messages before processing them.
-
 == Writing to S3
 
 When writing to S3, you may experience an error like `source: StorageError { source: S3Generic("dynamodb locking is not enabled") }`.
