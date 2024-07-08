@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
+use crate::serialization::DeserializedMessage;
 use crate::{transforms::TransformError, writer::*};
 
 #[cfg(feature = "s3")]
@@ -55,11 +56,11 @@ impl DeadLetter {
 
     /// Creates a dead letter from a failed transform.
     /// `base64_bytes` will always be `None`.
-    pub(crate) fn from_failed_transform(value: &Value, err: TransformError) -> Self {
+    pub(crate) fn from_failed_transform(value: &DeserializedMessage, err: TransformError) -> Self {
         let timestamp = Utc::now();
         Self {
             base64_bytes: None,
-            json_string: Some(value.to_string()),
+            json_string: Some((&value.message()).to_string()),
             error: Some(err.to_string()),
             timestamp: timestamp
                 .timestamp_nanos_opt()
@@ -286,9 +287,10 @@ impl DeadLetterQueue for DeltaSinkDeadLetterQueue {
             .map(|dl| {
                 serde_json::to_value(dl)
                     .map_err(|e| DeadLetterQueueError::SerdeJson { source: e })
-                    .and_then(|mut v| {
+                    .and_then(|v| {
                         self.transformer
-                            .transform(&mut v, None as Option<&BorrowedMessage>)?;
+                            // TODO: this can't be right, shouldn't this function takje DeserializedMessage
+                            .transform(&mut v.clone().into(), None as Option<&BorrowedMessage>)?;
                         Ok(v)
                     })
             })
@@ -297,7 +299,10 @@ impl DeadLetterQueue for DeltaSinkDeadLetterQueue {
 
         let version = self
             .delta_writer
-            .insert_all(&mut self.table, values)
+            .insert_all(
+                &mut self.table,
+                values.into_iter().map(|v| v.into()).collect(),
+            )
             .await?;
 
         if self.write_checkpoints {

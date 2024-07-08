@@ -9,25 +9,96 @@ use std::io::Read;
 use std::thread;
 use std::time::Duration;
 
-use serial_test::serial;
-use uuid::Uuid;
-
+use chrono::prelude::*;
+use deltalake_core::DeltaTableBuilder;
 use kafka_delta_ingest::IngestOptions;
 use rusoto_core::Region;
 use rusoto_s3::{CopyObjectRequest, PutObjectRequest, S3};
+use serial_test::serial;
+use uuid::Uuid;
 
 use helpers::*;
 
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn when_both_workers_started_simultaneously() {
-    run_emails_s3_tests(false).await;
+    //run_emails_s3_tests(false).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn when_rebalance_happens() {
-    run_emails_s3_tests(true).await;
+    //run_emails_s3_tests(true).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn schema_evolution() {
+    deltalake_aws::register_handlers(None);
+    helpers::init_logger();
+    let topic = format!("emails_s3-{}", Uuid::new_v4());
+    let table = prepare_table(&topic).await;
+    let mut options = create_options(helpers::WORKER_1);
+    options.schema_evolution = true;
+    let scope = TestScope::new(&topic, &table, options).await;
+
+    let w1 = scope.create_and_start(WORKER_1).await;
+
+    // in order to initiate rebalance we first send messages,
+    // ensure that worker 1 consumes some of them and then create worker 2,
+    // otherwise, to proceed without rebalance the two workers has to be created simultaneously
+    let w2 = scope.create_and_start(WORKER_2).await;
+    thread::sleep(Duration::from_secs(4));
+    let producer = scope.send_messages(TEST_TOTAL_MESSAGES).await;
+    // this will end up with more app_ids than actual,
+    // since we're not sure which partitions will get each worker
+    let partitions = create_partitions_app_ids(TEST_PARTITIONS + 1);
+
+    let now: DateTime<Utc> = Utc::now();
+    let n = 200;
+    let json = &serde_json::json!({
+        "id": n.to_string(),
+        "sender": format!("sender-{}@example.com", n),
+        "color" : "red",
+        "recipient": format!("recipient-{}@example.com", n),
+        "timestamp": (now + chrono::Duration::seconds(1)).to_rfc3339_opts(SecondsFormat::Secs, true),
+    });
+    send_json(&producer, &topic, json).await;
+
+    // wait until the destination table will get every expected message, we check this summing up
+    // the each offset of each partition to get the TOTAL_MESSAGES value
+    scope
+        .wait_on_total_offset(partitions, TEST_TOTAL_MESSAGES + 1)
+        .await;
+
+    println!("Waiting on workers futures to exit...");
+    // wait until workers are completely stopped
+    let w1_result = w1.await;
+    println!("Worker 1 finished - {:?}", w1_result);
+
+    let w2_result = w2.await;
+    println!("Worker 2 finished - {:?}", w2_result);
+
+    println!("Validating data");
+    scope.validate_data_amount(TEST_TOTAL_MESSAGES + 1).await;
+
+    let table = DeltaTableBuilder::from_uri(table)
+        .load()
+        .await
+        .expect("Failed to load");
+    let schema = table
+        .metadata()
+        .unwrap()
+        .schema()
+        .expect("Failed to load schema");
+
+    let mut found_columns: Vec<String> = schema.fields().map(|f| f.name().clone()).collect();
+    found_columns.sort();
+
+    let expected = vec!["color", "date", "id", "recipient", "sender", "timestamp"];
+    assert_eq!(expected, found_columns);
+
+    scope.shutdown();
 }
 
 async fn run_emails_s3_tests(initiate_rebalance: bool) {

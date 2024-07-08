@@ -29,9 +29,9 @@ use deltalake_core::{
     DeltaTable, DeltaTableError, ObjectStoreError,
 };
 use deltalake_core::{operations::transaction::TableReference, parquet::format::FileMetaData};
-use log::{error, info, warn};
+use log::*;
 use serde_json::{Number, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::io::Write;
 use std::sync::Arc;
@@ -39,6 +39,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 use crate::cursor::InMemoryWriteableCursor;
+use crate::serialization::DeserializedMessage;
 
 const NULL_PARTITION_VALUE_DATA_PATH: &str = "__HIVE_DEFAULT_PARTITION__";
 
@@ -169,176 +170,50 @@ impl From<DeltaTableError> for Box<DataWriterError> {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+/// Strongly typed set of options for the ]DataWriter]
+pub struct DataWriterOptions {
+    /// Set to true when the writer should perform schema evolution on writes
+    ///
+    /// This defaults to fauls
+    pub schema_evolution: bool,
+}
+
+#[cfg(test)]
+mod datawriteroptions_tests {
+    use super::*;
+
+    #[test]
+    fn test_default() {
+        let d = DataWriterOptions::default();
+        assert_eq!(false, d.schema_evolution);
+    }
+
+    #[test]
+    fn test_schema_evolution() {
+        let d = DataWriterOptions {
+            schema_evolution: true,
+        };
+        assert_eq!(true, d.schema_evolution);
+    }
+}
+
 /// Writes messages to a delta lake table.
 pub struct DataWriter {
     storage: ObjectStoreRef,
+    options: DataWriterOptions,
     arrow_schema_ref: Arc<ArrowSchema>,
+    original_arrow_schema_ref: Arc<ArrowSchema>,
     writer_properties: WriterProperties,
     partition_columns: Vec<String>,
     arrow_writers: HashMap<String, DataArrowWriter>,
 }
 
-/// Writes messages to an underlying arrow buffer.
-pub(crate) struct DataArrowWriter {
-    arrow_schema: Arc<ArrowSchema>,
-    writer_properties: WriterProperties,
-    cursor: InMemoryWriteableCursor,
-    arrow_writer: ArrowWriter<InMemoryWriteableCursor>,
-    partition_values: HashMap<String, Option<String>>,
-    null_counts: NullCounts,
-    buffered_record_batch_count: usize,
-}
-
-impl DataArrowWriter {
-    /// Writes the given JSON buffer and updates internal state accordingly.
-    /// This method buffers the write stream internally so it can be invoked for many json buffers and flushed after the appropriate number of bytes has been written.
-    async fn write_values(
-        &mut self,
-        partition_columns: &[String],
-        arrow_schema: Arc<ArrowSchema>,
-        json_buffer: Vec<Value>,
-    ) -> Result<(), Box<DataWriterError>> {
-        let record_batch = record_batch_from_json(arrow_schema.clone(), json_buffer.as_slice())?;
-
-        if record_batch.schema() != arrow_schema {
-            return Err(Box::new(DataWriterError::SchemaMismatch {
-                record_batch_schema: record_batch.schema(),
-                expected_schema: arrow_schema,
-            }));
-        }
-
-        let result = self
-            .write_record_batch(partition_columns, record_batch)
-            .await;
-
-        match result {
-            Err(e) => match *e {
-                DataWriterError::Parquet { source } => {
-                    self.write_partial(partition_columns, arrow_schema, json_buffer, source)
-                        .await
-                }
-                _ => Err(e),
-            },
-            Ok(_) => result,
-        }
-    }
-
-    async fn write_partial(
-        &mut self,
-        partition_columns: &[String],
-        arrow_schema: Arc<ArrowSchema>,
-        json_buffer: Vec<Value>,
-        parquet_error: ParquetError,
-    ) -> Result<(), Box<DataWriterError>> {
-        warn!("Failed with parquet error while writing record batch. Attempting quarantine of bad records.");
-        let (good, bad) = quarantine_failed_parquet_rows(arrow_schema.clone(), json_buffer)?;
-        let record_batch = record_batch_from_json(arrow_schema, good.as_slice())?;
-        self.write_record_batch(partition_columns, record_batch)
-            .await?;
-        info!(
-            "Wrote {} good records to record batch and quarantined {} bad records.",
-            good.len(),
-            bad.len()
-        );
-        Err(Box::new(DataWriterError::PartialParquetWrite {
-            skipped_values: bad,
-            sample_error: parquet_error,
-        }))
-    }
-
-    /// Writes the record batch in-memory and updates internal state accordingly.
-    /// This method buffers the write stream internally so it can be invoked for many record batches and flushed after the appropriate number of bytes has been written.
-    async fn write_record_batch(
-        &mut self,
-        partition_columns: &[String],
-        record_batch: RecordBatch,
-    ) -> Result<(), Box<DataWriterError>> {
-        if self.partition_values.is_empty() {
-            let partition_values = extract_partition_values(partition_columns, &record_batch)?;
-            self.partition_values = partition_values;
-        }
-
-        // Copy current cursor bytes so we can recover from failures
-        let current_cursor_bytes = self.cursor.data();
-
-        let result = self.arrow_writer.write(&record_batch);
-        self.arrow_writer.flush()?;
-
-        match result {
-            Ok(_) => {
-                self.buffered_record_batch_count += 1;
-
-                apply_null_counts(
-                    partition_columns,
-                    &record_batch.into(),
-                    &mut self.null_counts,
-                    0,
-                );
-                Ok(())
-            }
-            // If a write fails we need to reset the state of the DeltaArrowWriter
-            Err(e) => {
-                let new_cursor = Self::cursor_from_bytes(current_cursor_bytes.as_slice())?;
-                let _ = std::mem::replace(&mut self.cursor, new_cursor.clone());
-                let arrow_writer = Self::new_underlying_writer(
-                    new_cursor,
-                    self.arrow_schema.clone(),
-                    self.writer_properties.clone(),
-                )?;
-                let _ = std::mem::replace(&mut self.arrow_writer, arrow_writer);
-                self.partition_values.clear();
-
-                Err(e.into())
-            }
-        }
-    }
-
-    fn new(
-        arrow_schema: Arc<ArrowSchema>,
-        writer_properties: WriterProperties,
-    ) -> Result<Self, ParquetError> {
-        let cursor = InMemoryWriteableCursor::default();
-        let arrow_writer = Self::new_underlying_writer(
-            cursor.clone(),
-            arrow_schema.clone(),
-            writer_properties.clone(),
-        )?;
-
-        let partition_values = HashMap::new();
-        let null_counts = NullCounts::new();
-        let buffered_record_batch_count = 0;
-
-        Ok(Self {
-            arrow_schema,
-            writer_properties,
-            cursor,
-            arrow_writer,
-            partition_values,
-            null_counts,
-            buffered_record_batch_count,
-        })
-    }
-
-    fn cursor_from_bytes(bytes: &[u8]) -> Result<InMemoryWriteableCursor, std::io::Error> {
-        let mut cursor = InMemoryWriteableCursor::default();
-        cursor.write_all(bytes)?;
-        Ok(cursor)
-    }
-
-    fn new_underlying_writer(
-        cursor: InMemoryWriteableCursor,
-        arrow_schema: Arc<ArrowSchema>,
-        writer_properties: WriterProperties,
-    ) -> Result<ArrowWriter<InMemoryWriteableCursor>, ParquetError> {
-        ArrowWriter::try_new(cursor, arrow_schema, Some(writer_properties))
-    }
-}
-
 impl DataWriter {
-    /// Creates a DataWriter to write to the given table
-    pub fn for_table(
+    /// Create a DataWriter with the given options
+    pub fn with_options(
         table: &DeltaTable,
-        _options: HashMap<String, String>, // XXX: figure out if this is necessary
+        options: DataWriterOptions,
     ) -> Result<DataWriter, Box<DataWriterError>> {
         let storage = table.object_store();
 
@@ -356,11 +231,29 @@ impl DataWriter {
 
         Ok(Self {
             storage,
+            original_arrow_schema_ref: arrow_schema_ref.clone(),
             arrow_schema_ref,
             writer_properties,
             partition_columns,
             arrow_writers: HashMap::new(),
+            options,
         })
+    }
+
+    /// Creates a DataWriter to write to the given table
+    pub fn for_table(
+        table: &DeltaTable,
+        options: HashMap<String, String>,
+    ) -> Result<DataWriter, Box<DataWriterError>> {
+        if !options.is_empty() {
+            warn!("DataWriter is being given options which are no longer used");
+        }
+        DataWriter::with_options(table, DataWriterOptions::default())
+    }
+
+    /// Returns true if the schema has deviated since this [DataWriter] was first created
+    pub fn has_schema_changed(&self) -> bool {
+        self.original_arrow_schema_ref != self.arrow_schema_ref
     }
 
     /// Retrieves the latest schema from table, compares to the current and updates if changed.
@@ -385,10 +278,76 @@ impl DataWriter {
         Ok(schema_updated)
     }
 
+    /// Determine whether the writer's current schema can be merged with the suggested DeltaSchema
+    pub fn can_merge_with_delta_schema(
+        &self,
+        suggested_schema: &Schema,
+    ) -> Result<Arc<ArrowSchema>, Box<DataWriterError>> {
+        let arrow_schema: ArrowSchema =
+            <ArrowSchema as TryFrom<&Schema>>::try_from(suggested_schema)?;
+        self.can_merge_with(&arrow_schema)
+    }
+
+    /// Determine whether the writer's current schema can be merged with `suggested_schema`
+    pub fn can_merge_with(
+        &self,
+        suggested_schema: &ArrowSchema,
+    ) -> Result<Arc<ArrowSchema>, Box<DataWriterError>> {
+        ArrowSchema::try_merge(vec![
+            suggested_schema.clone(),
+            self.arrow_schema_ref.as_ref().clone(),
+        ])
+        .map(Arc::new)
+        .map_err(|e| e.into())
+    }
+
     /// Writes the given values to internal parquet buffers for each represented partition.
-    pub async fn write(&mut self, values: Vec<Value>) -> Result<(), Box<DataWriterError>> {
+    pub async fn write(
+        &mut self,
+        values: Vec<DeserializedMessage>,
+    ) -> Result<(), Box<DataWriterError>> {
         let mut partial_writes: Vec<(Value, ParquetError)> = Vec::new();
         let arrow_schema = self.arrow_schema();
+
+        if self.options.schema_evolution {
+            let existing_cols: HashSet<String> = arrow_schema
+                .fields()
+                .iter()
+                .filter(|f| f.is_nullable())
+                .map(|f| f.name().to_string())
+                .collect();
+
+            for v in values.iter() {
+                if let Some(schema) = v.schema() {
+                    if schema != arrow_schema.as_ref() {
+                        let new_cols: HashSet<String> = schema
+                            .fields()
+                            .iter()
+                            .map(|f| f.name().to_string())
+                            .collect();
+
+                        if existing_cols != new_cols {
+                            debug!("The schemas do look different between th DataWriter and the message, considering schema evolution");
+                            for c in new_cols.difference(&existing_cols) {
+                                debug!("Adding a new column to the schema of DataWriter: {c}");
+                                let field = schema
+                                    .field_with_name(c)
+                                    .expect("Failed to get the field by name");
+
+                                let merged = ArrowSchema::try_merge(vec![
+                                    arrow_schema.as_ref().clone(),
+                                    ArrowSchema::new(vec![field.clone()]),
+                                ])?;
+
+                                self.arrow_schema_ref = Arc::new(merged);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let values = values.into_iter().map(|v| v.message().to_owned()).collect();
 
         for (key, values) in self.divide_by_partition_values(values)? {
             match self.arrow_writers.get_mut(&key) {
@@ -578,7 +537,7 @@ impl DataWriter {
     pub async fn insert_all(
         &mut self,
         table: &mut DeltaTable,
-        values: Vec<Value>,
+        values: Vec<DeserializedMessage>,
     ) -> Result<i64, Box<DataWriterError>> {
         self.write(values).await?;
         let mut adds = self.write_parquet_files(&table.table_uri()).await?;
@@ -597,6 +556,290 @@ impl DataWriter {
             .await
             .map_err(DeltaTableError::from)?;
         Ok(commit.version)
+    }
+}
+
+#[cfg(test)]
+mod datawriter_tests {
+    use super::*;
+    use deltalake_core::kernel::{
+        DataType as DeltaDataType, PrimitiveType, StructField, StructType,
+    };
+    use deltalake_core::operations::create::CreateBuilder;
+
+    async fn inmemory_table() -> DeltaTable {
+        let schema = StructType::new(vec![
+            StructField::new(
+                "id".to_string(),
+                DeltaDataType::Primitive(PrimitiveType::String),
+                true,
+            ),
+            StructField::new(
+                "value".to_string(),
+                DeltaDataType::Primitive(PrimitiveType::Integer),
+                true,
+            ),
+            StructField::new(
+                "modified".to_string(),
+                DeltaDataType::Primitive(PrimitiveType::String),
+                true,
+            ),
+        ]);
+
+        CreateBuilder::new()
+            .with_location("memory://")
+            .with_table_name("test-table")
+            .with_comment("A table for running tests")
+            .with_columns(schema.fields().cloned())
+            .await
+            .expect("Failed to create in-memory table")
+    }
+
+    async fn get_default_writer() -> (DataWriter, DeltaTable) {
+        let table = inmemory_table().await;
+        (
+            DataWriter::with_options(&table, DataWriterOptions::default())
+                .expect("Failed to make writer"),
+            table,
+        )
+    }
+
+    #[tokio::test]
+    async fn test_can_merge_with_simple() {
+        let (writer, _) = get_default_writer().await;
+        let delta_schema = StructType::new(vec![StructField::new(
+            "vid".to_string(),
+            DeltaDataType::Primitive(PrimitiveType::Integer),
+            true,
+        )]);
+        let arrow_schema: ArrowSchema = <ArrowSchema as TryFrom<&Schema>>::try_from(&delta_schema)
+            .expect("Failed to convert arrow schema somehow");
+        let result = writer.can_merge_with(&arrow_schema);
+        assert_eq!(true, result.is_ok(), "This should be able to merge");
+    }
+
+    #[tokio::test]
+    async fn test_can_merge_with_diff_column() {
+        let (writer, _) = get_default_writer().await;
+        let delta_schema = StructType::new(vec![StructField::new(
+            "id".to_string(),
+            DeltaDataType::Primitive(PrimitiveType::Integer),
+            true,
+        )]);
+        let arrow_schema: ArrowSchema = <ArrowSchema as TryFrom<&Schema>>::try_from(&delta_schema)
+            .expect("Failed to convert arrow schema somehow");
+        let result = writer.can_merge_with(&arrow_schema);
+        assert_eq!(
+            true,
+            result.is_err(),
+            "Cannot merge this schema, but DataWriter thinks I can?"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_schema() {
+        use std::convert::TryInto;
+
+        let (mut writer, table) = get_default_writer().await;
+        let new_schema = StructType::new(vec![StructField::new(
+            "vid".to_string(),
+            DeltaDataType::Primitive(PrimitiveType::Integer),
+            true,
+        )]);
+
+        let arrow_schema: ArrowSchema =
+            <ArrowSchema as TryFrom<&Schema>>::try_from(&new_schema).unwrap();
+        writer.arrow_schema_ref = Arc::new(arrow_schema);
+
+        let result = writer
+            .update_schema(&table)
+            .expect("Failed to execute update_schema");
+        assert_eq!(
+            true, result,
+            "Expected that the new schema would have caused an update"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_schema_with_new_partition_cols() {
+        let (mut writer, table) = get_default_writer().await;
+        writer.partition_columns = vec!["test".into()];
+        let result = writer
+            .update_schema(&table)
+            .expect("Failed to execute update_schema");
+        assert_eq!(
+            true, result,
+            "Expected that the new schema would have caused an update"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_schema_no_changes() {
+        let (mut writer, table) = get_default_writer().await;
+        let result = writer
+            .update_schema(&table)
+            .expect("Failed to execute update_schema");
+        assert_eq!(
+            false, result,
+            "Expected that there would be no schema changes"
+        );
+    }
+}
+
+/// Writes messages to an underlying arrow buffer.
+pub(crate) struct DataArrowWriter {
+    arrow_schema: Arc<ArrowSchema>,
+    writer_properties: WriterProperties,
+    cursor: InMemoryWriteableCursor,
+    arrow_writer: ArrowWriter<InMemoryWriteableCursor>,
+    partition_values: HashMap<String, Option<String>>,
+    null_counts: NullCounts,
+    buffered_record_batch_count: usize,
+}
+
+impl DataArrowWriter {
+    /// Writes the given JSON buffer and updates internal state accordingly.
+    /// This method buffers the write stream internally so it can be invoked for many json buffers and flushed after the appropriate number of bytes has been written.
+    async fn write_values(
+        &mut self,
+        partition_columns: &[String],
+        arrow_schema: Arc<ArrowSchema>,
+        json_buffer: Vec<Value>,
+    ) -> Result<(), Box<DataWriterError>> {
+        let record_batch = record_batch_from_json(arrow_schema.clone(), json_buffer.as_slice())?;
+
+        if record_batch.schema() != arrow_schema {
+            error!("Schema mismatched on the write in DataArrowWriter");
+            return Err(Box::new(DataWriterError::SchemaMismatch {
+                record_batch_schema: record_batch.schema(),
+                expected_schema: arrow_schema,
+            }));
+        }
+
+        let result = self
+            .write_record_batch(partition_columns, record_batch)
+            .await;
+
+        match result {
+            Err(e) => match *e {
+                DataWriterError::Parquet { source } => {
+                    self.write_partial(partition_columns, arrow_schema, json_buffer, source)
+                        .await
+                }
+                _ => Err(e),
+            },
+            Ok(_) => result,
+        }
+    }
+
+    async fn write_partial(
+        &mut self,
+        partition_columns: &[String],
+        arrow_schema: Arc<ArrowSchema>,
+        json_buffer: Vec<Value>,
+        parquet_error: ParquetError,
+    ) -> Result<(), Box<DataWriterError>> {
+        warn!("Failed with parquet error while writing record batch. Attempting quarantine of bad records.");
+        let (good, bad) = quarantine_failed_parquet_rows(arrow_schema.clone(), json_buffer)?;
+        let record_batch = record_batch_from_json(arrow_schema, good.as_slice())?;
+        self.write_record_batch(partition_columns, record_batch)
+            .await?;
+        info!(
+            "Wrote {} good records to record batch and quarantined {} bad records.",
+            good.len(),
+            bad.len()
+        );
+        Err(Box::new(DataWriterError::PartialParquetWrite {
+            skipped_values: bad,
+            sample_error: parquet_error,
+        }))
+    }
+
+    /// Writes the record batch in-memory and updates internal state accordingly.
+    /// This method buffers the write stream internally so it can be invoked for many record batches and flushed after the appropriate number of bytes has been written.
+    async fn write_record_batch(
+        &mut self,
+        partition_columns: &[String],
+        record_batch: RecordBatch,
+    ) -> Result<(), Box<DataWriterError>> {
+        if self.partition_values.is_empty() {
+            let partition_values = extract_partition_values(partition_columns, &record_batch)?;
+            self.partition_values = partition_values;
+        }
+
+        // Copy current cursor bytes so we can recover from failures
+        let current_cursor_bytes = self.cursor.data();
+
+        let result = self.arrow_writer.write(&record_batch);
+        self.arrow_writer.flush()?;
+
+        match result {
+            Ok(_) => {
+                self.buffered_record_batch_count += 1;
+
+                apply_null_counts(
+                    partition_columns,
+                    &record_batch.into(),
+                    &mut self.null_counts,
+                    0,
+                );
+                Ok(())
+            }
+            // If a write fails we need to reset the state of the DeltaArrowWriter
+            Err(e) => {
+                let new_cursor = Self::cursor_from_bytes(current_cursor_bytes.as_slice())?;
+                let _ = std::mem::replace(&mut self.cursor, new_cursor.clone());
+                let arrow_writer = Self::new_underlying_writer(
+                    new_cursor,
+                    self.arrow_schema.clone(),
+                    self.writer_properties.clone(),
+                )?;
+                let _ = std::mem::replace(&mut self.arrow_writer, arrow_writer);
+                self.partition_values.clear();
+
+                Err(e.into())
+            }
+        }
+    }
+
+    fn new(
+        arrow_schema: Arc<ArrowSchema>,
+        writer_properties: WriterProperties,
+    ) -> Result<Self, ParquetError> {
+        let cursor = InMemoryWriteableCursor::default();
+        let arrow_writer = Self::new_underlying_writer(
+            cursor.clone(),
+            arrow_schema.clone(),
+            writer_properties.clone(),
+        )?;
+
+        let partition_values = HashMap::new();
+        let null_counts = NullCounts::new();
+        let buffered_record_batch_count = 0;
+
+        Ok(Self {
+            arrow_schema,
+            writer_properties,
+            cursor,
+            arrow_writer,
+            partition_values,
+            null_counts,
+            buffered_record_batch_count,
+        })
+    }
+
+    fn cursor_from_bytes(bytes: &[u8]) -> Result<InMemoryWriteableCursor, std::io::Error> {
+        let mut cursor = InMemoryWriteableCursor::default();
+        cursor.write_all(bytes)?;
+        Ok(cursor)
+    }
+
+    fn new_underlying_writer(
+        cursor: InMemoryWriteableCursor,
+        arrow_schema: Arc<ArrowSchema>,
+        writer_properties: WriterProperties,
+    ) -> Result<ArrowWriter<InMemoryWriteableCursor>, ParquetError> {
+        ArrowWriter::try_new(cursor, arrow_schema, Some(writer_properties))
     }
 }
 
@@ -1139,8 +1382,157 @@ fn timestamp_to_delta_stats_string(n: i64, time_unit: &TimeUnit) -> Option<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use deltalake_core::kernel::{
+        DataType as DeltaDataType, PrimitiveType, StructField, StructType,
+    };
+    use deltalake_core::operations::create::CreateBuilder;
     use serde_json::json;
     use std::path::Path;
+
+    async fn get_fresh_table(path: &Path) -> (DeltaTable, Schema) {
+        let schema = StructType::new(vec![
+            StructField::new(
+                "id".to_string(),
+                DeltaDataType::Primitive(PrimitiveType::String),
+                true,
+            ),
+            StructField::new(
+                "value".to_string(),
+                DeltaDataType::Primitive(PrimitiveType::Integer),
+                true,
+            ),
+            StructField::new(
+                "modified".to_string(),
+                DeltaDataType::Primitive(PrimitiveType::String),
+                true,
+            ),
+        ]);
+
+        let table = CreateBuilder::new()
+            .with_location(path.to_str().unwrap())
+            .with_table_name("test-table")
+            .with_comment("A table for running tests")
+            .with_columns(schema.fields().cloned())
+            .await
+            .unwrap();
+        (table, schema)
+    }
+
+    #[tokio::test]
+    async fn test_schema_strictness_column_type_mismatch() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (table, _schema) = get_fresh_table(&temp_dir.path()).await;
+        let mut writer = DataWriter::for_table(&table, HashMap::new()).unwrap();
+
+        let rows: Vec<DeserializedMessage> = vec![json!({
+            "id" : "alpha",
+            "value" : 1,
+        })
+        .into()];
+        let result = writer.write(rows).await;
+        assert!(
+            result.is_ok(),
+            "Expected the write to succeed!\n{:?}",
+            result
+        );
+
+        let rows: Vec<DeserializedMessage> = vec![json!({
+            "id" : 1,
+            "value" : 1,
+        })
+        .into()];
+        let result = writer.write(rows).await;
+        assert!(
+            result.is_err(),
+            "Expected the write with mismatched data to fail\n{:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_schema_strictness_with_additional_columns() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let (table, _schema) = get_fresh_table(&temp_dir.path()).await;
+        let mut writer = DataWriter::with_options(
+            &table,
+            DataWriterOptions {
+                schema_evolution: true,
+            },
+        )
+        .unwrap();
+
+        let rows: Vec<DeserializedMessage> = vec![json!({
+            "id" : "alpha",
+            "value" : 1,
+        })
+        .into()];
+        let result = writer.write(rows).await;
+        assert!(
+            result.is_ok(),
+            "Expected the write to succeed!\n{:?}",
+            result
+        );
+
+        let rows: Vec<DeserializedMessage> = vec![json!({
+            "id" : "bravo",
+            "value" : 2,
+            "color" : "silver",
+        })
+        .into()];
+        let result = writer.write(rows).await;
+        assert!(
+            result.is_ok(),
+            "Did not expect additive write to fail: {:?}",
+            result
+        );
+
+        assert_eq!(true, writer.has_schema_changed());
+
+        let new_schema = writer.arrow_schema_ref;
+        let columns: Vec<String> = new_schema
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        assert_eq!(vec!["id", "value", "modified", "color"], columns);
+    }
+
+    #[tokio::test]
+    async fn test_schema_matching() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let table_path = temp_dir.path();
+        create_temp_table(table_path);
+
+        let table = crate::delta_helpers::load_table(table_path.to_str().unwrap(), HashMap::new())
+            .await
+            .unwrap();
+        let mut writer = DataWriter::for_table(&table, HashMap::new()).unwrap();
+        let rows: Vec<DeserializedMessage> = vec![json!({
+            "meta": {
+                "kafka": {
+                    "offset": 0,
+                    "partition": 0,
+                    "topic": "some_topic"
+                },
+                "producer": {
+                    "timestamp": "2021-06-22"
+                },
+            },
+            "twitch": "is the best",
+            "why" : "does this succeed?!",
+            // If `some_nested_list` is removed, the Decoder ends up outputing
+            // an error that gets interpreted as an EmptyRecordBatch
+            "some_nested_list": [[42], [84]],
+            "date": "2021-06-22"
+        })
+        .into()];
+        let result = writer.write(rows).await;
+        assert!(
+            result.is_ok(),
+            "Expecting the write of the valid schema to succeed!\n{:?}",
+            result
+        );
+    }
 
     #[tokio::test]
     async fn delta_stats_test() {
@@ -1153,7 +1545,10 @@ mod tests {
             .unwrap();
         let mut writer = DataWriter::for_table(&table, HashMap::new()).unwrap();
 
-        writer.write(JSON_ROWS.clone()).await.unwrap();
+        writer
+            .write(JSON_ROWS.clone().into_iter().map(|r| r.into()).collect())
+            .await
+            .unwrap();
         let add = writer
             .write_parquet_files(&table.table_uri())
             .await

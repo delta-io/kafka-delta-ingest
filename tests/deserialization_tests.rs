@@ -3,6 +3,7 @@ mod helpers;
 
 use kafka_delta_ingest::{IngestOptions, MessageFormat, SchemaSource};
 use log::info;
+#[cfg(feature = "avro")]
 use schema_registry_converter::{
     async_impl::{
         easy_avro::EasyAvroEncoder,
@@ -15,8 +16,9 @@ use schema_registry_converter::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serial_test::serial;
-use std::path::PathBuf;
-use std::str::FromStr;
+#[cfg(feature = "avro")]
+use std::{path::PathBuf, str::FromStr};
+#[cfg(feature = "avro")]
 use url::Url;
 
 const DEFAULT_AVRO_SCHEMA: &str = r#"{
@@ -115,6 +117,7 @@ async fn test_json_with_args() {
     rt.shutdown_background();
 }
 
+#[cfg(feature = "avro")]
 #[tokio::test]
 #[serial]
 async fn test_json_with_registry() {
@@ -159,6 +162,7 @@ async fn test_json_with_registry() {
     rt.shutdown_background();
 }
 
+#[cfg(feature = "avro")]
 #[tokio::test]
 #[serial]
 async fn test_avro_default() {
@@ -202,6 +206,7 @@ async fn test_avro_default() {
     rt.shutdown_background();
 }
 
+#[cfg(feature = "avro")]
 #[tokio::test]
 #[serial]
 async fn test_avro_with_file() {
@@ -247,6 +252,7 @@ async fn test_avro_with_file() {
     rt.shutdown_background();
 }
 
+#[cfg(feature = "avro")]
 #[tokio::test]
 #[serial]
 async fn test_avro_with_registry() {
@@ -298,22 +304,26 @@ struct TestMsg {
     name: String,
 }
 
+#[cfg(feature = "avro")]
 fn default_settings() -> SrSettings {
     SrSettings::new(String::from(SCHEMA_REGISTRY_ADDRESS))
 }
 
+#[cfg(feature = "avro")]
 async fn avro_encode(item: impl Serialize, topic: String) -> Result<Vec<u8>, SRCError> {
     EasyAvroEncoder::new(default_settings())
         .encode_struct(item, &SubjectNameStrategy::RecordNameStrategy(topic))
         .await
 }
 
+#[cfg(feature = "avro")]
 async fn json_encode(value: &serde_json::Value, topic: String) -> Result<Vec<u8>, SRCError> {
     EasyJsonEncoder::new(default_settings())
         .encode(value, SubjectNameStrategy::RecordNameStrategy(topic))
         .await
 }
 
+#[cfg(feature = "avro")]
 async fn prepare_json_schema(topic: String) -> Result<RegisteredSchema, SRCError> {
     let settings = default_settings();
     let schema = SuppliedSchema {
@@ -327,6 +337,7 @@ async fn prepare_json_schema(topic: String) -> Result<RegisteredSchema, SRCError
     post_schema(&settings, topic, schema).await
 }
 
+#[cfg(feature = "avro")]
 async fn prepare_avro_schema(topic: String) -> Result<RegisteredSchema, SRCError> {
     let settings = default_settings();
     let schema = SuppliedSchema {

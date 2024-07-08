@@ -6,6 +6,7 @@
 
 #![deny(warnings)]
 #![deny(missing_docs)]
+#![allow(unused)]
 
 #[macro_use]
 extern crate lazy_static;
@@ -17,6 +18,7 @@ extern crate strum_macros;
 extern crate serde_json;
 
 use coercions::CoercionTree;
+use deltalake_core::kernel::{Action, Format, Metadata, StructType};
 use deltalake_core::operations::transaction::TableReference;
 use deltalake_core::protocol::DeltaOperation;
 use deltalake_core::protocol::OutputMode;
@@ -32,12 +34,14 @@ use rdkafka::{
 };
 use serde_json::Value;
 use serialization::{MessageDeserializer, MessageDeserializerFactory};
+use std::convert::TryInto;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, path::PathBuf};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use url::Url;
+use uuid::Uuid;
 
 mod coercions;
 /// Doc
@@ -46,7 +50,8 @@ mod dead_letters;
 mod delta_helpers;
 mod metrics;
 mod offsets;
-mod serialization;
+#[allow(missing_docs)]
+pub mod serialization;
 mod transforms;
 mod value_buffers;
 /// Doc
@@ -57,8 +62,9 @@ use crate::value_buffers::{ConsumedBuffers, ValueBuffers};
 use crate::{
     dead_letters::*,
     metrics::*,
+    serialization::*,
     transforms::*,
-    writer::{DataWriter, DataWriterError},
+    writer::{DataWriter, DataWriterError, DataWriterOptions},
 };
 use delta_helpers::*;
 use rdkafka::message::BorrowedMessage;
@@ -100,6 +106,14 @@ pub enum IngestError {
         /// Wrapped [`DataWriterError`]
         #[from]
         source: Box<DataWriterError>,
+    },
+
+    /// Error in Delta transaction parsing or handline
+    #[error("Delta kernel error: {source}")]
+    Delta {
+        /// Wrapped [`deltalake_core::kernel::Error`]
+        #[from]
+        source: deltalake_core::kernel::Error,
     },
 
     /// Error from [`WriteOffsetsError`]
@@ -208,8 +222,9 @@ pub enum IngestError {
 }
 
 /// Formats for message parsing
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub enum MessageFormat {
+    #[default]
     /// Parses messages as json and uses the inferred schema
     DefaultJson,
 
@@ -294,6 +309,8 @@ pub struct IngestOptions {
     pub input_format: MessageFormat,
     /// Terminates when initial offsets are reached
     pub end_at_last_offsets: bool,
+    /// Enable schema evolution based on message contents
+    pub schema_evolution: bool,
     /// Assume that message payloads are gzip compressed and decompress them before processing.
     pub decompress_gzip: bool,
 }
@@ -317,6 +334,7 @@ impl Default for IngestOptions {
             statsd_endpoint: "localhost:8125".to_string(),
             input_format: MessageFormat::DefaultJson,
             end_at_last_offsets: false,
+            schema_evolution: false,
             decompress_gzip: false,
         }
     }
@@ -360,6 +378,10 @@ pub async fn start_ingest(
     } else {
         None
     };
+
+    if opts.schema_evolution {
+        warn!("Schema evolution has been enabled, kafka-delta-ingest will automatically extend the Delta schema based on message contents");
+    }
 
     // Initialize metrics
     let ingest_metrics = IngestMetrics::new(opts.statsd_endpoint.as_str())?;
@@ -490,6 +512,7 @@ pub async fn start_ingest(
             let timer = Instant::now();
             match ingest_processor.complete_file(&partition_assignment).await {
                 Err(IngestError::ConflictingOffsets) | Err(IngestError::DeltaSchemaChanged) => {
+                    warn!("kafka-delta-ingest detected a schema change! resetting state and trying again");
                     ingest_processor.reset_state(&mut partition_assignment)?;
                     continue;
                 }
@@ -719,6 +742,7 @@ enum MessageDeserializationError {
     EmptyPayload,
     #[error("Kafka message deserialization failed")]
     JsonDeserialization { dead_letter: DeadLetter },
+    #[cfg(feature = "avro")]
     #[error("Kafka message deserialization failed")]
     AvroDeserialization { dead_letter: DeadLetter },
 }
@@ -737,7 +761,7 @@ struct IngestProcessor {
     coercion_tree: CoercionTree,
     table: DeltaTable,
     delta_writer: DataWriter,
-    value_buffers: ValueBuffers,
+    value_buffers: ValueBuffers<DeserializedMessage>,
     delta_partition_offsets: HashMap<DataTypePartition, Option<DataTypeOffset>>,
     latency_timer: Instant,
     dlq: Box<dyn DeadLetterQueue>,
@@ -759,12 +783,20 @@ impl IngestProcessor {
         let transformer = Transformer::from_transforms(&opts.transforms)?;
         let table = delta_helpers::load_table(table_uri, HashMap::new()).await?;
         let coercion_tree = coercions::create_coercion_tree(table.schema().unwrap());
-        let delta_writer = DataWriter::for_table(&table, HashMap::new())?;
-        let deserializer =
-            match MessageDeserializerFactory::try_build(&opts.input_format, opts.decompress_gzip) {
-                Ok(deserializer) => deserializer,
-                Err(e) => return Err(IngestError::UnableToCreateDeserializer { source: e }),
-            };
+        let delta_writer = DataWriter::with_options(
+            &table,
+            DataWriterOptions {
+                schema_evolution: opts.schema_evolution,
+            },
+        )?;
+        let deserializer = match MessageDeserializerFactory::try_build(
+            &opts.input_format,
+            opts.schema_evolution,
+            opts.decompress_gzip,
+        ) {
+            Ok(deserializer) => deserializer,
+            Err(e) => return Err(IngestError::UnableToCreateDeserializer { source: e }),
+        };
 
         Ok(IngestProcessor {
             topic,
@@ -848,10 +880,18 @@ impl IngestProcessor {
                     partition, offset
                 );
             }
-            Err(
-                MessageDeserializationError::JsonDeserialization { dead_letter }
-                | MessageDeserializationError::AvroDeserialization { dead_letter },
-            ) => {
+            Err(MessageDeserializationError::JsonDeserialization { dead_letter }) => {
+                warn!(
+                    "Deserialization failed - partition {}, offset {}, dead_letter {}",
+                    partition,
+                    offset,
+                    dead_letter.error.as_ref().unwrap_or(&String::from("_")),
+                );
+                self.ingest_metrics.message_deserialization_failed();
+                self.dlq.write_dead_letter(dead_letter).await?;
+            }
+            #[cfg(feature = "avro")]
+            Err(MessageDeserializationError::AvroDeserialization { dead_letter }) => {
                 warn!(
                     "Deserialization failed - partition {}, offset {}, dead_letter {}",
                     partition,
@@ -870,7 +910,7 @@ impl IngestProcessor {
     async fn deserialize_message<M>(
         &mut self,
         msg: &M,
-    ) -> Result<Value, MessageDeserializationError>
+    ) -> Result<DeserializedMessage, MessageDeserializationError>
     where
         M: Message + Send + Sync,
     {
@@ -951,7 +991,37 @@ impl IngestProcessor {
             return Err(IngestError::ConflictingOffsets);
         }
 
-        if self.delta_writer.update_schema(&self.table)? {
+        let mut attempt_number: u32 = 0;
+        let mut actions = build_actions(&partition_offsets, self.opts.app_id.as_str(), add);
+        let table_schema = self.table.schema();
+        // Determine whether an attempt to update the delta_writer's schema should be performed
+        //
+        // In most cases, this is desired behavior, except when the table is evolving
+        let mut update_schema = true;
+
+        // If schema evolution is enabled and then kafka-delta-ingest must ensure that the new
+        // `table_schema` is compatible with the evolved schema in the writer
+        if self.opts.schema_evolution
+            && self.delta_writer.has_schema_changed()
+            && table_schema.is_some()
+        {
+            if let Ok(arrow_schema) = self
+                .delta_writer
+                .can_merge_with_delta_schema(table_schema.unwrap())
+            {
+                debug!("The schema has changed *AND* the schema is evolving..this transaction will include a Metadata action");
+                update_schema = false;
+                let new_delta_schema: StructType = arrow_schema.try_into()
+                    .expect("The delta_writer schema was unable to be coerced into a delta schema, this is fatal!");
+                // TODO: Handle partition columns somehow? Can we even evolve partition columns? Maybe
+                // this should just propagate the existing columns in the new action
+                let part_cols: Vec<String> = vec![];
+                let metadata = Metadata::try_new(new_delta_schema, part_cols, HashMap::default())?;
+                actions.push(Action::Metadata(metadata));
+            }
+        }
+
+        if update_schema && self.delta_writer.update_schema(&self.table)? {
             info!("Table schema has been updated");
             // Update the coercion tree to reflect the new schema
             let coercion_tree = coercions::create_coercion_tree(self.table.schema().unwrap());
@@ -961,8 +1031,6 @@ impl IngestProcessor {
         }
 
         // Try to commit
-        let mut attempt_number: u32 = 0;
-        let actions = build_actions(&partition_offsets, self.opts.app_id.as_str(), add);
         loop {
             let epoch_id = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

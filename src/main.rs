@@ -129,6 +129,7 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or(HashMap::new());
 
             let write_checkpoints = ingest_matches.get_flag("checkpoints");
+            let schema_evolution = ingest_matches.get_flag("schema_evolution");
 
             let additional_kafka_settings = ingest_matches
                 .get_many::<String>("kafka_setting")
@@ -159,6 +160,7 @@ async fn main() -> anyhow::Result<()> {
                 dlq_table_uri: dlq_table_location,
                 dlq_transforms,
                 write_checkpoints,
+                schema_evolution,
                 additional_kafka_settings,
                 statsd_endpoint,
                 input_format: format,
@@ -353,35 +355,35 @@ fn build_app() -> Command {
                     .env("KAFKA_AUTO_OFFSET_RESET")
                     .help(r#"The default offset reset policy, which is either 'earliest' or 'latest'.
 The configuration is applied when offsets are not found in delta table or not specified with 'seek_offsets'. This also overrides the kafka consumer's 'auto.offset.reset' config."#)
-                    .default_value("earliest"))
-                .arg(Arg::new("allowed_latency")
-                    .short('l')
-                    .long("allowed_latency")
-                    .env("ALLOWED_LATENCY")
-                    .help("The allowed latency (in seconds) from the time a message is consumed to when it should be written to Delta.")
-                    .default_value("300")
-                    .value_parser(clap::value_parser!(u64)))
-                .arg(Arg::new("max_messages_per_batch")
-                    .short('m')
-                    .long("max_messages_per_batch")
-                    .env("MAX_MESSAGES_PER_BATCH")
-                    .help("The maximum number of rows allowed in a parquet batch. This shoulid be the approximate number of bytes described by MIN_BYTES_PER_FILE")
-                    .default_value("5000")
-                    .value_parser(clap::value_parser!(usize)))
-                .arg(Arg::new("min_bytes_per_file")
-                    .short('b')
-                    .long("min_bytes_per_file")
-                    .env("MIN_BYTES_PER_FILE")
-                    .help("The target minimum file size (in bytes) for each Delta file. File size may be smaller than this value if ALLOWED_LATENCY does not allow enough time to accumulate the specified number of bytes.")
-                    .default_value("134217728")
-                    .value_parser(clap::value_parser!(usize)))
-                .arg(Arg::new("transform")
-                    .short('t')
-                    .long("transform")
-                    .env("TRANSFORMS")
-                    .action(ArgAction::Append)
-                    .help(
-                        r#"A list of transforms to apply to each Kafka message. Each transform should follow the pattern:
+                                 .default_value("earliest"))
+                            .arg(Arg::new("schema_evolution")
+                                .short('S')
+                                .action(ArgAction::SetTrue)
+                                .help("Enable schema evolution of the Delta table based on message content"))
+                            .arg(Arg::new("allowed_latency")
+                                 .short('l')
+                                 .long("allowed_latency")
+                                 .help("The allowed latency (in seconds) from the time a message is consumed to when it should be written to Delta.")
+                                 .default_value("300")
+                                 .value_parser(clap::value_parser!(u64)))
+                            .arg(Arg::new("max_messages_per_batch")
+                                 .short('m')
+                                 .long("max_messages_per_batch")
+                                 .help("The maximum number of rows allowed in a parquet batch. This shoulid be the approximate number of bytes described by MIN_BYTES_PER_FILE")
+                                 .default_value("5000")
+                                 .value_parser(clap::value_parser!(usize)))
+                            .arg(Arg::new("min_bytes_per_file")
+                                 .short('b')
+                                 .long("min_bytes_per_file")
+                                 .help("The target minimum file size (in bytes) for each Delta file. File size may be smaller than this value if ALLOWED_LATENCY does not allow enough time to accumulate the specified number of bytes.")
+                                 .default_value("134217728")
+                                 .value_parser(clap::value_parser!(usize)))
+                            .arg(Arg::new("transform")
+                                 .short('t')
+                                 .long("transform")
+                                 .action(ArgAction::Append)
+                                 .help(
+r#"A list of transforms to apply to each Kafka message. Each transform should follow the pattern:
 "PROPERTY: SOURCE". For example:
 
 ... -t 'modified_date: substr(modified,`0`,`10`)' 'kafka_offset: kafka.offset'
@@ -522,6 +524,7 @@ mod test {
         ));
     }
 
+    #[cfg(feature = "avro")]
     #[test]
     fn get_avro_argument() {
         let schema_registry_url: url::Url = url::Url::parse(SCHEMA_REGISTRY_ADDRESS).unwrap();

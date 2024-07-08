@@ -6,6 +6,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::str::FromStr;
 
+use crate::serialization::DeserializedMessage;
+
 #[derive(Debug, Clone, PartialEq)]
 #[allow(unused)]
 enum CoercionNode {
@@ -67,7 +69,7 @@ fn build_coercion_node(data_type: &DataType) -> Option<CoercionNode> {
 
 /// Applies all data coercions specified by the [`CoercionTree`] to the [`Value`].
 /// Though it does not currently, this function should approximate or improve on the coercions applied by [Spark's `from_json`](https://spark.apache.org/docs/latest/api/sql/index.html#from_json)
-pub(crate) fn coerce(value: &mut Value, coercion_tree: &CoercionTree) {
+pub(crate) fn coerce(value: &mut DeserializedMessage, coercion_tree: &CoercionTree) {
     if let Some(context) = value.as_object_mut() {
         for (field_name, coercion) in coercion_tree.root.iter() {
             if let Some(value) = context.get_mut(field_name) {
@@ -317,7 +319,7 @@ mod tests {
 
         let coercion_tree = create_coercion_tree(&delta_schema);
 
-        let mut messages = vec![
+        let mut messages: Vec<DeserializedMessage> = vec![
             json!({
                 "level1_string": "a",
                 "level1_integer": 0,
@@ -375,7 +377,10 @@ mod tests {
                 // This is valid epoch micros, but typed as a string on the way in. We WON'T coerce it.
                 "level1_timestamp": "1636668718000000",
             }),
-        ];
+        ]
+        .into_iter()
+        .map(|f| f.into())
+        .collect();
 
         for message in messages.iter_mut() {
             coerce(message, &coercion_tree);
@@ -442,7 +447,7 @@ mod tests {
         ];
 
         for i in 0..messages.len() {
-            assert_eq!(messages[i], expected[i]);
+            assert_eq!(messages[i].message().to_owned(), expected[i]);
         }
     }
 }
