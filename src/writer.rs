@@ -12,7 +12,6 @@ use deltalake_core::arrow::{
     json::reader::ReaderBuilder,
     record_batch::*,
 };
-use deltalake_core::parquet::format::FileMetaData;
 use deltalake_core::parquet::{
     arrow::ArrowWriter,
     basic::{Compression, LogicalType},
@@ -27,9 +26,9 @@ use deltalake_core::{
     kernel::{Action, Add, Schema},
     protocol::{ColumnCountStat, ColumnValueStat, Stats},
     storage::ObjectStoreRef,
-    table::DeltaTableMetaData,
     DeltaTable, DeltaTableError, ObjectStoreError,
 };
+use deltalake_core::{operations::transaction::TableReference, parquet::format::FileMetaData};
 use log::*;
 use serde_json::{Number, Value};
 use std::collections::{HashMap, HashSet};
@@ -260,11 +259,10 @@ impl DataWriter {
     /// Retrieves the latest schema from table, compares to the current and updates if changed.
     /// When schema is updated then `true` is returned which signals the caller that parquet
     /// created file or arrow batch should be revisited.
-    pub fn update_schema(
-        &mut self,
-        metadata: &DeltaTableMetaData,
-    ) -> Result<bool, Box<DataWriterError>> {
-        let schema: ArrowSchema = <ArrowSchema as TryFrom<&Schema>>::try_from(&metadata.schema)?;
+    pub fn update_schema(&mut self, table: &DeltaTable) -> Result<bool, Box<DataWriterError>> {
+        let metadata = table.metadata().unwrap();
+        let schema: ArrowSchema =
+            <ArrowSchema as TryFrom<&Schema>>::try_from(table.schema().unwrap())?;
 
         let schema_updated = self.arrow_schema_ref.as_ref() != &schema
             || self.partition_columns != metadata.partition_columns;
@@ -423,7 +421,7 @@ impl DataWriter {
             self.storage
                 .put(
                     &deltalake_core::Path::parse(&path).unwrap(),
-                    bytes::Bytes::copy_from_slice(obj_bytes.as_slice()),
+                    bytes::Bytes::copy_from_slice(obj_bytes.as_slice()).into(),
                 )
                 .await?;
 
@@ -544,20 +542,20 @@ impl DataWriter {
         self.write(values).await?;
         let mut adds = self.write_parquet_files(&table.table_uri()).await?;
         let actions = adds.drain(..).map(Action::Add).collect();
-        let version = deltalake_core::operations::transaction::commit(
-            table.log_store().clone().as_ref(),
-            &actions,
-            DeltaOperation::Write {
-                mode: SaveMode::Append,
-                partition_by: Some(self.partition_columns.clone()),
-                predicate: None,
-            },
-            &table.state,
-            None,
-        )
-        .await?;
-
-        Ok(version)
+        let commit = deltalake_core::operations::transaction::CommitBuilder::default()
+            .with_actions(actions)
+            .build(
+                table.state.as_ref().map(|s| s as &dyn TableReference),
+                table.log_store().clone(),
+                DeltaOperation::Write {
+                    mode: SaveMode::Append,
+                    partition_by: Some(self.partition_columns.clone()),
+                    predicate: None,
+                },
+            )
+            .await
+            .map_err(DeltaTableError::from)?;
+        Ok(commit.version)
     }
 }
 
@@ -592,7 +590,7 @@ mod datawriter_tests {
             .with_location("memory://")
             .with_table_name("test-table")
             .with_comment("A table for running tests")
-            .with_columns(schema.fields().clone())
+            .with_columns(schema.fields().cloned())
             .await
             .expect("Failed to create in-memory table")
     }
@@ -640,17 +638,21 @@ mod datawriter_tests {
 
     #[tokio::test]
     async fn test_update_schema() {
-        let (mut writer, _) = get_default_writer().await;
+        use std::convert::TryInto;
+
+        let (mut writer, table) = get_default_writer().await;
         let new_schema = StructType::new(vec![StructField::new(
             "vid".to_string(),
             DeltaDataType::Primitive(PrimitiveType::Integer),
             true,
         )]);
-        let metadata =
-            DeltaTableMetaData::new(None, None, None, new_schema, vec![], HashMap::new());
+
+        let arrow_schema: ArrowSchema =
+            <ArrowSchema as TryFrom<&Schema>>::try_from(&new_schema).unwrap();
+        writer.arrow_schema_ref = Arc::new(arrow_schema);
 
         let result = writer
-            .update_schema(&metadata)
+            .update_schema(&table)
             .expect("Failed to execute update_schema");
         assert_eq!(
             true, result,
@@ -661,10 +663,9 @@ mod datawriter_tests {
     #[tokio::test]
     async fn test_update_schema_with_new_partition_cols() {
         let (mut writer, table) = get_default_writer().await;
-        let mut metadata = table.state.delta_metadata().unwrap().clone();
-        metadata.partition_columns = vec!["test".into()];
+        writer.partition_columns = vec!["test".into()];
         let result = writer
-            .update_schema(&metadata)
+            .update_schema(&table)
             .expect("Failed to execute update_schema");
         assert_eq!(
             true, result,
@@ -676,7 +677,7 @@ mod datawriter_tests {
     async fn test_update_schema_no_changes() {
         let (mut writer, table) = get_default_writer().await;
         let result = writer
-            .update_schema(table.state.delta_metadata().unwrap())
+            .update_schema(&table)
             .expect("Failed to execute update_schema");
         assert_eq!(
             false, result,
@@ -1298,7 +1299,6 @@ fn create_add(
         path,
         size,
         partition_values: partition_values.to_owned(),
-        partition_values_parsed: None,
         modification_time,
         data_change: true,
         stats: Some(stats_string),
@@ -1412,7 +1412,7 @@ mod tests {
             .with_location(path.to_str().unwrap())
             .with_table_name("test-table")
             .with_comment("A table for running tests")
-            .with_columns(schema.fields().clone())
+            .with_columns(schema.fields().cloned())
             .await
             .unwrap();
         (table, schema)
@@ -1554,7 +1554,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(add.len(), 1);
-        let stats = add[0].get_stats().unwrap().unwrap();
+        let stats: deltalake_core::protocol::Stats =
+            serde_json::from_str(&add[0].stats.as_ref().unwrap()).expect("Failed to parse stats");
 
         let min_max_keys = vec!["meta", "some_int", "some_string", "some_bool"];
         let mut null_count_keys = vec!["some_list", "some_nested_list"];

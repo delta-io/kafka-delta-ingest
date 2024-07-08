@@ -4,7 +4,10 @@ use serde_json::Value;
 
 use crate::{dead_letters::DeadLetter, MessageDeserializationError, MessageFormat};
 
-use deltalake_core::arrow::datatypes::Schema as ArrowSchema;
+use deltalake_core::{
+    arrow::datatypes::Schema as ArrowSchema, parquet::file::footer::decode_metadata,
+};
+use flate2::read::GzDecoder;
 
 #[cfg(feature = "avro")]
 use schema_registry_converter::async_impl::schema_registry::SrSettings;
@@ -13,6 +16,8 @@ use schema_registry_converter::async_impl::schema_registry::SrSettings;
 pub mod avro;
 #[cfg(feature = "avro")]
 use crate::serialization::avro::*;
+
+use std::{borrow::BorrowMut, convert::TryFrom, io::Cursor, io::Read, path::PathBuf};
 
 /// Structure which contains the [serde_json::Value] and the inferred schema of the message
 ///
@@ -71,11 +76,14 @@ impl MessageDeserializerFactory {
     pub fn try_build(
         input_format: &MessageFormat,
         schema_evolution: bool,
+        decompress_gzip: bool,
     ) -> Result<Box<dyn MessageDeserializer + Send>, anyhow::Error> {
         match input_format {
             #[cfg(feature = "avro")]
             MessageFormat::Json(data) => match data {
-                crate::SchemaSource::None => Ok(Self::json_default(schema_evolution)),
+                crate::SchemaSource::None => {
+                    Ok(Self::json_default(schema_evolution, decompress_gzip))
+                }
                 crate::SchemaSource::SchemaRegistry(sr) => {
                     if schema_evolution {
                         warn!("Schema evolution is not currently implemented for Avro enabled topics!");
@@ -85,7 +93,9 @@ impl MessageDeserializerFactory {
                         Err(e) => Err(e),
                     }
                 }
-                crate::SchemaSource::File(_) => Ok(Self::json_default(schema_evolution)),
+                crate::SchemaSource::File(_) => {
+                    Ok(Self::json_default(schema_evolution, decompress_gzip))
+                }
             },
             #[cfg(feature = "avro")]
             MessageFormat::Avro(data) => match data {
@@ -109,12 +119,18 @@ impl MessageDeserializerFactory {
                     }
                 }
             },
-            _ => Ok(Self::json_default(schema_evolution)),
+            _ => Ok(Self::json_default(schema_evolution, decompress_gzip)),
         }
     }
 
-    fn json_default(schema_evolution: bool) -> Box<dyn MessageDeserializer + Send> {
-        Box::new(DefaultDeserializer { schema_evolution })
+    fn json_default(
+        schema_evolution: bool,
+        decompress_gzip: bool,
+    ) -> Box<dyn MessageDeserializer + Send> {
+        Box::new(DefaultDeserializer {
+            schema_evolution,
+            decompress_gzip,
+        })
     }
 
     #[cfg(feature = "avro")]
@@ -148,6 +164,8 @@ impl MessageDeserializerFactory {
 struct DefaultDeserializer {
     /// Whether the serializer can support schema evolution or not
     schema_evolution: bool,
+    /// Whether the serializer supports gunzipping message contents
+    decompress_gzip: bool,
 }
 
 #[allow(unused)]
@@ -157,6 +175,13 @@ impl DefaultDeserializer {
     pub fn can_evolve_schema(&self) -> bool {
         self.schema_evolution
     }
+
+    fn decompress(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
+        let mut decoder = GzDecoder::new(bytes);
+        let mut decompressed_data = Vec::new();
+        decoder.read_to_end(&mut decompressed_data)?;
+        Ok(decompressed_data)
+    }
 }
 
 #[async_trait]
@@ -165,11 +190,21 @@ impl MessageDeserializer for DefaultDeserializer {
         &mut self,
         payload: &[u8],
     ) -> Result<DeserializedMessage, MessageDeserializationError> {
-        let value: Value = match serde_json::from_slice(payload) {
+        let payload = if self.decompress_gzip {
+            Self::decompress(payload).map_err(|e| {
+                MessageDeserializationError::JsonDeserialization {
+                    dead_letter: DeadLetter::from_failed_deserialization(payload, e.to_string()),
+                }
+            })?
+        } else {
+            payload.to_vec()
+        };
+
+        let value: Value = match serde_json::from_slice(&payload) {
             Ok(v) => v,
             Err(e) => {
                 return Err(MessageDeserializationError::JsonDeserialization {
-                    dead_letter: DeadLetter::from_failed_deserialization(payload, e.to_string()),
+                    dead_letter: DeadLetter::from_failed_deserialization(&payload, e.to_string()),
                 });
             }
         };
@@ -204,6 +239,7 @@ mod default_tests {
     async fn deserialize_with_schema() {
         let mut deser = DefaultDeserializer {
             schema_evolution: true,
+            decompress_gzip: false,
         };
         let message = deser
             .deserialize(r#"{"hello" : "world"}"#.as_bytes())

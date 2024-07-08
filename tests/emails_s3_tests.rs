@@ -92,7 +92,7 @@ async fn schema_evolution() {
         .schema()
         .expect("Failed to load schema");
 
-    let mut found_columns: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
+    let mut found_columns: Vec<String> = schema.fields().map(|f| f.name().clone()).collect();
     found_columns.sort();
 
     let expected = vec!["color", "date", "id", "recipient", "sender", "timestamp"];

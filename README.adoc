@@ -210,6 +210,12 @@ Make sure to provide the additional option:
 
 when invoking the cli command as well.
 
+== Gzip Compressed Messages
+
+kafka-delta-ingest now supports ingestion of gzip-compressed messages. This can be particularly useful when dealing with large volumes of data that benefit from compression.
+
+To enable gzip decompression, use the `--decompress_gzip` flag when starting the ingestion process.
+
 == Writing to S3
 
 When writing to S3, you may experience an error like `source: StorageError { source: S3Generic("dynamodb locking is not enabled") }`.

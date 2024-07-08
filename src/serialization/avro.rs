@@ -1,12 +1,14 @@
-use std::{borrow::BorrowMut, convert::TryFrom, io::Cursor, path::PathBuf};
-
-use super::{DeserializedMessage, MessageDeserializationError, MessageDeserializer};
-use crate::dead_letters::DeadLetter;
+use crate::{
+    dead_letters::DeadLetter, DeserializedMessage, MessageDeserializationError,
+    MessageDeserializer, MessageFormat,
+};
 use async_trait::async_trait;
+use flate2::read::GzDecoder;
 use schema_registry_converter::async_impl::{
     easy_avro::EasyAvroDecoder, easy_json::EasyJsonDecoder, schema_registry::SrSettings,
 };
 use serde_json::Value;
+use std::{borrow::BorrowMut, convert::TryFrom, io::Cursor, io::Read, path::PathBuf};
 
 pub(crate) struct AvroDeserializer {
     decoder: EasyAvroDecoder,

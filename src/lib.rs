@@ -19,6 +19,7 @@ extern crate serde_json;
 
 use coercions::CoercionTree;
 use deltalake_core::kernel::{Action, Format, Metadata, StructType};
+use deltalake_core::operations::transaction::TableReference;
 use deltalake_core::protocol::DeltaOperation;
 use deltalake_core::protocol::OutputMode;
 use deltalake_core::{DeltaTable, DeltaTableError};
@@ -105,6 +106,14 @@ pub enum IngestError {
         /// Wrapped [`DataWriterError`]
         #[from]
         source: Box<DataWriterError>,
+    },
+
+    /// Error in Delta transaction parsing or handline
+    #[error("Delta kernel error: {source}")]
+    Delta {
+        /// Wrapped [`deltalake_core::kernel::Error`]
+        #[from]
+        source: deltalake_core::kernel::Error,
     },
 
     /// Error from [`WriteOffsetsError`]
@@ -302,6 +311,8 @@ pub struct IngestOptions {
     pub end_at_last_offsets: bool,
     /// Enable schema evolution based on message contents
     pub schema_evolution: bool,
+    /// Assume that message payloads are gzip compressed and decompress them before processing.
+    pub decompress_gzip: bool,
 }
 
 impl Default for IngestOptions {
@@ -324,6 +335,7 @@ impl Default for IngestOptions {
             input_format: MessageFormat::DefaultJson,
             end_at_last_offsets: false,
             schema_evolution: false,
+            decompress_gzip: false,
         }
     }
 }
@@ -780,10 +792,12 @@ impl IngestProcessor {
         let deserializer = match MessageDeserializerFactory::try_build(
             &opts.input_format,
             opts.schema_evolution,
+            opts.decompress_gzip,
         ) {
             Ok(deserializer) => deserializer,
             Err(e) => return Err(IngestError::UnableToCreateDeserializer { source: e }),
         };
+
         Ok(IngestProcessor {
             topic,
             consumer,
@@ -979,7 +993,7 @@ impl IngestProcessor {
 
         let mut attempt_number: u32 = 0;
         let mut actions = build_actions(&partition_offsets, self.opts.app_id.as_str(), add);
-        let delta_metadata = self.table.state.delta_metadata().unwrap();
+        let table_schema = self.table.schema();
         // Determine whether an attempt to update the delta_writer's schema should be performed
         //
         // In most cases, this is desired behavior, except when the table is evolving
@@ -987,31 +1001,27 @@ impl IngestProcessor {
 
         // If schema evolution is enabled and then kafka-delta-ingest must ensure that the new
         // `table_schema` is compatible with the evolved schema in the writer
-        if self.opts.schema_evolution && self.delta_writer.has_schema_changed() {
+        if self.opts.schema_evolution
+            && self.delta_writer.has_schema_changed()
+            && table_schema.is_some()
+        {
             if let Ok(arrow_schema) = self
                 .delta_writer
-                .can_merge_with_delta_schema(&delta_metadata.schema)
+                .can_merge_with_delta_schema(table_schema.unwrap())
             {
                 debug!("The schema has changed *AND* the schema is evolving..this transaction will include a Metadata action");
                 update_schema = false;
                 let new_delta_schema: StructType = arrow_schema.try_into()
                     .expect("The delta_writer schema was unable to be coerced into a delta schema, this is fatal!");
-                let schema_string: String = serde_json::to_string(&new_delta_schema)?;
                 // TODO: Handle partition columns somehow? Can we even evolve partition columns? Maybe
                 // this should just propagate the existing columns in the new action
                 let part_cols: Vec<String> = vec![];
-                let metadata = Metadata::new(
-                    Uuid::new_v4(),
-                    Format::default(),
-                    schema_string,
-                    part_cols,
-                    None,
-                );
+                let metadata = Metadata::try_new(new_delta_schema, part_cols, HashMap::default())?;
                 actions.push(Action::Metadata(metadata));
             }
         }
 
-        if update_schema && self.delta_writer.update_schema(delta_metadata)? {
+        if update_schema && self.delta_writer.update_schema(&self.table)? {
             info!("Table schema has been updated");
             // Update the coercion tree to reflect the new schema
             let coercion_tree = coercions::create_coercion_tree(self.table.schema().unwrap());
@@ -1026,19 +1036,20 @@ impl IngestProcessor {
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("Time went backwards")
                 .as_millis() as i64;
-            match deltalake_core::operations::transaction::commit(
-                self.table.log_store().clone().as_ref(),
-                &actions,
-                DeltaOperation::StreamingUpdate {
-                    output_mode: OutputMode::Append,
-                    query_id: self.opts.app_id.clone(),
-                    epoch_id,
-                },
-                &self.table.state,
-                None,
-            )
-            .await
-            {
+            let commit = deltalake_core::operations::transaction::CommitBuilder::default()
+                .with_actions(actions.clone())
+                .build(
+                    self.table.state.as_ref().map(|s| s as &dyn TableReference),
+                    self.table.log_store().clone(),
+                    DeltaOperation::StreamingUpdate {
+                        output_mode: OutputMode::Append,
+                        query_id: self.opts.app_id.clone(),
+                        epoch_id,
+                    },
+                )
+                .await
+                .map_err(DeltaTableError::from);
+            match commit {
                 Ok(v) => {
                     /*if v != version {
                         return Err(IngestError::UnexpectedVersionMismatch {
@@ -1051,7 +1062,7 @@ impl IngestProcessor {
                         self.delta_partition_offsets.insert(*p, Some(*o));
                     }
                     if self.opts.write_checkpoints {
-                        try_create_checkpoint(&mut self.table, v).await?;
+                        try_create_checkpoint(&mut self.table, v.version).await?;
                     }
                     record_write_lag(
                         self.topic.as_str(),
@@ -1059,7 +1070,7 @@ impl IngestProcessor {
                         &partition_offsets,
                         &self.ingest_metrics,
                     )?;
-                    return Ok(v);
+                    return Ok(v.version);
                 }
                 Err(e) => match e {
                     DeltaTableError::VersionAlreadyExists(_) => {
@@ -1343,6 +1354,9 @@ fn kafka_client_config_from_options(opts: &IngestOptions) -> ClientConfig {
     }
     if let Ok(key_pem) = std::env::var("KAFKA_DELTA_INGEST_KEY") {
         kafka_client_config.set("ssl.key.pem", key_pem);
+    }
+    if let Ok(ca_pem) = std::env::var("KAFKA_DELTA_INGEST_CA") {
+        kafka_client_config.set("ssl.ca.pem", ca_pem);
     }
     if let Ok(scram_json) = std::env::var("KAFKA_DELTA_INGEST_SCRAM_JSON") {
         let value: Value = serde_json::from_str(scram_json.as_str())
