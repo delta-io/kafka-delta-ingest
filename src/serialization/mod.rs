@@ -39,8 +39,8 @@ impl DeserializedMessage {
     pub fn schema(&self) -> &Option<ArrowSchema> {
         &self.schema
     }
-    pub fn message(self) -> Value {
-        self.message
+    pub fn message(&self) -> &Value {
+        &self.message
     }
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.message.get(key)

@@ -355,7 +355,7 @@ impl Transformer {
     where
         M: Message,
     {
-        let data = Variable::try_from(value.clone().message())?;
+        let data = Variable::try_from(value.message())?;
 
         match value.as_object_mut() {
             Some(map) => {
@@ -379,7 +379,7 @@ impl Transformer {
                 Ok(())
             }
             _ => Err(TransformError::ValueNotAnObject {
-                value: value.clone().message(),
+                value: value.message().to_owned(),
             }),
         }
     }

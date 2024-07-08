@@ -347,7 +347,7 @@ impl DataWriter {
             }
         }
 
-        let values = values.into_iter().map(|v| v.message()).collect();
+        let values = values.into_iter().map(|v| v.message().to_owned()).collect();
 
         for (key, values) in self.divide_by_partition_values(values)? {
             match self.arrow_writers.get_mut(&key) {

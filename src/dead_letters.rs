@@ -60,7 +60,7 @@ impl DeadLetter {
         let timestamp = Utc::now();
         Self {
             base64_bytes: None,
-            json_string: Some(value.clone().message().to_string()),
+            json_string: Some((&value.message()).to_string()),
             error: Some(err.to_string()),
             timestamp: timestamp
                 .timestamp_nanos_opt()

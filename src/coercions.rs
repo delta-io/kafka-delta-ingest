@@ -447,7 +447,7 @@ mod tests {
         ];
 
         for i in 0..messages.len() {
-            assert_eq!(messages[i].clone().message(), expected[i]);
+            assert_eq!(messages[i].message().to_owned(), expected[i]);
         }
     }
 }
