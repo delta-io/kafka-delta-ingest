@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 
 CARGO:=$(shell which cargo)
-APP=target/debug/placementd-web
+APP=target/debug/kafka-delta-ingest
 SOURCES=$(shell find . -type f -iname '*.rs')
 
 $(APP): Cargo.toml $(SOURCES)
