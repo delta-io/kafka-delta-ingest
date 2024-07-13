@@ -37,7 +37,7 @@ fn filtering(filter: &Box<dyn Filter>, values: &Vec<Value>) {
 
 fn naive_filter_benchmark(c: &mut Criterion) {
     let values = read_json_file(SOURCE_PATH).unwrap();
-    let filter = FilterFactory::try_build(&FilterEngine::Naive, &vec!("method=='get'".to_string())).expect("wrong");
+    let filter = FilterFactory::try_build(&FilterEngine::Naive, &vec!("method=='GET'".to_string())).expect("wrong");
     c.bench_function("naive_filter_benchmark", |b| {
         b.iter(|| filtering(&filter, black_box(&values)))
     });
@@ -46,7 +46,7 @@ fn naive_filter_benchmark(c: &mut Criterion) {
 
 fn jmespath_filter_benchmark(c: &mut Criterion) {
     let values = read_json_file(SOURCE_PATH).unwrap();
-    let filter = FilterFactory::try_build(&FilterEngine::Jmespath, &vec!("method=='get'".to_string())).expect("wrong");
+    let filter = FilterFactory::try_build(&FilterEngine::Jmespath, &vec!("method=='GET'".to_string())).expect("wrong");
     c.bench_function("jmespath_filter_benchmark", |b| {
         b.iter(|| filtering(&filter, black_box(&values)))
     });
