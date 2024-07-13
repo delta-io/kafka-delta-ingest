@@ -30,17 +30,19 @@
 #![deny(deprecated)]
 #![deny(missing_docs)]
 
-use chrono::Local;
-use clap::{Arg, ArgAction, ArgGroup, ArgMatches, Command};
-use kafka_delta_ingest::{
-    start_ingest, AutoOffsetReset, DataTypeOffset, DataTypePartition, IngestOptions, MessageFormat,
-    SchemaSource,
-};
-use log::{error, info, LevelFilter};
 use std::collections::HashMap;
 use std::io::prelude::*;
 use std::path::PathBuf;
 use std::str::FromStr;
+
+use chrono::Local;
+use clap::{Arg, ArgAction, ArgGroup, ArgMatches, Command};
+use log::{error, info, LevelFilter};
+
+use kafka_delta_ingest::{
+    AutoOffsetReset, DataTypeOffset, DataTypePartition, FilterEngine, FilterError, IngestOptions,
+    MessageFormat, SchemaSource, start_ingest
+};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
@@ -119,6 +121,13 @@ async fn main() -> anyhow::Result<()> {
                 .map(|list| list.map(|t| parse_transform(t).unwrap()).collect())
                 .unwrap_or_else(HashMap::new);
 
+            let filters: Vec<String> = ingest_matches
+                .get_many::<String>("filter")
+                .map(|list| list.map(|f| f.clone()).collect())
+                .unwrap_or_else(Vec::new);
+
+            let filter_engine: FilterEngine = convert_matches_to_filter_engine(ingest_matches)?;
+
             let dlq_table_location = ingest_matches
                 .get_one::<String>("dlq_table_location")
                 .map(|s| s.to_string());
@@ -156,6 +165,8 @@ async fn main() -> anyhow::Result<()> {
                 max_messages_per_batch: *max_messages_per_batch,
                 min_bytes_per_file: *min_bytes_per_file,
                 transforms,
+                filters,
+                filter_engine,
                 dlq_table_uri: dlq_table_location,
                 dlq_transforms,
                 write_checkpoints,
@@ -402,6 +413,39 @@ the following well-known Kafka metadata properties:
 * kafka.topic
 * kafka.timestamp
 "#))
+                .arg(Arg::new("filter")
+                    .short('f')
+                    .long("filter")
+                    .action(ArgAction::Append)
+                    .help(
+                        r#"A list of filters that will be applied to each message before transforms.
+Filters are separated by semicolons. There are two types of filter.
+The first, naive filter, which is used by default, supports simple operations and a path flowing through points.
+List of operations: ==, !=, >, <, >=, <=, ~=. The last one is case-insensitive string comparison.
+For example:
+-f "path.to.num.value >= `5`;string_value_key~='buzz'"
+
+The second jmespath-based filter is used for complex conditions, such as checking inside an array
+or checking for the presence of a key. Due to its more complex functionality, it works slower
+than the naive one, but is still quite fast. See: https://jmespath.org/tutorial.html
+For example:
+-f "!contains(keys(@), 'status') || (status == 'status' && factor >= `26`)"
+
+Strings must be enclosed in single quotes "'", numbers must be enclosed in backticks "`"
+"#)
+                    .env("FILTERS")
+                    .num_args(0..)
+                    .value_delimiter(';'))
+                .arg(
+                    Arg::new("filter_engine")
+                        .long("filter_engine")
+                        .env("FILTER_ENGINE")
+                        .value_parser(["naive", "jmespath"])
+                        .action(ArgAction::Set)
+                        .default_value("naive")
+                        .help("Naive for simple comparisons and quick work, jmespath for complex comparisons")
+                        .required(false)
+                )
                 .arg(Arg::new("dlq_table_location")
                     .long("dlq_table_location")
                     .env("DLQ_TABLE_LOCATION")
@@ -480,9 +524,20 @@ fn convert_matches_to_message_format(
         .map(MessageFormat::Json);
 }
 
+fn convert_matches_to_filter_engine(
+    ingest_matches: &ArgMatches,
+) -> Result<FilterEngine, FilterError> {
+    return match ingest_matches.get_one::<String>("filter_engine").unwrap().as_str() {
+        "naive" => Ok(FilterEngine::Naive),
+        "jmespath" => Ok(FilterEngine::Jmespath),
+        f => Err(FilterError::NotFound {reason: f.to_string() })
+    }
+}
+
 #[cfg(test)]
 mod test {
     use clap::ArgMatches;
+
     use kafka_delta_ingest::{MessageFormat, SchemaSource};
 
     use crate::{

@@ -9,37 +9,51 @@
 
 #[macro_use]
 extern crate lazy_static;
-
+#[cfg(test)]
+extern crate serde_json;
 #[macro_use]
 extern crate strum_macros;
 
-#[cfg(test)]
-extern crate serde_json;
+use std::{collections::HashMap, path::PathBuf};
+use std::ops::Add;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use coercions::CoercionTree;
+use deltalake_core::{DeltaTable, DeltaTableError};
 use deltalake_core::operations::transaction::TableReference;
 use deltalake_core::protocol::DeltaOperation;
 use deltalake_core::protocol::OutputMode;
-use deltalake_core::{DeltaTable, DeltaTableError};
 use futures::stream::StreamExt;
 use log::{debug, error, info, warn};
 use rdkafka::{
+    ClientContext,
     config::ClientConfig,
     consumer::{Consumer, ConsumerContext, Rebalance, StreamConsumer},
     error::KafkaError,
-    util::Timeout,
-    ClientContext, Message, Offset, TopicPartitionList,
+    Message, Offset, TopicPartitionList, util::Timeout,
 };
+use rdkafka::message::BorrowedMessage;
 use serde_json::Value;
-use serialization::{MessageDeserializer, MessageDeserializerFactory};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use std::{collections::HashMap, path::PathBuf};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
+use coercions::CoercionTree;
+use delta_helpers::*;
+use serialization::{MessageDeserializer, MessageDeserializerFactory};
+
+use crate::{
+    dead_letters::*,
+    metrics::*,
+    transforms::*,
+    writer::{DataWriter, DataWriterError},
+};
+pub use crate::filters::{Filter, FilterEngine, FilterError, FilterFactory};
+use crate::offsets::WriteOffsetsError;
+use crate::value_buffers::{ConsumedBuffers, ValueBuffers};
+
 mod coercions;
+mod filters;
 /// Doc
 pub mod cursor;
 mod dead_letters;
@@ -51,18 +65,6 @@ mod transforms;
 mod value_buffers;
 /// Doc
 pub mod writer;
-
-use crate::offsets::WriteOffsetsError;
-use crate::value_buffers::{ConsumedBuffers, ValueBuffers};
-use crate::{
-    dead_letters::*,
-    metrics::*,
-    transforms::*,
-    writer::{DataWriter, DataWriterError},
-};
-use delta_helpers::*;
-use rdkafka::message::BorrowedMessage;
-use std::ops::Add;
 
 /// Type alias for Kafka partition
 pub type DataTypePartition = i32;
@@ -205,6 +207,14 @@ pub enum IngestError {
         /// The underlying error.
         source: anyhow::Error,
     },
+
+    /// Errors returned by the filter
+    #[error("FilterError: {source}")]
+    Filter {
+        /// Wrapped [`FilterError`]
+        #[from]
+        source: FilterError,
+    },
 }
 
 /// Formats for message parsing
@@ -280,6 +290,10 @@ pub struct IngestOptions {
     pub min_bytes_per_file: usize,
     /// A list of transforms to apply to the message before writing to delta lake.
     pub transforms: HashMap<String, String>,
+    /// A list for filtering by message fields
+    pub filters: Vec<String>,
+    /// Filter engine used
+    pub filter_engine: FilterEngine,
     /// An optional dead letter table to write messages that fail deserialization, transformation or schema validation.
     pub dlq_table_uri: Option<String>,
     /// Transforms to apply to dead letters when writing to a delta table.
@@ -310,6 +324,8 @@ impl Default for IngestOptions {
             max_messages_per_batch: 5000,
             min_bytes_per_file: 134217728,
             transforms: HashMap::new(),
+            filters: Vec::new(),
+            filter_engine: FilterEngine::Naive,
             dlq_table_uri: None,
             dlq_transforms: HashMap::new(),
             additional_kafka_settings: None,
@@ -443,6 +459,13 @@ pub async fn start_ingest(
                             debug!("Skipping message with partition {}, offset {} on topic {} because it was already processed", partition, offset, topic);
                             continue;
                         }
+                        IngestError::Filter { source } => match source {
+                            FilterError::FilterSkipMessage => {
+                                ingest_metrics.message_filtered();
+                                debug!("Skip message by filter");
+                            }
+                            _ => return Err(IngestError::Filter { source }),
+                        },
                         _ => return Err(e),
                     }
                 }
@@ -734,6 +757,7 @@ struct IngestProcessor {
     topic: String,
     consumer: Arc<StreamConsumer<KafkaContext>>,
     transformer: Transformer,
+    filter: Box<dyn Filter>,
     coercion_tree: CoercionTree,
     table: DeltaTable,
     delta_writer: DataWriter,
@@ -758,6 +782,7 @@ impl IngestProcessor {
         let dlq = dead_letter_queue_from_options(&opts).await?;
         let transformer = Transformer::from_transforms(&opts.transforms)?;
         let table = delta_helpers::load_table(table_uri, HashMap::new()).await?;
+        let filter = FilterFactory::try_build(&opts.filter_engine, &opts.filters)?;
         let coercion_tree = coercions::create_coercion_tree(table.schema().unwrap());
         let delta_writer = DataWriter::for_table(&table, HashMap::new())?;
         let deserializer =
@@ -770,6 +795,7 @@ impl IngestProcessor {
             topic,
             consumer,
             transformer,
+            filter,
             coercion_tree,
             table,
             delta_writer,
@@ -820,6 +846,8 @@ impl IngestProcessor {
         // Deserialize
         match self.deserialize_message(&message).await {
             Ok(mut value) => {
+                self.filter.filter(&value)?;
+
                 self.ingest_metrics.message_deserialized();
                 // Transform
                 match self.transformer.transform(&mut value, Some(&message)) {
