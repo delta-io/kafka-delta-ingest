@@ -21,22 +21,38 @@ impl NaiveFilterOperand {
         }
 
         let path: Vec<String> = path.unwrap().split('.').map(str::to_string).collect();
-        return Ok(Self {
+        Ok(Self {
             value,
             path: Some(path),
-        });
+        })
     }
 
     pub(crate) fn from_str(operand_str: &str) -> Result<Self, NaiveFilterError> {
-        if operand_str.starts_with('`') {
+        let operand_str = operand_str.trim();
+
+        match operand_str.chars().next() {
             // number
-            NaiveFilterOperand::new(serde_json::from_str(operand_str.trim_matches('`'))?, None)
-        } else if operand_str.starts_with('\'') {
+            Some('`') => {
+                if !operand_str.ends_with('`') {
+                    return Err(NaiveFilterError::PrepareError {
+                        reason: "To filter by number, the number must begin and end with `"
+                            .to_string(),
+                    });
+                }
+                NaiveFilterOperand::new(serde_json::from_str(operand_str.trim_matches('`'))?, None)
+            }
             // string
-            NaiveFilterOperand::new(Some(json!(operand_str.trim_matches('\''))), None)
-        } else {
+            Some('\'') => {
+                if !operand_str.ends_with('\'') {
+                    return Err(NaiveFilterError::PrepareError {
+                        reason: "To filter by string, the string must begin and end with '"
+                            .to_string(),
+                    });
+                }
+                NaiveFilterOperand::new(Some(json!(operand_str.trim_matches('\''))), None)
+            }
             // path to attribute via dot
-            NaiveFilterOperand::new(None, Some(operand_str.to_string()))
+            _ => NaiveFilterOperand::new(None, Some(operand_str.to_string())),
         }
     }
     fn is_path(&self) -> bool {

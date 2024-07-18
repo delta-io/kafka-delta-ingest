@@ -1,8 +1,8 @@
 use std::convert::TryFrom;
 use std::sync::Arc;
 
-use jmespatch::{Context, ErrorReason, JmespathError, Rcvar, Variable};
 use jmespatch::functions::{ArgumentType, CustomFunction, Signature};
+use jmespatch::{Context, ErrorReason, JmespathError, Rcvar, Variable};
 
 /// Custom function to compare two string values in a case-insensitive manner
 fn eq_ignore_case(args: &[Rcvar], context: &mut Context) -> Result<Rcvar, JmespathError> {

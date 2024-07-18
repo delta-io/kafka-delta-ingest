@@ -14,25 +14,25 @@ extern crate serde_json;
 #[macro_use]
 extern crate strum_macros;
 
-use std::{collections::HashMap, path::PathBuf};
 use std::ops::Add;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use std::{collections::HashMap, path::PathBuf};
 
-use deltalake_core::{DeltaTable, DeltaTableError};
 use deltalake_core::operations::transaction::TableReference;
 use deltalake_core::protocol::DeltaOperation;
 use deltalake_core::protocol::OutputMode;
+use deltalake_core::{DeltaTable, DeltaTableError};
 use futures::stream::StreamExt;
 use log::{debug, error, info, warn};
+use rdkafka::message::BorrowedMessage;
 use rdkafka::{
-    ClientContext,
     config::ClientConfig,
     consumer::{Consumer, ConsumerContext, Rebalance, StreamConsumer},
     error::KafkaError,
-    Message, Offset, TopicPartitionList, util::Timeout,
+    util::Timeout,
+    ClientContext, Message, Offset, TopicPartitionList,
 };
-use rdkafka::message::BorrowedMessage;
 use serde_json::Value;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -42,22 +42,22 @@ use coercions::CoercionTree;
 use delta_helpers::*;
 use serialization::{MessageDeserializer, MessageDeserializerFactory};
 
+pub use crate::filters::{Filter, FilterEngine, FilterError, FilterFactory};
+use crate::offsets::WriteOffsetsError;
+use crate::value_buffers::{ConsumedBuffers, ValueBuffers};
 use crate::{
     dead_letters::*,
     metrics::*,
     transforms::*,
     writer::{DataWriter, DataWriterError},
 };
-pub use crate::filters::{Filter, FilterEngine, FilterError, FilterFactory};
-use crate::offsets::WriteOffsetsError;
-use crate::value_buffers::{ConsumedBuffers, ValueBuffers};
 
 mod coercions;
-mod filters;
 /// Doc
 pub mod cursor;
 mod dead_letters;
 mod delta_helpers;
+mod filters;
 mod metrics;
 mod offsets;
 mod serialization;
@@ -212,9 +212,16 @@ pub enum IngestError {
     #[error("FilterError: {source}")]
     Filter {
         /// Wrapped [`FilterError`]
-        #[from]
-        source: FilterError,
+        source: Box<FilterError>,
     },
+}
+
+impl From<FilterError> for IngestError {
+    fn from(error: FilterError) -> Self {
+        IngestError::Filter {
+            source: Box::new(error),
+        }
+    }
 }
 
 /// Formats for message parsing
@@ -459,7 +466,7 @@ pub async fn start_ingest(
                             debug!("Skipping message with partition {}, offset {} on topic {} because it was already processed", partition, offset, topic);
                             continue;
                         }
-                        IngestError::Filter { source } => match source {
+                        IngestError::Filter { source } => match *source {
                             FilterError::FilterSkipMessage => {
                                 ingest_metrics.message_filtered();
                                 debug!("Skip message by filter");

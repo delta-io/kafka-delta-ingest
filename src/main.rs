@@ -40,8 +40,8 @@ use clap::{Arg, ArgAction, ArgGroup, ArgMatches, Command};
 use log::{error, info, LevelFilter};
 
 use kafka_delta_ingest::{
-    AutoOffsetReset, DataTypeOffset, DataTypePartition, FilterEngine, FilterError, IngestOptions,
-    MessageFormat, SchemaSource, start_ingest
+    start_ingest, AutoOffsetReset, DataTypeOffset, DataTypePartition, FilterEngine, FilterError,
+    IngestOptions, MessageFormat, SchemaSource,
 };
 
 #[tokio::main(flavor = "current_thread")]
@@ -123,7 +123,7 @@ async fn main() -> anyhow::Result<()> {
 
             let filters: Vec<String> = ingest_matches
                 .get_many::<String>("filter")
-                .map(|list| list.map(|f| f.clone()).collect())
+                .map(|list| list.cloned().collect())
                 .unwrap_or_else(Vec::new);
 
             let filter_engine: FilterEngine = convert_matches_to_filter_engine(ingest_matches)?;
@@ -526,12 +526,18 @@ fn convert_matches_to_message_format(
 
 fn convert_matches_to_filter_engine(
     ingest_matches: &ArgMatches,
-) -> Result<FilterEngine, FilterError> {
-    return match ingest_matches.get_one::<String>("filter_engine").unwrap().as_str() {
+) -> Result<FilterEngine, Box<FilterError>> {
+    return match ingest_matches
+        .get_one::<String>("filter_engine")
+        .unwrap()
+        .as_str()
+    {
         "naive" => Ok(FilterEngine::Naive),
         "jmespath" => Ok(FilterEngine::Jmespath),
-        f => Err(FilterError::NotFound {reason: f.to_string() })
-    }
+        f => Err(Box::new(FilterError::NotFound {
+            name: f.to_string(),
+        })),
+    };
 }
 
 #[cfg(test)]

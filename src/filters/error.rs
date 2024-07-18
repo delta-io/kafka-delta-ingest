@@ -1,5 +1,4 @@
 use jmespatch::JmespathError;
-use serde_json;
 
 use crate::filters::naive_filter::error::NaiveFilterError;
 
@@ -37,11 +36,11 @@ pub enum FilterError {
         source: serde_json::Error,
     },
 
-    /// Not found filter engine
-    #[error("Not found filter engine: {reason}")]
+    /// Filter engine not found
+    #[error("Filter engine not found: {name}")]
     NotFound {
-        /// 
-        reason: String
+        /// Wrong name
+        name: String,
     },
 
     /// Error returned for skipping message

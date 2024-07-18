@@ -20,7 +20,7 @@ impl Operator for GteOperator {
     fn execute(&self, left: &Value, right: &Value) -> Result<bool, NaiveFilterError> {
         match left {
             Value::Number(n) => {
-                return if let Some(integer) = n.as_i64() {
+                if let Some(integer) = n.as_i64() {
                     Ok(integer >= right.as_i64().unwrap())
                 } else {
                     Ok(n.as_f64().unwrap() >= right.as_f64().unwrap())
@@ -39,7 +39,7 @@ impl Operator for LteOperator {
     fn execute(&self, left: &Value, right: &Value) -> Result<bool, NaiveFilterError> {
         match left {
             Value::Number(n) => {
-                return if let Some(integer) = n.as_i64() {
+                if let Some(integer) = n.as_i64() {
                     Ok(integer <= right.as_i64().unwrap())
                 } else {
                     Ok(n.as_f64().unwrap() <= right.as_f64().unwrap())
@@ -57,7 +57,7 @@ impl Operator for EqOperator {
     fn execute(&self, left: &Value, right: &Value) -> Result<bool, NaiveFilterError> {
         match left {
             Value::Number(n) => {
-                return if let Some(integer) = n.as_i64() {
+                if let Some(integer) = n.as_i64() {
                     Ok(integer == right.as_i64().unwrap())
                 } else {
                     Ok(n.as_f64().unwrap() == right.as_f64().unwrap())
@@ -66,7 +66,7 @@ impl Operator for EqOperator {
             Value::String(s) => {
                 return Ok(s.as_str() == right.as_str().unwrap())
             },
-            Value::Bool(b) => return Ok(*b == right.as_bool().unwrap()),
+            Value::Bool(b) => Ok(*b == right.as_bool().unwrap()),
             _ => Err(
                 NaiveFilterError::RuntimeError {
                     reason: format!("The == operator can only be used for numbers, strings or bools. Passed: {:?}, {:?}", left, right)
@@ -79,16 +79,16 @@ impl Operator for NeqOperator {
     fn execute(&self, left: &Value, right: &Value) -> Result<bool, NaiveFilterError> {
         match left {
             Value::Number(n) => {
-                return if let Some(integer) = n.as_i64() {
+                if let Some(integer) = n.as_i64() {
                     Ok(integer != right.as_i64().unwrap())
                 } else {
                     Ok(n.as_f64().unwrap() != right.as_f64().unwrap())
                 }
             },
             Value::String(s) => {
-                return Ok(s.as_str() != right.as_str().unwrap())
+                Ok(s.as_str() != right.as_str().unwrap())
             },
-            Value::Bool(b) => return Ok(*b != right.as_bool().unwrap()),
+            Value::Bool(b) => Ok(*b != right.as_bool().unwrap()),
             _ => Err(
                 NaiveFilterError::RuntimeError {
                     reason: format!("The != operator can only be used for numbers, strings or bools. Passed: {:?}, {:?}", left, right)
@@ -109,7 +109,7 @@ impl Operator for GtOperator {
     fn execute(&self, left: &Value, right: &Value) -> Result<bool, NaiveFilterError> {
         match left {
             Value::Number(n) => {
-                return if let Some(integer) = n.as_i64() {
+                if let Some(integer) = n.as_i64() {
                     Ok(integer > right.as_i64().unwrap())
                 } else {
                     Ok(n.as_f64().unwrap() > right.as_f64().unwrap())
@@ -127,7 +127,7 @@ impl Operator for LtOperator {
     fn execute(&self, left: &Value, right: &Value) -> Result<bool, NaiveFilterError> {
         match left {
             Value::Number(n) => {
-                return if let Some(integer) = n.as_i64() {
+                if let Some(integer) = n.as_i64() {
                     Ok(integer < right.as_i64().unwrap())
                 } else {
                     Ok(n.as_f64().unwrap() < right.as_f64().unwrap())

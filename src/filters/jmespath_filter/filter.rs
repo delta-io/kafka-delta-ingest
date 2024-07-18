@@ -2,8 +2,8 @@ use jmespatch::{Expression, Runtime};
 use serde_json::Value;
 
 use crate::filters::filter::Filter;
-use crate::filters::FilterError;
 use crate::filters::jmespath_filter::custom_functions::create_eq_ignore_case_function;
+use crate::filters::FilterError;
 
 lazy_static! {
     static ref FILTER_RUNTIME: Runtime = {
@@ -14,7 +14,6 @@ lazy_static! {
     };
 }
 
-
 /// Implementation of the [Filter] trait for complex checks, such as checking for
 /// the presence of a key in an object or comparing the second value in an array
 /// or check array length.
@@ -24,7 +23,7 @@ pub struct JmespathFilter {
 }
 
 impl Filter for JmespathFilter {
-    fn from_filters(filters: &Vec<String>) -> Result<Self, FilterError> {
+    fn from_filters(filters: &[String]) -> Result<Self, FilterError> {
         let filters = filters
             .iter()
             .map(|f| {
@@ -48,17 +47,16 @@ impl Filter for JmespathFilter {
             match filter.search(message) {
                 Err(e) => return Err(FilterError::JmespathError { source: e }),
                 Ok(v) => {
-                    if v.as_boolean().unwrap() == false {
+                    if !v.as_boolean().unwrap() {
                         return Err(FilterError::FilterSkipMessage);
                     }
                 }
             };
         }
 
-        return Ok(());
+        Ok(())
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -89,22 +87,22 @@ mod tests {
 
         for v in values.into_iter() {
             match filter.filter(&v) {
-                Ok(_) => { passed_messages += 1 }
-                Err(FilterError::FilterSkipMessage) => {
-                    filtered_messages += 1
-                }
-                Err(e) => panic!("{}", e)
+                Ok(_) => passed_messages += 1,
+                Err(FilterError::FilterSkipMessage) => filtered_messages += 1,
+                Err(e) => panic!("{}", e),
             }
         }
 
-        return (passed_messages, filtered_messages)
+        return (passed_messages, filtered_messages);
     }
     #[test]
     fn equal() {
         let values = read_json_file(SOURCE_PATH).unwrap();
-        let filter = match JmespathFilter::from_filters(&vec!["session_id=='a8a3d0e3-7b4e-4f17-b264-76cb792bdb96'".to_string()]) {
+        let filter = match JmespathFilter::from_filters(&vec![
+            "session_id=='a8a3d0e3-7b4e-4f17-b264-76cb792bdb96'".to_string(),
+        ]) {
             Ok(f) => f,
-            Err(e) => panic!("{}", e)
+            Err(e) => panic!("{}", e),
         };
 
         let (passed_messages, filtered_messages) = run_filter(&filter, &values);
@@ -115,9 +113,11 @@ mod tests {
     #[test]
     fn eq_ignore_case() {
         let values = read_json_file(SOURCE_PATH).unwrap();
-        let filter = match JmespathFilter::from_filters(&vec!["eq_ignore_case(method, 'get')".to_string()]) {
+        let filter = match JmespathFilter::from_filters(&vec![
+            "eq_ignore_case(method, 'get')".to_string()
+        ]) {
             Ok(f) => f,
-            Err(e) => panic!("{}", e)
+            Err(e) => panic!("{}", e),
         };
 
         let (passed_messages, filtered_messages) = run_filter(&filter, &values);
@@ -129,9 +129,11 @@ mod tests {
     #[test]
     fn or_condition() {
         let values = read_json_file(SOURCE_PATH).unwrap();
-        let filter = match JmespathFilter::from_filters(&vec!["(status == `404` || method == 'GET')".to_string()]) {
+        let filter = match JmespathFilter::from_filters(&vec![
+            "(status == `404` || method == 'GET')".to_string(),
+        ]) {
             Ok(f) => f,
-            Err(e) => panic!("{}", e)
+            Err(e) => panic!("{}", e),
         };
 
         let (passed_messages, filtered_messages) = run_filter(&filter, &values);
@@ -158,9 +160,11 @@ mod tests {
             .iter()
             .map(|line| serde_json::from_str::<Value>(&line).unwrap())
             .collect();
-        let filter = match JmespathFilter::from_filters(&vec!["!contains(keys(@), 'status') || (status == '1' && age >= `26`)".to_string()]) {
+        let filter = match JmespathFilter::from_filters(&vec![
+            "!contains(keys(@), 'status') || (status == '1' && age >= `26`)".to_string(),
+        ]) {
             Ok(f) => f,
-            Err(e) => panic!("{}", e)
+            Err(e) => panic!("{}", e),
         };
 
         let (passed_messages, filtered_messages) = run_filter(&filter, &values);

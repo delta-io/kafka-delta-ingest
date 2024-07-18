@@ -1,5 +1,3 @@
-use serde_json;
-
 #[derive(thiserror::Error, Debug)]
 pub enum NaiveFilterError {
     /// Error from [`serde_json`]
@@ -9,7 +7,7 @@ pub enum NaiveFilterError {
         #[from]
         source: serde_json::Error,
     },
-    
+
     /// Error occurs when trying to execute a filter
     #[error("NaiveFilter execution error: {reason}")]
     RuntimeError { reason: String },
