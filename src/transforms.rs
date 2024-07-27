@@ -77,6 +77,10 @@ lazy_static! {
             Box::new(create_epoch_seconds_to_iso8601_fn()),
         );
         runtime.register_function(
+            "epoch_millis_to_iso8601",
+            Box::new(create_epoch_millis_to_iso8601_fn()),
+        );
+        runtime.register_function(
             "epoch_micros_to_iso8601",
             Box::new(create_epoch_micros_to_iso8601_fn()),
         );
@@ -184,6 +188,13 @@ fn create_epoch_seconds_to_iso8601_fn() -> CustomFunction {
 }
 
 // TODO: Consolidate these custom function factories
+fn create_epoch_millis_to_iso8601_fn() -> CustomFunction {
+    CustomFunction::new(
+        Signature::new(vec![ArgumentType::Number], None),
+        Box::new(jmespath_epoch_millis_to_iso8601),
+    )
+}
+
 fn create_epoch_micros_to_iso8601_fn() -> CustomFunction {
     CustomFunction::new(
         Signature::new(vec![ArgumentType::Number], None),
@@ -214,12 +225,14 @@ fn substr(args: &[Rcvar], context: &mut Context) -> Result<Rcvar, JmespathError>
 
 enum EpochUnit {
     Seconds(i64),
+    Milliseconds(i64),
     Microseconds(i64),
 }
 
 fn iso8601_from_epoch(epoch_unit: EpochUnit) -> String {
     let dt = match epoch_unit {
         EpochUnit::Seconds(s) => Utc.timestamp_nanos(s * 1_000_000_000),
+        EpochUnit::Milliseconds(ms) => Utc.timestamp_nanos(ms * 1_000_000),
         EpochUnit::Microseconds(u) => Utc.timestamp_nanos(u * 1000),
     };
 
@@ -232,6 +245,16 @@ fn jmespath_epoch_seconds_to_iso8601(
 ) -> Result<Rcvar, JmespathError> {
     let seconds = i64_from_args(args, context, 0)?;
     let value = serde_json::Value::String(iso8601_from_epoch(EpochUnit::Seconds(seconds)));
+    let variable = Variable::try_from(value)?;
+    Ok(Arc::new(variable))
+}
+
+fn jmespath_epoch_millis_to_iso8601(
+    args: &[Rcvar],
+    context: &mut Context,
+) -> Result<Rcvar, JmespathError> {
+    let millis = i64_from_args(args, context, 0)?;
+    let value = serde_json::Value::String(iso8601_from_epoch(EpochUnit::Milliseconds(millis)));
     let variable = Variable::try_from(value)?;
     Ok(Arc::new(variable))
 }
