@@ -76,3 +76,19 @@ services:
     volumes:
       - ./bin/localstack-setup_emails.sh:/localstack-setup_emails.sh
       - "./tests/data/emails/:/data/emails"
+  data_loader:
+    build:
+      context: .
+      dockerfile: contrib/Dockerfile.data_loader
+    volumes:
+      - ./bin/load_data.sh:/app/load_data.sh
+      - ./tests/json/:/data
+    environment:
+      - KAFKA_BROKER=kafka:29092
+      - TOPIC=web_requests
+      - DATA_FILE=/data/web_requests-100K.json.tar.gz
+    depends_on:
+      - kafka
+    profiles:
+      - load-data
+    command: ["-c", "chmod +x /app/load_data.sh && /app/load_data.sh"]
