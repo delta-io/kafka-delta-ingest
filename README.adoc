@@ -18,17 +18,79 @@ To contribute please look at the link:https://github.com/delta-io/kafka-delta-in
 
 See the link:https://github.com/delta-io/kafka-delta-ingest/blob/main/doc/DESIGN.md[design doc] for more details.
 
-=== Example
+== Running kafka delta ingest on sample data locally
 
 The repository includes an example for trying out the application locally with some fake web request data.
+The included [docker-compose.yml](./docker-compose.yml) contains Redpanda (a Kafka-compatible event streaming platform), LocalStack (AWS cloud service emulator), Azurite (an Azure Storage emulator), and a Schema Registry. These services provide a local environment against which you can run kafka-delta-ingest for testing and development purposes.
+This setup allows you to:
 
-The included docker-compose.yml contains link:https://github.com/wurstmeister/kafka-docker/issues[kafka] and link:https://github.com/localstack/localstack[localstack] services you can run `kafka-delta-ingest` against locally.
+- Use [Redpanda](https://docs.redpanda.com/current/home/) as a Kafka-compatible message broker
+- Emulate AWS S3 and DynamoDB services using [LocalStack](https://docs.localstack.cloud/overview/)
+- Emulate Azure Blob Storage using [Azurite](https://github.com/Azure/Azurite)
+- Manage and evolve your data schemas with the [Schema Registry](https://docs.confluent.io/platform/current/schema-registry/index.html)
 
-==== Starting Worker Processes
+This local environment enables you to develop and test `kafka-delta-ingest` without needing access to actual cloud services or a production Kafka cluster.
 
-1. Launch test services - `docker-compose up setup`
-2. Compile: `cargo build`
-3. Run kafka-delta-ingest against the web_requests example topic and table (customize arguments as desired):
+==== Setup, tests and loading sample data
+
+1. Launch test services:
+```bash
+docker-compose up setup
+```
+
+2. Run tests:
+After setting up the docker-compose environment, you can run the tests for `kafka-delta-ingest`. When running tests, you must enable either the "s3" or "azure" feature flag. This is enforced by the project's build script.
+
+To run tests with a feature flag, use the --features flag with cargo. For example:
+```sh
+# To run tests with S3 support
+cargo test --features s3
+```
+
+Note: While you have the option to use `s3`, another option is to use azure stack with the `--features azure` option.
+This uses the `azurite` from the docker-compose setup to simulate the workload on the Azure blob storage instead of AWS S3.
+
+3. Load sample data into the 'web_requests' topic:
+
+a. Run the `data_loader` service to extract the sample data and load it into the 'web_requests' topic in Redpanda.
+```bash
+docker-compose --profile load-data up data_loader
+```
+
+b. Verify that the topic exists and contains data by reading 100 records from the 'web_requests' topic.:
+```bash
+docker run --rm -it --network kafka-delta-ingest_default edenhill/kcat:1.7.1 -b redpanda:29092 -t web_requests -C -c 100
+```
+
+c. If you don't see any messages, you can check if the topic exists, list all topics in your Redpanda instance. Look for 'web_requests' in the output:
+```bash
+docker run --rm -it --network kafka-delta-ingest_default edenhill/kcat:1.7.1 -b redpanda:29092 -L
+```
+
+d. If the topic exists but is empty, you might want to check the logs of the `data_loader` to see if there were any issues during data loading:
+```bash
+docker-compose logs data_loader
+```
+
+After confirming that the data has been successfully loaded into the 'web_requests' topic, you can proceed with building and kafka-delta-ingest to ingest data into the delta table in the test setup.
+
+==== Build
+
+1. Build
+When building or running tests for `kafka-delta-ingest`, you must enable either the "s3" or "azure" feature flag. This is enforced by the project's [build script](./build.rs).
+
+To enable a feature flag when building or testing, use the `--features` flag with cargo. For example:
+
+```bash
+# To build with S3 support
+cargo build --features s3
+```
+
+Note: The other option is to use the azure stack with the `--features azure` option, but for running locally with localstack, provided with the docker-compose setup, you can 
+use the `--features s3` option to build or test.
+
+==== Run 
+Run kafka-delta-ingest against the web_requests example topic and table (customize arguments as desired):
 
 ```bash
 export AWS_ENDPOINT_URL=http://0.0.0.0:4566
@@ -52,7 +114,7 @@ Notes:
 * The Kafka broker is assumed to be at localhost:9092, use -k to override.
 * To clean data from previous local runs, execute `./bin/clean-example-data.sh`. You'll need to do this if you destroy your Kafka container between runs since your delta log directory will be out of sync with Kafka offsets.
 
-==== Kafka SSL
+=== Kafka SSL
 
 In case you have Kafka topics secured by SSL client certificates, you can specify these secrets as environment variables.
 
