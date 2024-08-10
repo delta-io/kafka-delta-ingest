@@ -52,7 +52,7 @@ jobs:
         toolchain: stable
         override: true
     - name: Teststack setup
-      run: docker-compose up setup
+      run: docker compose up setup
     - name: Run s3 feature tests
       run: cargo test --features s3
     - name: Run azure feature tests
