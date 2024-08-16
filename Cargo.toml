@@ -34,9 +34,9 @@ uuid = { version = "0.8", features = ["serde", "v4"] }
 url = "2.3"
 
 # datafusion feature is required for writer version 2
-deltalake-core = { version = "~0.18.1", features = ["json", "datafusion"]}
-deltalake-aws = { version = "~0.1.2", optional = true }
-deltalake-azure = { version = "~0.1.3", optional = true }
+deltalake-core = { version = "~0.19.0", features = ["json", "datafusion"]}
+deltalake-aws = { version = "~0.1.4", optional = true }
+deltalake-azure = { version = "~0.1.4", optional = true }
 
 # s3 feature enabled, helps for locking interactions with DLQ
 dynamodb_lock = { version = "0.6.0", optional = true }

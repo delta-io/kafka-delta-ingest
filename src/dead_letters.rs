@@ -201,6 +201,7 @@ impl DeadLetterQueue for NoopDeadLetterQueue {
 /// Implementation of the [DeadLetterQueue] trait that writes dead letter content as warn logs.
 /// This implementation is currently only intended for debug development usage.
 /// Be mindful of your PII when using this implementation.
+#[allow(dead_code)]
 pub(crate) struct LoggingDeadLetterQueue {}
 
 #[async_trait]
