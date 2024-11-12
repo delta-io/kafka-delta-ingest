@@ -34,8 +34,10 @@ uuid = { version = "0.8", features = ["serde", "v4"] }
 url = "2.3"
 
 # datafusion feature is required for writer version 2
-deltalake-core = { version = "0.21.0", features = ["json", "datafusion"]}
-deltalake-aws = { version = "0.4.0", optional = true }
+#deltalake-core = { version = "0.21.0", features = ["json", "datafusion"]}
+deltalake-core = { git = "https://github.com/rtyler/delta-rs", branch = "credential-caching", features = ["json", "datafusion"]}
+#deltalake-aws = { version = "0.4.0", optional = true }
+deltalake-aws = { git = "https://github.com/rtyler/delta-rs", branch = "credential-caching", optional = true }
 deltalake-azure = { version = "0.4.0", optional = true }
 
 # s3 feature enabled, helps for locking interactions with DLQ
