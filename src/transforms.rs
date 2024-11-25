@@ -605,7 +605,6 @@ mod tests {
         assert_eq!(expected_iso, dt);
     }
 
-    
     #[test]
     fn test_epoch_millis_to_micro() {
         let mut test_value = json!({
@@ -640,7 +639,6 @@ mod tests {
 
         assert_eq!(1732279537028000u64, modified_date);
     }
-
 
     #[test]
     fn test_transforms_with_epoch_seconds_to_iso8601() {

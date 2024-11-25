@@ -307,16 +307,15 @@ async fn test_avro_single_object_encoding_with_file() {
             max_messages_per_batch: 1,
             // large value - avoid flushing on file size
             min_bytes_per_file: 1000000,
-            input_format: MessageFormat::SoeAvro(
-                PathBuf::from_str(SCHEMA_PATH).unwrap(),
-            ),
+            input_format: MessageFormat::SoeAvro(PathBuf::from_str(SCHEMA_PATH).unwrap()),
             ..Default::default()
         }),
     )
     .await;
 
     let schema = apache_avro::Schema::parse_str(DEFAULT_AVRO_SCHEMA).unwrap();
-    let mut writer =  apache_avro::GenericSingleObjectWriter::new_with_capacity(&schema,100).unwrap();
+    let mut writer =
+        apache_avro::GenericSingleObjectWriter::new_with_capacity(&schema, 100).unwrap();
 
     let mut record = apache_avro::types::Record::new(&schema).unwrap();
     record.put("id", DEFAULT_ID);
@@ -324,8 +323,8 @@ async fn test_avro_single_object_encoding_with_file() {
     record.put("date", DEFAULT_DATE);
 
     let mut write_buf = Vec::with_capacity(100);
-    let length = writer.write_value(record.into(),&mut write_buf).unwrap();
-    
+    let length = writer.write_value(record.into(), &mut write_buf).unwrap();
+
     let encoded = write_buf[0..length].to_owned();
     helpers::send_encoded(&producer, &topic, encoded).await;
     // wait for latency flush
@@ -339,7 +338,6 @@ async fn test_avro_single_object_encoding_with_file() {
     kdi.await.unwrap();
     rt.shutdown_background();
 }
-
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 struct TestMsg {

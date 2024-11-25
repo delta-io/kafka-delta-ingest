@@ -143,7 +143,8 @@ struct AvroDeserializer {
     decoder: EasyAvroDecoder,
 }
 
-struct SoeAvroDeserializer { //Deserializer for avro single object encoding
+struct SoeAvroDeserializer {
+    //Deserializer for avro single object encoding
     decoders: DashMap<i64, GenericSingleObjectReader>,
 }
 
@@ -162,7 +163,7 @@ impl MessageDeserializer for SoeAvroDeserializer {
         &mut self,
         message_bytes: &[u8],
     ) -> Result<Value, MessageDeserializationError> {
-        let key = Self::extract_message_fingerprint(&message_bytes).map_err(|e| {
+        let key = Self::extract_message_fingerprint(message_bytes).map_err(|e| {
             MessageDeserializationError::AvroDeserialization {
                 dead_letter: DeadLetter::from_failed_deserialization(message_bytes, e.to_string()),
             }
@@ -368,14 +369,16 @@ impl SoeAvroDeserializer {
     pub(crate) fn try_from_path(path: &PathBuf) -> Result<Self, anyhow::Error> {
         if path.is_file() {
             let (key, seo_reader) = Self::read_single_schema_file(path)?;
-            debug!("Loaded schema {:?} with key (i64 rep of fingerprint) {:?}", path, key);
+            debug!(
+                "Loaded schema {:?} with key (i64 rep of fingerprint) {:?}",
+                path, key
+            );
             let map: DashMap<i64, GenericSingleObjectReader> = DashMap::with_capacity(1);
             map.insert(key, seo_reader);
             Ok(SoeAvroDeserializer { decoders: map })
         } else if path.is_dir() {
             let decoders = path
                 .read_dir()?
-                .into_iter()
                 .map(|file| {
                     let file_path = file?.path();
                     let value = Self::read_single_schema_file(&file_path)?;
