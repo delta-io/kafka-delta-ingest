@@ -291,6 +291,54 @@ async fn test_avro_with_registry() {
     rt.shutdown_background();
 }
 
+#[tokio::test]
+#[serial]
+async fn test_avro_single_object_encoding_with_file() {
+    let (topic, table, producer, kdi, token, rt) = helpers::create_and_run_kdi(
+        "test_avro_seo_with_file",
+        default_schema(),
+        vec!["date"],
+        1,
+        Some(IngestOptions {
+            app_id: "test_avro_seo_with_file".to_string(),
+            // buffer for 5 seconds before flush
+            allowed_latency: 5,
+            // large value - avoid flushing on num messages
+            max_messages_per_batch: 1,
+            // large value - avoid flushing on file size
+            min_bytes_per_file: 1000000,
+            input_format: MessageFormat::SoeAvro(PathBuf::from_str(SCHEMA_PATH).unwrap()),
+            ..Default::default()
+        }),
+    )
+    .await;
+
+    let schema = apache_avro::Schema::parse_str(DEFAULT_AVRO_SCHEMA).unwrap();
+    let mut writer =
+        apache_avro::GenericSingleObjectWriter::new_with_capacity(&schema, 100).unwrap();
+
+    let mut record = apache_avro::types::Record::new(&schema).unwrap();
+    record.put("id", DEFAULT_ID);
+    record.put("name", DEFAULT_NAME);
+    record.put("date", DEFAULT_DATE);
+
+    let mut write_buf = Vec::with_capacity(100);
+    let length = writer.write_value(record.into(), &mut write_buf).unwrap();
+
+    let encoded = write_buf[0..length].to_owned();
+    helpers::send_encoded(&producer, &topic, encoded).await;
+    // wait for latency flush
+    helpers::wait_until_version_created(&table, 1);
+
+    let v1_rows: Vec<TestMsg> = helpers::read_table_content_at_version_as(&table, 1).await;
+    assert_eq!(v1_rows.len(), 1);
+    assert_defaults(&v1_rows[0]);
+
+    token.cancel();
+    kdi.await.unwrap();
+    rt.shutdown_background();
+}
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 struct TestMsg {
     id: i64,

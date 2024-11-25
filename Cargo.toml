@@ -8,7 +8,7 @@ edition = "2018"
 flate2 = "1.0"
 anyhow = "1"
 async-trait = "0.1"
-apache-avro = "^0.14"
+apache-avro = "^0.17"
 base64 = "0.13"
 bytes = "1"
 chrono = "0.4.31"
@@ -32,6 +32,7 @@ tokio-stream = { version = "0", features = ["fs"] }
 tokio-util = "0.6.3"
 uuid = { version = "0.8", features = ["serde", "v4"] }
 url = "2.3"
+dashmap = "6.0.1"
 
 # datafusion feature is required for writer version 2
 deltalake-core = { version = "0.21.0", features = ["json", "datafusion"]}

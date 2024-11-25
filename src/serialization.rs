@@ -1,11 +1,22 @@
 use crate::{dead_letters::DeadLetter, MessageDeserializationError, MessageFormat};
 use async_trait::async_trait;
+use dashmap::DashMap;
 use flate2::read::GzDecoder;
 use schema_registry_converter::async_impl::{
     easy_avro::EasyAvroDecoder, easy_json::EasyJsonDecoder, schema_registry::SrSettings,
 };
 use serde_json::Value;
-use std::{borrow::BorrowMut, convert::TryFrom, io::Cursor, io::Read, path::PathBuf};
+
+// use crate::avro_canonical_schema_workaround::parse_into_canonical_form;
+use apache_avro::{rabin::Rabin, GenericSingleObjectReader, Schema};
+use std::{
+    borrow::BorrowMut,
+    convert::{TryFrom, TryInto},
+    io::{Cursor, Read},
+    path::PathBuf,
+};
+
+use log::debug;
 
 #[async_trait]
 pub(crate) trait MessageDeserializer {
@@ -47,6 +58,10 @@ impl MessageDeserializerFactory {
                         Err(e) => Err(e),
                     }
                 }
+            },
+            MessageFormat::SoeAvro(path) => match SoeAvroDeserializer::try_from_path(path) {
+                Ok(s) => Ok(Box::new(s)),
+                Err(e) => Err(e),
             },
             _ => Ok(Box::new(DefaultDeserializer::new(decompress_gzip))),
         }
@@ -128,6 +143,11 @@ struct AvroDeserializer {
     decoder: EasyAvroDecoder,
 }
 
+struct SoeAvroDeserializer {
+    //Deserializer for avro single object encoding
+    decoders: DashMap<i64, GenericSingleObjectReader>,
+}
+
 #[derive(Default)]
 struct AvroSchemaDeserializer {
     schema: Option<apache_avro::Schema>,
@@ -135,6 +155,58 @@ struct AvroSchemaDeserializer {
 
 struct JsonDeserializer {
     decoder: EasyJsonDecoder,
+}
+
+#[async_trait]
+impl MessageDeserializer for SoeAvroDeserializer {
+    async fn deserialize(
+        &mut self,
+        message_bytes: &[u8],
+    ) -> Result<Value, MessageDeserializationError> {
+        let key = Self::extract_message_fingerprint(message_bytes).map_err(|e| {
+            MessageDeserializationError::AvroDeserialization {
+                dead_letter: DeadLetter::from_failed_deserialization(message_bytes, e.to_string()),
+            }
+        })?;
+
+        let decoder =
+            self.decoders
+                .get(&key)
+                .ok_or(MessageDeserializationError::AvroDeserialization {
+                    dead_letter: DeadLetter::from_failed_deserialization(
+                        message_bytes,
+                        format!(
+                            "Unkown schema with fingerprint {}",
+                            &message_bytes[2..10]
+                                .iter()
+                                .map(|byte| format!("{:02x}", byte))
+                                .collect::<Vec<String>>()
+                                .join("")
+                        ),
+                    ),
+                })?;
+        let mut reader = Cursor::new(message_bytes);
+
+        match decoder.read_value(&mut reader) {
+            Ok(drs) => match Value::try_from(drs) {
+                Ok(v) => Ok(v),
+                Err(e) => Err(MessageDeserializationError::AvroDeserialization {
+                    dead_letter: DeadLetter::from_failed_deserialization(
+                        message_bytes,
+                        e.to_string(),
+                    ),
+                }),
+            },
+            Err(e) => {
+                return Err(MessageDeserializationError::AvroDeserialization {
+                    dead_letter: DeadLetter::from_failed_deserialization(
+                        message_bytes,
+                        e.to_string(),
+                    ),
+                });
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -290,6 +362,80 @@ impl AvroDeserializer {
         AvroDeserializer {
             decoder: EasyAvroDecoder::new(sr_settings),
         }
+    }
+}
+
+impl SoeAvroDeserializer {
+    pub(crate) fn try_from_path(path: &PathBuf) -> Result<Self, anyhow::Error> {
+        if path.is_file() {
+            let (key, seo_reader) = Self::read_single_schema_file(path)?;
+            debug!(
+                "Loaded schema {:?} with key (i64 rep of fingerprint) {:?}",
+                path, key
+            );
+            let map: DashMap<i64, GenericSingleObjectReader> = DashMap::with_capacity(1);
+            map.insert(key, seo_reader);
+            Ok(SoeAvroDeserializer { decoders: map })
+        } else if path.is_dir() {
+            let decoders = path
+                .read_dir()?
+                .map(|file| {
+                    let file_path = file?.path();
+                    let value = Self::read_single_schema_file(&file_path)?;
+                    Ok(value)
+                })
+                .collect::<anyhow::Result<DashMap<_, _>>>()?;
+
+            Ok(SoeAvroDeserializer { decoders })
+        } else {
+            Err(anyhow::format_err!("Path '{:?}' does not exists", path))
+        }
+    }
+
+    fn read_single_schema_file(
+        path: &PathBuf,
+    ) -> Result<(i64, GenericSingleObjectReader), anyhow::Error> {
+        match std::fs::read_to_string(path) {
+            Ok(content) => match Schema::parse_str(&content) {
+                Ok(s) => {
+                    let fingerprint = s.fingerprint::<Rabin>().bytes;
+                    let fingerprint = fingerprint
+                        .try_into()
+                        .expect("Rabin fingerprints are 8 bytes");
+                    let key = Self::fingerprint_to_i64(fingerprint);
+                    match GenericSingleObjectReader::new(s) {
+                        Ok(decoder) => Ok((key, decoder)),
+                        Err(e) => Err(anyhow::format_err!(
+                            "Schema file '{:?}'; Error: {}",
+                            path,
+                            e.to_string()
+                        )),
+                    }
+                }
+                Err(e) => Err(anyhow::format_err!(
+                    "Schema file '{:?}'; Error: {}",
+                    path,
+                    e.to_string()
+                )),
+            },
+            Err(e) => Err(anyhow::format_err!(
+                "Schema file '{:?}'; Error: {}",
+                path,
+                e.to_string()
+            )),
+        }
+    }
+
+    fn extract_message_fingerprint(msg: &[u8]) -> Result<i64, anyhow::Error> {
+        msg.get(2..10)
+            .ok_or(anyhow::anyhow!(
+                "Message does not contain a valid fingerprint"
+            ))
+            .map(|x| Self::fingerprint_to_i64(x.try_into().expect("Slice must be 8 bytes long")))
+    }
+
+    fn fingerprint_to_i64(msg: [u8; 8]) -> i64 {
+        i64::from_le_bytes(msg)
     }
 }
 
