@@ -95,7 +95,7 @@ This section describes how end-to-end transactions that account for Kafka partit
 
 On startup and after rebalance, each kafka-delta-ingest process must check its assigned partitions and re-seek the consumer when necessary. Each process must maintain an internal map of assigned partitions and current offsets.  Kafka’s group management protocol guarantees that individual consumers within a group will be assigned a mutually exclusive set of partitions at any given time.
 
-Upon startup or partition assignment (in case of rebalnce), to identify the last offset written to Delta Lake for each assigned partition, the kafka-delta-ingest process must locate the last txn action in the delta log for each of its assigned partitions and re-seek the consumer based on the txn.version attribute of the delta log. 
+Upon startup or partition assignment (in case of rebalance), to identify the last offset written to Delta Lake for each assigned partition, the kafka-delta-ingest process must locate the last txn action in the delta log for each of its assigned partitions and re-seek the consumer based on the txn.version attribute of the delta log. 
 
 When performing a write, each process must commit the last offset of each partition within a txn action contained in the delta log entry.
 
