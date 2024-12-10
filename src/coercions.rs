@@ -122,6 +122,9 @@ fn apply_coercion(value: &mut Value, node: &CoercionNode) {
     }
 }
 
+/// Convert a given datetime looking string into microseconds using chrono's [DateTime] parsing
+///
+/// Since this will convert to microseconds, if the value is outside of the realm of conversion a None is returned
 fn string_to_timestamp(string: &str) -> Option<Value> {
     let parsed = DateTime::from_str(string);
     if let Err(e) = parsed {
@@ -131,22 +134,24 @@ fn string_to_timestamp(string: &str) -> Option<Value> {
             e
         )
     }
-    parsed.ok().map(|dt: DateTime<Utc>| {
-        Value::Number(
-            (dt.timestamp_nanos_opt()
-                .expect("Failed to turn timestamp nanoseconds")
-                / 1000)
-                .into(),
-        )
-    })
+    parsed
+        .ok()
+        .map(|dt: DateTime<Utc>| Value::Number(dt.timestamp_micros().into()))
 }
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
-    // use maplit::hashmap;
     use serde_json::json;
+
+    #[test]
+    fn test_string_to_timestamp() {
+        let result = string_to_timestamp("2010-01-01T22:11:58Z");
+        assert!(result.is_some());
+        // exceeds nanos size
+        let result = string_to_timestamp("2400-01-01T22:11:58Z");
+        assert!(result.is_some());
+    }
 
     lazy_static! {
         static ref SCHEMA: Value = json!({
