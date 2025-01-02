@@ -3,6 +3,7 @@ name = "kafka-delta-ingest"
 version = "0.4.0"
 authors = ["R. Tyler Croy <rtyler@brokenco.de>", "Christian Williams <christianw@scribd.com>"]
 edition = "2018"
+rust-version = "1.81"
 
 [dependencies]
 flate2 = "1.0"
