@@ -856,7 +856,7 @@ fn min_and_max_from_parquet_statistics(
 
     let stats_with_min_max: Vec<&Statistics> = statistics
         .iter()
-        .filter(|s| s.has_min_max_set())
+        .filter(|s| s.min_bytes_opt().is_some() && s.max_bytes_opt().is_some())
         .copied()
         .collect();
 
@@ -892,13 +892,21 @@ fn min_and_max_from_parquet_statistics(
     let min_array = arrow_array_from_bytes(
         data_type.clone(),
         arrow_buffer_capacity,
-        stats_with_min_max.iter().map(|s| s.min_bytes()).collect(),
+        // The stats should always exist in stats_with_min_max but defaulting to zero to avoid a
+        // panic
+        stats_with_min_max
+            .iter()
+            .map(|s| s.min_bytes_opt().unwrap_or(&[0]))
+            .collect(),
     )?;
 
     let max_array = arrow_array_from_bytes(
         data_type.clone(),
         arrow_buffer_capacity,
-        stats_with_min_max.iter().map(|s| s.max_bytes()).collect(),
+        stats_with_min_max
+            .iter()
+            .map(|s| s.max_bytes_opt().unwrap_or(&[0]))
+            .collect(),
     )?;
 
     match data_type {
@@ -990,7 +998,7 @@ fn min_max_strings_from_stats(
 ) -> (Option<Value>, Option<Value>) {
     let min_string_candidates = stats_with_min_max
         .iter()
-        .filter_map(|s| std::str::from_utf8(s.min_bytes()).ok());
+        .filter_map(|s| std::str::from_utf8(s.min_bytes_opt().unwrap_or(&[0])).ok());
 
     let min_value = min_string_candidates
         .min()
@@ -998,7 +1006,7 @@ fn min_max_strings_from_stats(
 
     let max_string_candidates = stats_with_min_max
         .iter()
-        .filter_map(|s| std::str::from_utf8(s.max_bytes()).ok());
+        .filter_map(|s| std::str::from_utf8(s.max_bytes_opt().unwrap_or(&[0])).ok());
 
     let max_value = max_string_candidates
         .max()
