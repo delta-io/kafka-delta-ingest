@@ -52,10 +52,10 @@ pub(crate) async fn try_create_checkpoint(
             table.load_version(version).await?;
         }
 
-        deltalake_core::checkpoints::create_checkpoint(table).await?;
+        deltalake_core::checkpoints::create_checkpoint(table, None).await?;
         log::info!("Created checkpoint version {}.", version);
 
-        let removed = deltalake_core::checkpoints::cleanup_metadata(table).await?;
+        let removed = deltalake_core::checkpoints::cleanup_metadata(table, None).await?;
         if removed > 0 {
             log::info!("Metadata cleanup, removed {} obsolete logs.", removed);
         }
