@@ -27,15 +27,18 @@ The included docker-compose.yml contains link:https://github.com/wurstmeister/ka
 ==== Starting Worker Processes
 
 1. Launch test services - `docker-compose up setup`
-2. Compile: `cargo build`
-3. Run kafka-delta-ingest against the web_requests example topic and table (customize arguments as desired):
+1. Download and extract kafka: `curl -L https://dlcdn.apache.org/kafka/3.9.0/kafka_2.13-3.9.0.tgz | tar -xz`     
+1. Create kafka topic: `./kafka_2.13-3.9.0/bin/kafka-topics.sh --bootstrap-server localhost:9092 --topic web_requests --create --if-not-exists`
+1. Ingest test messages into kafka: `./kafka_2.13-3.9.0/bin/kafka-console-producer.sh --broker-list localhost:9092 --topic web_requests < tests/json/web_requests-100.json`
+1. Compile: `cargo build --features s3`,  MacOS: `brew install librdkafka && cargo build --features s3,dynamic-linking`
+1. Run kafka-delta-ingest against the web_requests example topic and table (customize arguments as desired):
 
 ```bash
 export AWS_ENDPOINT_URL=http://0.0.0.0:4566
 export AWS_ACCESS_KEY_ID=test
 export AWS_SECRET_ACCESS_KEY=test
 
-RUST_LOG=debug cargo run ingest web_requests ./tests/data/web_requests \
+RUST_LOG=debug cargo run --features s3,dynamic-linking ingest web_requests ./tests/data/web_requests \
   --allowed_latency 60 \
   --app_id web_requests \
   --transform 'date: substr(meta.producer.timestamp, `0`, `10`)' \
