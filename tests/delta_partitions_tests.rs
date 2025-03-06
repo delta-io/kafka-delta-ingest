@@ -116,7 +116,7 @@ async fn test_delta_partitions() {
         .expect("Failed to create transaction")
         .version;
 
-    deltalake_core::checkpoints::create_checkpoint(&table)
+    deltalake_core::checkpoints::create_checkpoint(&table, None)
         .await
         .unwrap();
 

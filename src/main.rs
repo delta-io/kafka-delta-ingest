@@ -476,8 +476,7 @@ fn convert_matches_to_message_format(
             .map(MessageFormat::Avro);
     }
 
-    return to_schema_source(ingest_matches.get_one::<String>("json"), true)
-        .map(MessageFormat::Json);
+    to_schema_source(ingest_matches.get_one::<String>("json"), true).map(MessageFormat::Json)
 }
 
 #[cfg(test)]
