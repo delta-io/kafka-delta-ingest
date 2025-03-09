@@ -594,8 +594,7 @@ impl DataWriter {
                     predicate: None,
                 },
             )
-            .await
-            .map_err(DeltaTableError::from)?;
+            .await?;
         Ok(commit.version)
     }
 }

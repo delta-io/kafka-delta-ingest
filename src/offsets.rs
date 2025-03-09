@@ -75,7 +75,7 @@ pub(crate) async fn write_offsets_to_delta(
         } else {
             let partitions = conflict_offsets
                 .iter()
-                .map(|p| p.0.split('-').last().unwrap_or("N/A"))
+                .map(|p| p.0.split('-').next_back().unwrap_or("N/A"))
                 .collect::<Vec<&str>>()
                 .join(",");
 
@@ -127,8 +127,7 @@ async fn commit_partition_offsets(
                 epoch_id,
             },
         )
-        .await
-        .map_err(DeltaTableError::from);
+        .await;
     match commit {
         Ok(v) => {
             info!(
