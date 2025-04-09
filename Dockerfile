@@ -1,4 +1,4 @@
-FROM rust:1.81 AS builder
+FROM rust:1.86 AS builder
 
 RUN mkdir /build
 WORKDIR /build
