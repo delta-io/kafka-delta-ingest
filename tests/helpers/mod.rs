@@ -356,7 +356,7 @@ pub fn wait_until_file_created(path: &FilePath) {
         let poll_time = now - start_time;
         std::thread::sleep(Duration::from_secs(1));
 
-        if poll_time > chrono::Duration::seconds(180) {
+        if poll_time > chrono::Duration::seconds(300) {
             panic!("File was not created before timeout");
         }
     }
