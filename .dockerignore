@@ -3,3 +3,5 @@ contrib/
 target/
 venv/
 .github/
+Dockerfile
+docker-compose.yml
