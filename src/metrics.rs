@@ -1,7 +1,8 @@
-use dipstick::*;
-use log::error;
 use std::convert::TryInto;
 use std::time::Instant;
+
+use dipstick::*;
+use log::error;
 
 /// The environment variable used to specify how many metrics should be written to the metrics queue before flushing to statsd.
 const METRICS_INPUT_QUEUE_SIZE_VAR_NAME: &str = "KDI_METRICS_INPUT_QUEUE_SIZE";
@@ -56,6 +57,11 @@ impl IngestMetrics {
     /// increments a counter for message transform failed
     pub fn message_transform_failed(&self) {
         self.record_one(StatType::MessageTransformFailed);
+    }
+
+    /// increments a counter for message filtered
+    pub fn message_filtered(&self) {
+        self.record_one(StatType::MessageFiltered);
     }
 
     /// increments a counter for record batch started
@@ -236,6 +242,9 @@ enum StatType {
     /// Counter for a message that failed transformation.
     #[strum(serialize = "messages.transform.failed")]
     MessageTransformFailed,
+    /// Counter for a message that skipped.
+    #[strum(serialize = "messages.filter.filtered")]
+    MessageFiltered,
     /// Counter for when a record batch is started.
     #[strum(serialize = "recordbatch.started")]
     RecordBatchStarted,

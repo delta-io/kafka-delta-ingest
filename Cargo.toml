@@ -46,6 +46,7 @@ deltalake-azure= { git = "https://github.com/buoyant-data/delta-rs", branch = "d
 dynamodb_lock = { version = "0.6.0", optional = true }
 # sentry
 sentry = { version = "0.23.0", optional = true }
+regex = "1.10.2"
 
 [features]
 default = []
@@ -70,6 +71,12 @@ serial_test = "*"
 tempfile = "3"
 time = "0.3.20"
 utime = "0.3"
+criterion = "0.5.1"
+tar = "0.4"
+
+[[bench]]
+name = "filters"
+harness = false
 
 [profile.release]
 lto = true
