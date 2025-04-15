@@ -218,6 +218,9 @@ pub enum MessageFormat {
 
     /// Parses avro messages using provided schema, schema registry or schema within file
     Avro(SchemaSource),
+
+    /// Parses avro messages in the single object encoding format, PathBuf can either point to a single avro schema file or a directory containing (only) multiple avro schema files
+    SoeAvro(PathBuf),
 }
 
 /// Source for schema

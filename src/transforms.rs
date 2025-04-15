@@ -84,6 +84,10 @@ lazy_static! {
             "epoch_micros_to_iso8601",
             Box::new(create_epoch_micros_to_iso8601_fn()),
         );
+        runtime.register_function(
+            "epoch_millis_to_micro",
+            Box::new(create_epoch_millis_to_micro_fn()),
+        );
         runtime
     };
 }
@@ -202,6 +206,13 @@ fn create_epoch_micros_to_iso8601_fn() -> CustomFunction {
     )
 }
 
+fn create_epoch_millis_to_micro_fn() -> CustomFunction {
+    CustomFunction::new(
+        Signature::new(vec![ArgumentType::Number], None),
+        Box::new(jmespath_epoch_millis_to_micro),
+    )
+}
+
 fn substr(args: &[Rcvar], context: &mut Context) -> Result<Rcvar, JmespathError> {
     let s = args[0].as_string().ok_or_else(|| {
         InvalidTypeError::new(context, "string", args[0].get_type().to_string(), 0)
@@ -266,6 +277,14 @@ fn jmespath_epoch_micros_to_iso8601(
     let micros = i64_from_args(args, context, 0)?;
     let value = serde_json::Value::String(iso8601_from_epoch(EpochUnit::Microseconds(micros)));
     let variable = Variable::try_from(value)?;
+    Ok(Arc::new(variable))
+}
+fn jmespath_epoch_millis_to_micro(
+    args: &[Rcvar],
+    context: &mut Context,
+) -> Result<Rcvar, JmespathError> {
+    let millis = i64_from_args(args, context, 0)?;
+    let variable = Variable::Number((millis * 1000).into());
     Ok(Arc::new(variable))
 }
 
@@ -584,6 +603,41 @@ mod tests {
         let dt = iso8601_from_epoch(EpochUnit::Microseconds(1626823098000000));
 
         assert_eq!(expected_iso, dt);
+    }
+
+    #[test]
+    fn test_epoch_millis_to_micro() {
+        let mut test_value = json!({
+            "name": "A",
+            "modified": 1732279537028u64,
+        });
+
+        let test_message = OwnedMessage::new(
+            Some(test_value.to_string().into_bytes()),
+            None,
+            "test".to_string(),
+            rdkafka::Timestamp::NotAvailable,
+            0,
+            0,
+            None,
+        );
+
+        let mut transforms = HashMap::new();
+
+        transforms.insert(
+            "modified_micros".to_string(),
+            "epoch_millis_to_micro(modified)".to_string(),
+        );
+
+        let transformer = Transformer::from_transforms(&transforms).unwrap();
+
+        transformer
+            .transform(&mut test_value, Some(&test_message))
+            .unwrap();
+
+        let modified_date = test_value.get("modified_micros").unwrap().as_u64().unwrap();
+
+        assert_eq!(1732279537028000u64, modified_date);
     }
 
     #[test]

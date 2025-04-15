@@ -584,6 +584,7 @@ impl DataWriter {
         let mut adds = self.write_parquet_files(&table.table_uri()).await?;
         let actions = adds.drain(..).map(Action::Add).collect();
         let commit = deltalake_core::operations::transaction::CommitBuilder::default()
+            .with_max_retries(100) //We increase this from the default 15 times because (at leat for Azure) this  may fail in case of to frequent writes (which happen if many messages arrive in the dead letter queue)
             .with_actions(actions)
             .build(
                 table.state.as_ref().map(|s| s as &dyn TableReference),

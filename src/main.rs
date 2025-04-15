@@ -221,6 +221,24 @@ fn to_schema_source(
     }
 }
 
+fn to_schema_path(input: Option<&String>) -> Result<PathBuf, SchemaSourceError> {
+    match input {
+        None => Err(SchemaSourceError::NoFileSpecified),
+        Some(value) => {
+            if value.is_empty() {
+                return Err(SchemaSourceError::NoFileSpecified);
+            }
+            let p = PathBuf::from_str(value)?;
+            if !p.exists() {
+                return Err(SchemaSourceError::FileNotFound {
+                    file_name: (*value).clone(),
+                });
+            }
+            return Ok(p);
+        }
+    }
+}
+
 fn init_logger(app_id: String) {
     let app_id: &'static str = Box::leak(app_id.into_boxed_str());
     let log_level = std::env::var("RUST_LOG")
@@ -272,6 +290,9 @@ enum SchemaSourceError {
     },
     #[error("File not found error: {file_name}")]
     FileNotFound { file_name: String },
+
+    #[error("No file specified error")]
+    NoFileSpecified,
 }
 
 fn parse_kafka_property(val: &str) -> Result<(String, String), KafkaPropertySyntaxError> {
@@ -444,8 +465,12 @@ This can be used to provide TLS configuration as in:
                     .env("AVRO_REGISTRY")
                     .required(false)
                     .help("Schema registry endpoint, local path, or empty string"))
+                .arg(Arg::new("soe-avro")
+                    .long("soe-avro")
+                    .required(false)
+                    .help("Local path to either a single Avro schema file or a directory containing (only) Avro schematas"))
                 .group(ArgGroup::new("format")
-                    .args(["json", "avro"])
+                    .args(["json", "avro","soe-avro"])
                     .required(false))
                 .arg(Arg::new("end")
                     .short('e')
@@ -474,6 +499,12 @@ fn convert_matches_to_message_format(
     if ingest_matches.contains_id("avro") {
         return to_schema_source(ingest_matches.get_one::<String>("avro"), false)
             .map(MessageFormat::Avro);
+    }
+
+    
+    if ingest_matches.contains_id("soe-avro") {
+        return to_schema_path(ingest_matches.get_one::<String>("soe-avro"))
+            .map(MessageFormat::SoeAvro);
     }
 
     to_schema_source(ingest_matches.get_one::<String>("json"), true).map(MessageFormat::Json)
