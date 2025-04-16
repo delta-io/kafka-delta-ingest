@@ -234,7 +234,7 @@ fn to_schema_path(input: Option<&String>) -> Result<PathBuf, SchemaSourceError> 
                     file_name: (*value).clone(),
                 });
             }
-            return Ok(p);
+            Ok(p)
         }
     }
 }
@@ -501,7 +501,6 @@ fn convert_matches_to_message_format(
             .map(MessageFormat::Avro);
     }
 
-    
     if ingest_matches.contains_id("soe-avro") {
         return to_schema_path(ingest_matches.get_one::<String>("soe-avro"))
             .map(MessageFormat::SoeAvro);
