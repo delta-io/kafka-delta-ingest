@@ -9,7 +9,7 @@ rust-version = "1.81"
 flate2 = "1.0"
 anyhow = "1"
 async-trait = "0.1"
-apache-avro = "^0.14"
+apache-avro = "^0.17"
 base64 = "0.13"
 bytes = "1"
 chrono = "0.4.31"
@@ -25,14 +25,15 @@ rdkafka = { version = "0.28", features = ["ssl"] }
 schema_registry_converter = { version = "3.1.0", features = ["easy", "json", "avro"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-strum = "0.20"
-strum_macros = "0.20"
+strum = "0.27.1"
+strum_macros = "0.27.1"
 thiserror = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0", features = ["fs"] }
 tokio-util = "0.6.3"
 uuid = { version = "0.8", features = ["serde", "v4"] }
 url = "2.3"
+dashmap = "6.0.1"
 
 # datafusion feature is required for writer version 2
 deltalake-core = { version = "0.25.0", features = ["json", "datafusion"]}
