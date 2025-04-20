@@ -23,6 +23,7 @@ use deltalake_core::protocol::OutputMode;
 use deltalake_core::{DeltaTable, DeltaTableError};
 use futures::stream::StreamExt;
 use log::{debug, error, info, warn};
+use rdkafka::consumer::BaseConsumer;
 use rdkafka::{
     config::ClientConfig,
     consumer::{Consumer, ConsumerContext, Rebalance, StreamConsumer},
@@ -1235,7 +1236,7 @@ struct KafkaContext {
 impl ClientContext for KafkaContext {}
 
 impl ConsumerContext for KafkaContext {
-    fn pre_rebalance(&self, rebalance: &Rebalance) {
+    fn pre_rebalance(&self, _consumer: &BaseConsumer<KafkaContext>, rebalance: &Rebalance) {
         let rebalance_signal = self.rebalance_signal.clone();
         match rebalance {
             Rebalance::Revoke(_) => {
@@ -1256,7 +1257,7 @@ impl ConsumerContext for KafkaContext {
         }
     }
 
-    fn post_rebalance(&self, rebalance: &Rebalance) {
+    fn post_rebalance(&self, _consumer: &BaseConsumer<KafkaContext>, rebalance: &Rebalance) {
         let rebalance_signal = self.rebalance_signal.clone();
         match rebalance {
             Rebalance::Revoke(_) => {

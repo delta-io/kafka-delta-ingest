@@ -21,7 +21,7 @@ jmespatch = { version = "0.3", features = ["sync"] }
 lazy_static = "1"
 log = "0"
 maplit = "1"
-rdkafka = { version = "0.28", features = ["ssl"] }
+rdkafka = { version = "0.37", features = ["ssl"] }
 schema_registry_converter = { version = "3.1.0", features = ["easy", "json", "avro"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
