@@ -17,7 +17,8 @@ extern crate strum_macros;
 extern crate serde_json;
 
 use coercions::CoercionTree;
-use deltalake_core::operations::transaction::TableReference;
+use deltalake_core::kernel::transaction::CommitBuilder;
+use deltalake_core::kernel::transaction::TableReference;
 use deltalake_core::protocol::DeltaOperation;
 use deltalake_core::protocol::OutputMode;
 use deltalake_core::{DeltaTable, DeltaTableError};
@@ -972,7 +973,7 @@ impl IngestProcessor {
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("Time went backwards")
                 .as_millis() as i64;
-            let commit = deltalake_core::operations::transaction::CommitBuilder::default()
+            let commit = CommitBuilder::default()
                 .with_actions(actions.clone())
                 .build(
                     self.table.state.as_ref().map(|s| s as &dyn TableReference),

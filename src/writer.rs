@@ -12,6 +12,7 @@ use deltalake_core::arrow::{
     json::reader::ReaderBuilder,
     record_batch::*,
 };
+use deltalake_core::kernel::transaction::CommitBuilder;
 use deltalake_core::parquet::{
     arrow::ArrowWriter,
     basic::{Compression, LogicalType},
@@ -22,13 +23,13 @@ use deltalake_core::parquet::{
 };
 use deltalake_core::protocol::DeltaOperation;
 use deltalake_core::protocol::SaveMode;
+use deltalake_core::{kernel::transaction::TableReference, parquet::format::FileMetaData};
 use deltalake_core::{
     kernel::{Action, Add, Schema},
+    logstore::ObjectStoreRef,
     protocol::{ColumnCountStat, ColumnValueStat, Stats},
-    storage::ObjectStoreRef,
     DeltaTable, DeltaTableError, ObjectStoreError,
 };
-use deltalake_core::{operations::transaction::TableReference, parquet::format::FileMetaData};
 use log::{error, info, warn};
 use serde_json::{Number, Value};
 use std::collections::HashMap;
@@ -583,7 +584,7 @@ impl DataWriter {
         self.write(values).await?;
         let mut adds = self.write_parquet_files(&table.table_uri()).await?;
         let actions = adds.drain(..).map(Action::Add).collect();
-        let commit = deltalake_core::operations::transaction::CommitBuilder::default()
+        let commit = CommitBuilder::default()
             .with_max_retries(100) //We increase this from the default 15 times because (at leat for Azure) this  may fail in case of to frequent writes (which happen if many messages arrive in the dead letter queue)
             .with_actions(actions)
             .build(
