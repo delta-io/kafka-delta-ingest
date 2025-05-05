@@ -1,7 +1,8 @@
 use crate::delta_helpers::*;
 use crate::{DataTypeOffset, DataTypePartition};
+use deltalake_core::kernel::transaction::CommitBuilder;
+use deltalake_core::kernel::transaction::TableReference;
 use deltalake_core::kernel::Action;
-use deltalake_core::operations::transaction::TableReference;
 use deltalake_core::protocol::DeltaOperation;
 use deltalake_core::protocol::OutputMode;
 use deltalake_core::{DeltaTable, DeltaTableError};
@@ -116,7 +117,7 @@ async fn commit_partition_offsets(
         .as_millis() as i64;
 
     table.update().await?;
-    let commit = deltalake_core::operations::transaction::CommitBuilder::default()
+    let commit = CommitBuilder::default()
         .with_actions(actions)
         .build(
             table.state.as_ref().map(|s| s as &dyn TableReference),

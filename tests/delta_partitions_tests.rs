@@ -1,8 +1,9 @@
 #[allow(dead_code)]
 mod helpers;
 
+use deltalake_core::kernel::transaction::CommitBuilder;
+use deltalake_core::kernel::transaction::TableReference;
 use deltalake_core::kernel::{Action, Add};
-use deltalake_core::operations::transaction::TableReference;
 use deltalake_core::protocol::{DeltaOperation, SaveMode};
 use deltalake_core::DeltaTableError;
 use kafka_delta_ingest::writer::*;
@@ -104,7 +105,7 @@ async fn test_delta_partitions() {
         predicate: None,
     };
 
-    let version = deltalake_core::operations::transaction::CommitBuilder::default()
+    let version = CommitBuilder::default()
         .with_actions(result.iter().cloned().map(Action::Add).collect())
         .build(
             table.state.as_ref().map(|s| s as &dyn TableReference),

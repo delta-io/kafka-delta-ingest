@@ -10,11 +10,11 @@ use std::time::Duration;
 use bytes::Buf;
 use chrono::prelude::*;
 use deltalake_core::kernel::{Action, Add, Metadata, Protocol, Remove, Transaction};
+use deltalake_core::logstore::ObjectStoreRef;
 use deltalake_core::parquet::{
     file::reader::{FileReader, SerializedFileReader},
     record::RowAccessor,
 };
-use deltalake_core::storage::ObjectStoreRef;
 use deltalake_core::{DeltaTable, Path};
 use kafka_delta_ingest::{start_ingest, IngestOptions};
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
