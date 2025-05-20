@@ -15,7 +15,7 @@ This guide outlines how to get started and how to structure your contributions.
 - [Style Guidelines](#style-guidelines)
 - [Major Contributions](#major-contributions)
 - [Sign Your Work](#sign-your-work)
-- [Contributor License Agreement (CLA)](#contributor-license-agreement-cla)
+- [Contributor Community and Decision-Making](#contributor-community-and-decision-making)
 - [Questions?](#questions)
 
 ---
