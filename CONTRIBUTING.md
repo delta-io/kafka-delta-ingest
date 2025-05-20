@@ -22,7 +22,7 @@ This guide outlines how to get started and how to structure your contributions.
 
 ## Code of Conduct
 
-We follow the [Delta Lake Code of Conduct](https://github.com/delta-io/delta/blob/master/CODE_OF_CONDUCT.md). Please be respectful and constructive in all interactions.
+We adhere to the following [Code of Conduct](https://github.com/delta-io/kafka-delta-ingest/blob/main/CODE_OF_CONDUCT.md). Please be respectful and constructive in all interactions.
 
 ---
 
