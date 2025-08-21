@@ -1,0 +1,69 @@
+name-template: "Test v$RESOLVED_VERSION 🌈"
+tag-template: "v$RESOLVED_VERSION"
+change-template: "- $TITLE (#$NUMBER)"
+template: |
+  $CHANGES
+
+exclude-labels:
+  - skip changelog
+  - test
+  - documentation
+
+# only include labelled pull requests
+include-labels:
+  - major
+  - minor
+  - patch
+
+# include pre releases as "full" releases when drafting release notes. Default: false.
+include-pre-releases: false
+
+change-title-escapes: '\<*_&'
+replacers:
+  # Remove conventional commits from titles, including variations like 'feature'
+  - search: '/- (major|minor|patch|breaking|feat|feature|chore|test|fix|docs|internal)(\(.*\))?(\!)?\: /g'
+    replace: "- "
+
+autolabeler:
+  - label: major
+    title:
+      - "/^(breaking|major)/"
+  - label: minor
+    title:
+      - "/^(feat|minor)/"
+  - label: patch
+    title:
+      - "/^(ci|fix|patch)/"
+  - label: test
+    title:
+      - "/^test/"
+  - label: documentation
+    title:
+      - "/^docs/"
+  - label: internal
+    title:
+      - "/^(internal|chore|refactor)/"
+
+version-resolver:
+  major:
+    labels:
+      - "major"
+  minor:
+    labels:
+      - "minor"
+  patch:
+    labels:
+      - "patch"
+  default: patch
+
+categories:
+  - title: ⚠️ Breaking changes ⚠️
+    labels: major
+  - title: ✨ Enhancements
+    labels: minor
+  - title: 🐞 Small fixes
+    labels: patch
+  - title: 📖 Documentation
+    labels: documentation
+  - title: 🛠️ Other improvements
+    labels: internal

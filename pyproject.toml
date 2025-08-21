@@ -1,0 +1,11 @@
+[tool.poetry]
+name = "kafka-delta-ingest"
+version = "1.0.0"
+authors = ["bas <vanveenbas13@gmail.com>"]
+description = ""
+packages = [{ include = "kafka-delta" }]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+pyspark = "3.5.6"
+delta-spark = "^3.1.0"

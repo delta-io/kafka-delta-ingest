@@ -1,0 +1,61 @@
+name: Release
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: write
+  pull-requests: write
+
+jobs:
+  release:
+    if: |
+      github.event.pull_request.merged == true &&
+      (contains(github.event.pull_request.labels.*.name, 'major') ||
+       contains(github.event.pull_request.labels.*.name, 'minor') ||
+       contains(github.event.pull_request.labels.*.name, 'patch'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get token for cross repo checkout
+        id: checkout_token
+        uses: tibdex/github-app-token@3beb63f4bd073e61482598c45c71c1019b59b73a
+        with:
+          app_id: ${{ secrets.TECH_NL_EEP_AUTOMATION_APP_ID }}
+          private_key: ${{ secrets.TECH_NL_EEP_AUTOMATION_APP_KEY }}
+
+      - name: Create GitHub release
+        id: github-release
+        uses: release-drafter/release-drafter@b1476f6e6eb133afa41ed8589daba6dc69b4d3f5
+        with:
+          config-name: release-drafter.yml
+          prerelease: false
+          publish: true
+        env:
+          GITHUB_TOKEN: ${{ steps.checkout_token.outputs.token }}
+      - name: Checkout
+        uses: actions/checkout@a5ac7e51b41094c92402da3b24376905380afc29
+        
+      - name: Find current version
+        id: current_version
+        run: |
+          # Grep through repo to find the first version-like string
+          # Adjust this regex for your versioning format
+          CURRENT=$(grep -rhoE '[0-9]+\.[0-9]+\.[0-9]+' . | head -n1)
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+
+      - name: Replace old version with new version
+        run: |
+          OLD="${{ steps.current_version.outputs.current }}"
+          NEW="${{ steps.github-release.outputs.resolved_version }}"
+          echo "Replacing $OLD -> $NEW"
+          grep -rl "$OLD" . | xargs sed -i "s/$OLD/$NEW/g"
+
+      - name: Commit and push changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "chore: bump version to ${{ steps.github-release.outputs.resolved_version }}" || echo "No changes to commit"
+          git push origin main        
