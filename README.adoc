@@ -252,7 +252,7 @@ The table below indicates what will happen with respect to the provided argument
 |===
 
 
-For more information, see link:https://github.com/delta-io/delta-rs/tree/dbc2994c5fddfd39fc31a8f9202df74788f59a01/dynamodb_lock[DynamoDB lock].
+NOTE: As of `deltalake >= 0.17.0`, DynamoDB-based locking on S3 is handled internally by the `deltalake-aws` crate via `S3DynamoDbLogStore`. Direct `dynamodb_lock` interactions are no longer required.
 == Verifying data in Azure Storage
 
 Use the Azure Portal to browse the file system:
