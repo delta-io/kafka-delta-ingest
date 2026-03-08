@@ -85,19 +85,19 @@ fn apply_coercion(value: &mut Value, node: &CoercionNode) {
             }
         }
         CoercionNode::Coercion(Coercion::ToTimestamp) => {
-            if let Some(as_str) = value.as_str() {
-                if let Some(parsed) = string_to_timestamp(as_str) {
-                    *value = parsed
-                }
+            if let Some(as_str) = value.as_str()
+                && let Some(parsed) = string_to_timestamp(as_str)
+            {
+                *value = parsed
             }
         }
         CoercionNode::Tree(tree) => {
             for (name, node) in tree.root.iter() {
                 let fields = value.as_object_mut();
-                if let Some(fields) = fields {
-                    if let Some(value) = fields.get_mut(name) {
-                        apply_coercion(value, node);
-                    }
+                if let Some(fields) = fields
+                    && let Some(value) = fields.get_mut(name)
+                {
+                    apply_coercion(value, node);
                 }
             }
         }

@@ -1,8 +1,8 @@
 use crate::delta_helpers::*;
 use crate::{DataTypeOffset, DataTypePartition};
+use deltalake_core::kernel::Action;
 use deltalake_core::kernel::transaction::CommitBuilder;
 use deltalake_core::kernel::transaction::TableReference;
-use deltalake_core::kernel::Action;
 use deltalake_core::protocol::DeltaOperation;
 use deltalake_core::protocol::OutputMode;
 use deltalake_core::{DeltaTable, DeltaTableError};
@@ -139,7 +139,10 @@ async fn commit_partition_offsets(
         }
         Err(e) => match e {
             DeltaTableError::VersionAlreadyExists(_) => {
-                error!("Transaction attempt failed. Attempts exhausted beyond max_retry_commit_attempts of {} so failing", crate::DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS);
+                error!(
+                    "Transaction attempt failed. Attempts exhausted beyond max_retry_commit_attempts of {} so failing",
+                    crate::DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS
+                );
                 Err(e)
             }
             _ => Err(e),

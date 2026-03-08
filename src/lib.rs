@@ -26,11 +26,11 @@ use futures::stream::StreamExt;
 use log::{debug, error, info, warn};
 use rdkafka::consumer::BaseConsumer;
 use rdkafka::{
+    ClientContext, Message, Offset, TopicPartitionList,
     config::ClientConfig,
     consumer::{Consumer, ConsumerContext, Rebalance, StreamConsumer},
     error::KafkaError,
     util::Timeout,
-    ClientContext, Message, Offset, TopicPartitionList,
 };
 use serde_json::Value;
 use serialization::{MessageDeserializer, MessageDeserializerFactory};
@@ -156,7 +156,7 @@ pub enum IngestError {
     /// Error returned when a delta write fails.
     /// Ending Kafka offsets and counts for each partition are included to help identify the Kafka buffer that caused the write to fail.
     #[error(
-    "Delta write failed: ending_offsets: {ending_offsets}, partition_counts: {partition_counts}, source: {source}"
+        "Delta write failed: ending_offsets: {ending_offsets}, partition_counts: {partition_counts}, source: {source}"
     )]
     DeltaWriteFailed {
         /// Ending offsets for each partition that failed to be written to delta.
@@ -195,7 +195,9 @@ pub enum IngestError {
     DeltaSchemaChanged,
 
     /// Error returned if the committed Delta table version does not match the version specified by the commit attempt.
-    #[error("Committed delta version {actual_version} does not match the version specified in the commit attempt {expected_version}")]
+    #[error(
+        "Committed delta version {actual_version} does not match the version specified in the commit attempt {expected_version}"
+    )]
     UnexpectedVersionMismatch {
         /// The version specified in the commit attempt
         expected_version: i64,
@@ -339,11 +341,13 @@ pub async fn start_ingest(
         "Ingesting messages from {} Kafka topic to {} Delta table",
         topic, table_uri
     );
-    info!("Using options: [allowed_latency={},max_messages_per_batch={},min_bytes_per_file={},write_checkpoints={}]",
+    info!(
+        "Using options: [allowed_latency={},max_messages_per_batch={},min_bytes_per_file={},write_checkpoints={}]",
         opts.allowed_latency,
         opts.max_messages_per_batch,
         opts.min_bytes_per_file,
-        opts.write_checkpoints);
+        opts.write_checkpoints
+    );
 
     // Initialize a RebalanceSignal to share between threads so it can be set when rebalance events are sent from Kafka and checked or cleared in the run loop.
     // We use an RwLock so we can quickly skip past the typical case in the run loop where the rebalance signal is a None without starving the writer.
@@ -437,16 +441,19 @@ pub async fn start_ingest(
 
                 let message = message?;
 
-                if let Some(offset_map) = &_max_offsets {
-                    if end_of_partition_reached(&message, offset_map) {
-                        unassign_partition(cancellation_token.clone(), consumer.clone(), &message)?;
-                    }
+                if let Some(offset_map) = &_max_offsets
+                    && end_of_partition_reached(&message, offset_map)
+                {
+                    unassign_partition(cancellation_token.clone(), consumer.clone(), &message)?;
                 }
                 // Process the message if there wasn't a rebalance signal
                 if let Err(e) = ingest_processor.process_message(message).await {
                     match e {
                         IngestError::AlreadyProcessedPartitionOffset { partition, offset } => {
-                            debug!("Skipping message with partition {}, offset {} on topic {} because it was already processed", partition, offset, topic);
+                            debug!(
+                                "Skipping message with partition {}, offset {} on topic {} because it was already processed",
+                                partition, offset, topic
+                            );
                             continue;
                         }
                         _ => return Err(e),
@@ -1007,7 +1014,10 @@ impl IngestProcessor {
                 }
                 Err(e) => match e {
                     DeltaTableError::VersionAlreadyExists(_) => {
-                        error!("Transaction attempt failed. Attempts exhausted beyond max_retry_commit_attempts of {} so failing", DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS);
+                        error!(
+                            "Transaction attempt failed. Attempts exhausted beyond max_retry_commit_attempts of {} so failing",
+                            DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS
+                        );
                         return Err(e.into());
                     }
                     // if store == "DeltaS3ObjectStore"
@@ -1054,7 +1064,10 @@ impl IngestProcessor {
             match offset {
                 Some(o) if *o == 0 => {
                     // MARK: workaround for rdkafka error when attempting seek to offset 0
-                    info!("Seeking consumer to beginning for partition {}. Delta log offset is 0, but seek to zero is not possible.", p);
+                    info!(
+                        "Seeking consumer to beginning for partition {}. Delta log offset is 0, but seek to zero is not possible.",
+                        p
+                    );
                     self.consumer
                         .seek(&self.topic, *p, Offset::Beginning, Timeout::Never)?;
                 }
@@ -1066,12 +1079,18 @@ impl IngestProcessor {
                 }
                 None => match self.opts.auto_offset_reset {
                     AutoOffsetReset::Earliest => {
-                        info!("Seeking consumer to beginning for partition {}. Partition has no stored offset but 'auto.offset.reset' is earliest", p);
+                        info!(
+                            "Seeking consumer to beginning for partition {}. Partition has no stored offset but 'auto.offset.reset' is earliest",
+                            p
+                        );
                         self.consumer
                             .seek(&self.topic, *p, Offset::Beginning, Timeout::Never)?;
                     }
                     AutoOffsetReset::Latest => {
-                        info!("Seeking consumer to end for partition {}. Partition has no stored offset but 'auto.offset.reset' is latest", p);
+                        info!(
+                            "Seeking consumer to end for partition {}. Partition has no stored offset but 'auto.offset.reset' is latest",
+                            p
+                        );
                         self.consumer
                             .seek(&self.topic, *p, Offset::End, Timeout::Never)?;
                     }
@@ -1086,14 +1105,14 @@ impl IngestProcessor {
 
     /// Returns a boolean indicating whether a message with `partition` and `offset` should be processed given current state.
     fn should_process_offset(&self, partition: DataTypePartition, offset: DataTypeOffset) -> bool {
-        if let Some(Some(written_offset)) = self.delta_partition_offsets.get(&partition) {
-            if offset <= *written_offset {
-                debug!(
-                    "Message with partition {} offset {} on topic {} is already in delta log so skipping.",
-                    partition, offset, self.topic
-                );
-                return false;
-            }
+        if let Some(Some(written_offset)) = self.delta_partition_offsets.get(&partition)
+            && offset <= *written_offset
+        {
+            debug!(
+                "Message with partition {} offset {} on topic {} is already in delta log so skipping.",
+                partition, offset, self.topic
+            );
+            return false;
         }
 
         true
@@ -1216,13 +1235,10 @@ impl PartitionAssignment {
     /// Returns a copy of the current partition offsets as a [`HashMap`] for all partitions that have an offset stored in memory.
     /// Partitions that do not have an offset stored in memory (offset is [`None`]) are **not** included in the returned HashMap.
     fn nonempty_partition_offsets(&self) -> HashMap<DataTypePartition, DataTypeOffset> {
-        let partition_offsets = self
-            .assignment
+        self.assignment
             .iter()
             .filter_map(|(k, v)| v.as_ref().map(|o| (*k, *o)))
-            .collect();
-
-        partition_offsets
+            .collect()
     }
 }
 

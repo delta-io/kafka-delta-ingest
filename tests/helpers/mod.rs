@@ -16,14 +16,14 @@ use deltalake_core::parquet::{
     record::RowAccessor,
 };
 use deltalake_core::{DeltaTable, Path};
-use kafka_delta_ingest::{start_ingest, IngestOptions};
+use kafka_delta_ingest::{IngestOptions, start_ingest};
+use rdkafka::ClientConfig;
 use rdkafka::admin::{AdminClient, AdminOptions, NewTopic, TopicReplication};
 use rdkafka::client::DefaultClientContext;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::util::{DefaultRuntime, Timeout};
-use rdkafka::ClientConfig;
 use serde::de::DeserializeOwned;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -271,15 +271,17 @@ pub fn create_kdi_with(
     let app_id = options.app_id.to_string();
     let worker_name = worker_name.unwrap_or(app_id.clone());
 
-    env::set_var("AWS_ENDPOINT_URL", test_aws_endpoint());
-    env::set_var("AWS_S3_LOCKING_PROVIDER", "dynamodb");
-    env::set_var("AWS_REGION", "us-east-2");
-    env::set_var("DYNAMO_LOCK_TABLE_NAME", "locks");
-    env::set_var("DYNAMO_LOCK_OWNER_NAME", Uuid::new_v4().to_string());
-    env::set_var("DYNAMO_LOCK_PARTITION_KEY_VALUE", app_id.clone());
-    env::set_var("DYNAMO_LOCK_REFRESH_PERIOD_MILLIS", "100");
-    env::set_var("DYNAMO_LOCK_ADDITIONAL_TIME_TO_WAIT_MILLIS", "100");
-    env::set_var("DYNAMO_LOCK_LEASE_DURATION", "2");
+    unsafe {
+        env::set_var("AWS_ENDPOINT_URL", test_aws_endpoint());
+        env::set_var("AWS_S3_LOCKING_PROVIDER", "dynamodb");
+        env::set_var("AWS_REGION", "us-east-2");
+        env::set_var("DYNAMO_LOCK_TABLE_NAME", "locks");
+        env::set_var("DYNAMO_LOCK_OWNER_NAME", Uuid::new_v4().to_string());
+        env::set_var("DYNAMO_LOCK_PARTITION_KEY_VALUE", app_id.clone());
+        env::set_var("DYNAMO_LOCK_REFRESH_PERIOD_MILLIS", "100");
+        env::set_var("DYNAMO_LOCK_ADDITIONAL_TIME_TO_WAIT_MILLIS", "100");
+        env::set_var("DYNAMO_LOCK_LEASE_DURATION", "2");
+    }
 
     let rt = create_runtime(&worker_name);
     let token = Arc::new(CancellationToken::new());
@@ -320,7 +322,9 @@ pub fn create_runtime(name: &str) -> Runtime {
 pub fn init_logger() {
     // Any time the test_aws_endpoint() is being used the ability to hit HTTP hosts
     // needs to be enabled
-    env::set_var("AWS_ALLOW_HTTP", "true");
+    unsafe {
+        env::set_var("AWS_ALLOW_HTTP", "true");
+    }
 
     let _ = env_logger::Builder::new()
         .format(|buf, record| {

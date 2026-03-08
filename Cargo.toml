@@ -1,9 +1,10 @@
 [package]
 name = "kafka-delta-ingest"
-version = "0.4.0"
+version = "0.5.0"
 authors = ["R. Tyler Croy <rtyler@brokenco.de>", "Christian Williams <christianw@scribd.com>"]
-edition = "2018"
-rust-version = "1.81"
+edition = "2024"
+rust-version = "1.91"
+resolver = "3"
 
 [dependencies]
 flate2 = "1.0"
