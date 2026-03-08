@@ -7,7 +7,7 @@ use schema_registry_converter::{
     async_impl::{
         easy_avro::EasyAvroEncoder,
         easy_json::EasyJsonEncoder,
-        schema_registry::{post_schema, SrSettings},
+        schema_registry::{SrSettings, post_schema},
     },
     error::SRCError,
     schema_registry_common::{RegisteredSchema, SchemaType, SubjectNameStrategy, SuppliedSchema},

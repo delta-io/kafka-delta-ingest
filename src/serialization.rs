@@ -1,4 +1,4 @@
-use crate::{dead_letters::DeadLetter, MessageDeserializationError, MessageFormat};
+use crate::{MessageDeserializationError, MessageFormat, dead_letters::DeadLetter};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use flate2::read::GzDecoder;
@@ -8,7 +8,7 @@ use schema_registry_converter::async_impl::{
 use serde_json::Value;
 
 // use crate::avro_canonical_schema_workaround::parse_into_canonical_form;
-use apache_avro::{rabin::Rabin, GenericSingleObjectReader, Schema};
+use apache_avro::{GenericSingleObjectReader, Schema, rabin::Rabin};
 use std::{
     borrow::BorrowMut,
     convert::{TryFrom, TryInto},
