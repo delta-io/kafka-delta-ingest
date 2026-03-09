@@ -1,9 +1,10 @@
 [package]
 name = "kafka-delta-ingest"
-version = "0.4.0"
+version = "0.5.0"
 authors = ["R. Tyler Croy <rtyler@brokenco.de>", "Christian Williams <christianw@scribd.com>"]
-edition = "2018"
-rust-version = "1.81"
+edition = "2024"
+rust-version = "1.91"
+resolver = "3"
 
 [dependencies]
 flate2 = "1.0"
@@ -40,8 +41,6 @@ deltalake-core = { version = "0.26.0", features = ["json", "datafusion"]}
 deltalake-aws = { version = "0.9.0", optional = true }
 deltalake-azure = { version = "0.9.0", optional = true }
 
-# s3 feature enabled, helps for locking interactions with DLQ
-dynamodb_lock = { version = "0.6.0", optional = true }
 # sentry
 sentry = { version = "0.23.0", optional = true }
 
@@ -54,7 +53,6 @@ azure = [
 ]
 s3 = [
     "deltalake-aws",
-    "dynamodb_lock",
 ]
 
 [dev-dependencies]

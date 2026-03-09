@@ -2,8 +2,8 @@ use kafka_delta_ingest::IngestOptions;
 use log::info;
 use serde::{Deserialize, Serialize};
 
-use serde_json::json;
 use serde_json::Value;
+use serde_json::json;
 use uuid::Uuid;
 
 #[allow(dead_code)]
@@ -167,9 +167,11 @@ async fn test_dlq() {
         .collect();
     assert_eq!(bad_null_struct_records.len(), 2);
 
-    assert!(dlq_content
-        .iter()
-        .all(|v| v.get("date").unwrap().as_str() == Some(expected_date.as_str())));
+    assert!(
+        dlq_content
+            .iter()
+            .all(|v| v.get("date").unwrap().as_str() == Some(expected_date.as_str()))
+    );
 }
 
 fn create_table() -> String {

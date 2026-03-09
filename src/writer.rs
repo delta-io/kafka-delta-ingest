@@ -2,8 +2,8 @@
 #[allow(deprecated)]
 use deltalake_core::arrow::{
     array::{
-        as_boolean_array, as_primitive_array, as_struct_array, make_array, Array, ArrayData,
-        StructArray,
+        Array, ArrayData, StructArray, as_boolean_array, as_primitive_array, as_struct_array,
+        make_array,
     },
     buffer::MutableBuffer,
     datatypes::Schema as ArrowSchema,
@@ -23,14 +23,14 @@ use deltalake_core::parquet::{
 };
 use deltalake_core::protocol::DeltaOperation;
 use deltalake_core::protocol::SaveMode;
-use deltalake_core::{kernel::transaction::TableReference, parquet::format::FileMetaData};
 use deltalake_core::{
+    DeltaTable, DeltaTableError, ObjectStoreError,
     kernel::{Action, Add, Schema},
     logstore::ObjectStoreRef,
     protocol::{ColumnCountStat, ColumnValueStat, Stats},
-    DeltaTable, DeltaTableError, ObjectStoreError,
 };
-use log::{error, info, warn};
+use deltalake_core::{kernel::transaction::TableReference, parquet::format::FileMetaData};
+use log::*;
 use serde_json::{Number, Value};
 use std::collections::HashMap;
 use std::convert::TryFrom;
@@ -58,7 +58,9 @@ pub enum DataWriterError {
     MissingPartitionColumn(String),
 
     /// The Arrow RecordBatch schema does not match the expected schema.
-    #[error("Arrow RecordBatch schema does not match: RecordBatch schema: {record_batch_schema}, {expected_schema}")]
+    #[error(
+        "Arrow RecordBatch schema does not match: RecordBatch schema: {record_batch_schema}, {expected_schema}"
+    )]
     SchemaMismatch {
         /// The record batch schema.
         record_batch_schema: SchemaRef,
@@ -231,7 +233,9 @@ impl DataArrowWriter {
         json_buffer: Vec<Value>,
         parquet_error: ParquetError,
     ) -> Result<(), Box<DataWriterError>> {
-        warn!("Failed with parquet error while writing record batch. Attempting quarantine of bad records.");
+        warn!(
+            "Failed with parquet error while writing record batch. Attempting quarantine of bad records."
+        );
         let (good, bad) = quarantine_failed_parquet_rows(arrow_schema.clone(), json_buffer)?;
         let record_batch = record_batch_from_json(arrow_schema, good.as_slice())?;
         self.write_record_batch(partition_columns, record_batch)
@@ -623,7 +627,8 @@ fn quarantine_failed_parquet_rows(
     let mut bad: Vec<BadValue> = Vec::new();
 
     for value in values {
-        let record_batch = record_batch_from_json(arrow_schema.clone(), &[value.clone()])?;
+        let record_batch =
+            record_batch_from_json(arrow_schema.clone(), std::slice::from_ref(&value))?;
 
         let cursor = InMemoryWriteableCursor::default();
         let mut writer = ArrowWriter::try_new(cursor.clone(), arrow_schema.clone(), None)?;

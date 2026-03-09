@@ -1,5 +1,5 @@
-use deltalake_core::protocol::Stats;
 use deltalake_core::DeltaTable;
+use deltalake_core::protocol::Stats;
 use log::*;
 use rdkafka::{producer::Producer, util::Timeout};
 use serde::{Deserialize, Serialize};

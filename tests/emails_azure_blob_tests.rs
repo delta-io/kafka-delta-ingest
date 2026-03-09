@@ -115,18 +115,21 @@ fn create_partitions_app_ids(num_p: i32) -> Vec<String> {
 }
 
 fn create_options() -> IngestOptions {
-    env::set_var("AZURE_STORAGE_USE_EMULATOR", "true");
-    env::set_var("AZURE_ACCOUNT_NAME", "devstoreaccount1");
-    env::set_var(
-        "AZURE_ACCESS_KEY",
-        "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==",
-    );
-    env::set_var("AZURE_STORAGE_CONTAINER_NAME", "tests");
-    env::set_var("AZURE_STORAGE_ALLOW_HTTP", "1");
-    env::set_var("AZURITE_BLOB_STORAGE_URL", "http://127.0.0.1:10000");
-    env::set_var(
-            "AZURE_STORAGE_CONNECTION_STRING", 
-            "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://localhost:10000/devstoreaccount1;QueueEndpoint=http://localhost:10001/devstoreaccount1;");
+    unsafe {
+        env::set_var("AZURE_STORAGE_USE_EMULATOR", "true");
+        env::set_var("AZURE_ACCOUNT_NAME", "devstoreaccount1");
+        env::set_var(
+            "AZURE_ACCESS_KEY",
+            "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==",
+        );
+        env::set_var("AZURE_STORAGE_CONTAINER_NAME", "tests");
+        env::set_var("AZURE_STORAGE_ALLOW_HTTP", "1");
+        env::set_var("AZURITE_BLOB_STORAGE_URL", "http://127.0.0.1:10000");
+        env::set_var(
+            "AZURE_STORAGE_CONNECTION_STRING",
+            "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://localhost:10000/devstoreaccount1;QueueEndpoint=http://localhost:10001/devstoreaccount1;",
+        );
+    }
 
     let mut additional_kafka_settings = HashMap::new();
     additional_kafka_settings.insert("auto.offset.reset".to_string(), "earliest".to_string());

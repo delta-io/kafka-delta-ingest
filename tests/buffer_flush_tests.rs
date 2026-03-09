@@ -5,7 +5,7 @@ use log::info;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serial_test::serial;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 use kafka_delta_ingest::IngestOptions;
 

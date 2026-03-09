@@ -4,23 +4,13 @@ use chrono::prelude::*;
 use core::fmt::Debug;
 use deltalake_core::parquet::errors::ParquetError;
 use deltalake_core::{DeltaTable, DeltaTableError};
-#[cfg(feature = "s3")]
-use dynamodb_lock::dynamo_lock_options;
-use log::{error, info, warn};
-#[cfg(feature = "s3")]
-use maplit::hashmap;
+use log::{info, warn};
 use rdkafka::message::BorrowedMessage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::{transforms::TransformError, writer::*};
-
-#[cfg(feature = "s3")]
-mod env_vars {
-    pub(crate) const DEAD_LETTER_DYNAMO_LOCK_PARTITION_KEY_VALUE: &str =
-        "DEAD_LETTER_DYNAMO_LOCK_PARTITION_KEY_VALUE";
-}
 
 /// Struct that represents a dead letter record.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -250,16 +240,8 @@ impl DeltaSinkDeadLetterQueue {
     ) -> Result<Self, DeadLetterQueueError> {
         match &options.delta_table_uri {
             Some(table_uri) => {
-                #[cfg(feature = "s3")]
-                let opts = hashmap! {
-                    dynamo_lock_options::DYNAMO_LOCK_PARTITION_KEY_VALUE.to_string() => std::env::var(env_vars::DEAD_LETTER_DYNAMO_LOCK_PARTITION_KEY_VALUE)
-                    .unwrap_or_else(|_| "kafka_delta_ingest-dead_letters".to_string()),
-                };
-                #[cfg(all(feature = "azure", not(feature = "s3")))]
-                let opts = HashMap::default();
-
-                let table = crate::delta_helpers::load_table(table_uri, opts.clone()).await?;
-                let delta_writer = DataWriter::for_table(&table, opts)?;
+                let table = crate::delta_helpers::load_table(table_uri, HashMap::new()).await?;
+                let delta_writer = DataWriter::for_table(&table, HashMap::new())?;
 
                 Ok(Self {
                     table,
