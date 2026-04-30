@@ -78,13 +78,10 @@ impl MessageDeserializerFactory {
         }
 
         let mut builder = SrSettings::new_builder(url_string.to_owned());
-        if let (Ok(username), Ok(password)) = (
-            std::env::var("SCHEMA_REGISTRY_USERNAME"),
-            std::env::var("SCHEMA_REGISTRY_PASSWORD"),
-        ) {
+        if let Ok(username) = std::env::var("SCHEMA_REGISTRY_USERNAME") {
             builder.set_basic_authorization(
                 username.as_str(),
-                Some(password.as_str()),
+                std::env::var("SCHEMA_REGISTRY_PASSWORD").ok().as_deref(),
             );
         }
 
