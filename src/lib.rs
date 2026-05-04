@@ -79,6 +79,7 @@ const BUFFER_LAG_REPORT_SECONDS: u64 = 60;
 
 /// Errors returned by [`start_ingest`] function.
 #[derive(thiserror::Error, Debug)]
+#[allow(clippy::result_large_err)]
 pub enum IngestError {
     /// Error from [`rdkafka`]
     #[error("Kafka error: {source}")]
@@ -792,11 +793,7 @@ impl IngestProcessor {
     fn consume_timeout_duration(&self) -> Duration {
         let elapsed_secs = self.latency_timer.elapsed().as_secs();
 
-        let timeout_secs = if elapsed_secs >= self.opts.allowed_latency {
-            0
-        } else {
-            self.opts.allowed_latency - elapsed_secs
-        };
+        let timeout_secs = self.opts.allowed_latency.saturating_sub(elapsed_secs);
 
         Duration::from_secs(timeout_secs)
     }
