@@ -623,7 +623,7 @@ fn quarantine_failed_parquet_rows(
     let mut bad: Vec<BadValue> = Vec::new();
 
     for value in values {
-        let record_batch = 
+        let record_batch =
             record_batch_from_json(arrow_schema.clone(), std::slice::from_ref(&value))?;
 
         let cursor = InMemoryWriteableCursor::default();

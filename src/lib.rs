@@ -164,7 +164,7 @@ pub enum IngestError {
         /// Message counts for each partition that failed to be written to delta.
         partition_counts: String,
         /// The underlying DataWriterError.
-        source: DataWriterError,
+        source: Box<DataWriterError>,
     },
 
     /// Error returned when a message is received from Kafka that has already been processed.
@@ -921,7 +921,7 @@ impl IngestProcessor {
                 return Err(IngestError::DeltaWriteFailed {
                     ending_offsets: serde_json::to_string(&partition_offsets).unwrap(),
                     partition_counts: serde_json::to_string(&partition_counts).unwrap(),
-                    source: *e,
+                    source: Box::new(*e),
                 });
             }
         }
