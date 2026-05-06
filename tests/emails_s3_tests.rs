@@ -31,8 +31,8 @@ async fn when_rebalance_happens() {
 }
 
 async fn run_emails_s3_tests(initiate_rebalance: bool) {
-    deltalake_aws::register_handlers(None);
     helpers::init_logger();
+    deltalake_aws::register_handlers(None);
     let topic = format!("emails_s3-{}", Uuid::new_v4());
     let table = prepare_table(&topic).await;
     let options = create_options(helpers::WORKER_1);
