@@ -6,10 +6,8 @@ use std::collections::HashMap;
 use std::env;
 use std::thread;
 use std::time::Duration;
-use azure_storage_blobs::container;
 use serial_test::serial;
 use uuid::Uuid;
-use futures::StreamExt;
 
 use kafka_delta_ingest::IngestOptions;
 
@@ -91,7 +89,7 @@ async fn prepare_table(topic: &str) -> String {
         .await
         .unwrap();
 
-        format!("abfs://{}/{}", helpers::test_s3_bucket(), topic)
+    format!("abfs://{}/{}", helpers::test_s3_bucket(), topic)
 }
 
 fn create_partitions_app_ids(num_p: i32) -> Vec<String> {
