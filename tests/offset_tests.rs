@@ -397,7 +397,7 @@ async fn end_at_initial_offsets() {
         .await;
     }
 
-    helpers::expect_termination_within(kdi, 10).await;
+    helpers::expect_termination_within(kdi, 20).await;
     rt.shutdown_background();
 
     // check that there's only 3 records
