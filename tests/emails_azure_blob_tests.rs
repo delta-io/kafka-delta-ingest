@@ -2,10 +2,12 @@
 #[allow(dead_code)]
 mod helpers;
 
+use serial_test::serial;
 use std::collections::HashMap;
 use std::env;
 use std::thread;
 use std::time::Duration;
+
 use uuid::Uuid;
 
 use kafka_delta_ingest::IngestOptions;
