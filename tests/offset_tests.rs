@@ -29,6 +29,7 @@ impl TestMsg {
 }
 
 #[tokio::test]
+#[serial]
 async fn zero_offset_issue() {
     let table = "./tests/data/zero_offset";
     helpers::init_logger();
@@ -338,6 +339,7 @@ impl Msg {
 }
 
 #[tokio::test]
+#[serial]
 async fn end_at_initial_offsets() {
     helpers::init_logger();
     let topic = format!("end_at_offset_{}", Uuid::new_v4());
