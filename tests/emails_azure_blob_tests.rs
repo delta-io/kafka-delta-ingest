@@ -2,20 +2,17 @@
 #[allow(dead_code)]
 mod helpers;
 
+use serial_test::serial;
 use std::collections::HashMap;
 use std::env;
 use std::thread;
 use std::time::Duration;
-use time::OffsetDateTime;
 
-use serial_test::serial;
 use uuid::Uuid;
 
 use kafka_delta_ingest::IngestOptions;
 
 use helpers::*;
-
-use azure_storage::{prelude::BlobSasPermissions, shared_access_signature::SasProtocol};
 
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
@@ -78,32 +75,22 @@ async fn run_emails_azure_tests(initiate_rebalance: bool) {
 async fn prepare_table(topic: &str) -> String {
     let container_client = azure_storage_blobs::prelude::ClientBuilder::emulator()
         .container_client(helpers::test_s3_bucket());
-    let source_blob =
-        container_client.blob_client(format!("emails/_delta_log/00000000000000000000.json"));
-    let sas_url = {
-        let now = OffsetDateTime::now_utc();
-        let later = now + time::Duration::hours(1);
-        let sas = source_blob
-            .shared_access_signature(
-                BlobSasPermissions {
-                    read: true,
-                    ..Default::default()
-                },
-                later,
-            )
-            .await
-            .unwrap()
-            .start(now)
-            .protocol(SasProtocol::HttpHttps);
-        source_blob.generate_signed_blob_url(&sas).unwrap()
-    };
-    container_client
-        .blob_client(format!("{}/_delta_log/00000000000000000000.json", topic))
-        .copy_from_url(sas_url)
+
+    let content = container_client
+        .blob_client("emails/_delta_log/00000000000000000000.json")
+        .get_content()
         .await
         .unwrap();
 
-    format!("az://{}/{}", helpers::test_s3_bucket(), topic)
+    assert!(!content.is_empty(), "Source blob should not be empty");
+
+    container_client
+        .blob_client(format!("{}/_delta_log/00000000000000000000.json", topic))
+        .put_block_blob(content)
+        .await
+        .unwrap();
+
+    format!("abfs://{}/{}", helpers::test_s3_bucket(), topic)
 }
 
 fn create_partitions_app_ids(num_p: i32) -> Vec<String> {
@@ -126,7 +113,7 @@ fn create_options() -> IngestOptions {
     env::set_var("AZURITE_BLOB_STORAGE_URL", "http://127.0.0.1:10000");
     env::set_var(
             "AZURE_STORAGE_CONNECTION_STRING", 
-            "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://localhost:10000/devstoreaccount1;QueueEndpoint=http://localhost:10001/devstoreaccount1;");
+            "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;QueueEndpoint=http://127.0.0.1:10001/devstoreaccount1;");
 
     let mut additional_kafka_settings = HashMap::new();
     additional_kafka_settings.insert("auto.offset.reset".to_string(), "earliest".to_string());
