@@ -79,6 +79,7 @@ const BUFFER_LAG_REPORT_SECONDS: u64 = 60;
 
 /// Errors returned by [`start_ingest`] function.
 #[derive(thiserror::Error, Debug)]
+#[allow(clippy::result_large_err)]
 pub enum IngestError {
     /// Error from [`rdkafka`]
     #[error("Kafka error: {source}")]
@@ -163,7 +164,7 @@ pub enum IngestError {
         /// Message counts for each partition that failed to be written to delta.
         partition_counts: String,
         /// The underlying DataWriterError.
-        source: DataWriterError,
+        source: Box<DataWriterError>,
     },
 
     /// Error returned when a message is received from Kafka that has already been processed.
@@ -792,11 +793,7 @@ impl IngestProcessor {
     fn consume_timeout_duration(&self) -> Duration {
         let elapsed_secs = self.latency_timer.elapsed().as_secs();
 
-        let timeout_secs = if elapsed_secs >= self.opts.allowed_latency {
-            0
-        } else {
-            self.opts.allowed_latency - elapsed_secs
-        };
+        let timeout_secs = self.opts.allowed_latency.saturating_sub(elapsed_secs);
 
         Duration::from_secs(timeout_secs)
     }
@@ -924,7 +921,7 @@ impl IngestProcessor {
                 return Err(IngestError::DeltaWriteFailed {
                     ending_offsets: serde_json::to_string(&partition_offsets).unwrap(),
                     partition_counts: serde_json::to_string(&partition_counts).unwrap(),
-                    source: *e,
+                    source: Box::new(*e),
                 });
             }
         }

@@ -327,7 +327,7 @@ fn parse_seek_offsets(val: &str) -> Vec<(DataTypePartition, DataTypeOffset)> {
         .map(|(p, o)| (p.parse::<DataTypePartition>().unwrap(), *o))
         .collect();
 
-    list.sort_by(|a, b| a.0.cmp(&b.0));
+    list.sort_by_key(|a| a.0);
     list
 }
 
