@@ -81,7 +81,7 @@ impl MessageDeserializerFactory {
         if let Ok(username) = std::env::var("SCHEMA_REGISTRY_USERNAME") {
             builder.set_basic_authorization(
                 username.as_str(),
-                std::option_env!("SCHEMA_REGISTRY_PASSWORD"),
+                std::env::var("SCHEMA_REGISTRY_PASSWORD").ok().as_deref(),
             );
         }
 
