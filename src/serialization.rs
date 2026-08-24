@@ -31,18 +31,25 @@ pub(crate) struct MessageDeserializerFactory {}
 impl MessageDeserializerFactory {
     pub fn try_build(
         input_format: &MessageFormat,
-        decompress_gzip: bool, // Add this parameter
+        decompress_gzip: bool,
+        max_decompressed_message_size: u64,
     ) -> Result<Box<dyn MessageDeserializer + Send>, anyhow::Error> {
         match input_format {
             MessageFormat::Json(data) => match data {
-                crate::SchemaSource::None => Ok(Self::json_default(decompress_gzip)),
+                crate::SchemaSource::None => Ok(Self::json_default(
+                    decompress_gzip,
+                    max_decompressed_message_size,
+                )),
                 crate::SchemaSource::SchemaRegistry(sr) => {
                     match Self::build_sr_settings(sr).map(JsonDeserializer::from_schema_registry) {
                         Ok(s) => Ok(Box::new(s)),
                         Err(e) => Err(e),
                     }
                 }
-                crate::SchemaSource::File(_) => Ok(Self::json_default(decompress_gzip)),
+                crate::SchemaSource::File(_) => Ok(Self::json_default(
+                    decompress_gzip,
+                    max_decompressed_message_size,
+                )),
             },
             MessageFormat::Avro(data) => match data {
                 crate::SchemaSource::None => Ok(Box::<AvroSchemaDeserializer>::default()),
@@ -63,12 +70,21 @@ impl MessageDeserializerFactory {
                 Ok(s) => Ok(Box::new(s)),
                 Err(e) => Err(e),
             },
-            _ => Ok(Box::new(DefaultDeserializer::new(decompress_gzip))),
+            _ => Ok(Box::new(DefaultDeserializer::new(
+                decompress_gzip,
+                max_decompressed_message_size,
+            ))),
         }
     }
 
-    fn json_default(decompress_gzip: bool) -> Box<dyn MessageDeserializer + Send> {
-        Box::new(DefaultDeserializer::new(decompress_gzip))
+    fn json_default(
+        decompress_gzip: bool,
+        max_decompressed_message_size: u64,
+    ) -> Box<dyn MessageDeserializer + Send> {
+        Box::new(DefaultDeserializer::new(
+            decompress_gzip,
+            max_decompressed_message_size,
+        ))
     }
 
     fn build_sr_settings(registry_url: &url::Url) -> Result<SrSettings, anyhow::Error> {
@@ -98,17 +114,36 @@ impl MessageDeserializerFactory {
 
 struct DefaultDeserializer {
     decompress_gzip: bool,
+    max_decompressed_message_size: u64,
 }
 
 impl DefaultDeserializer {
-    pub fn new(decompress_gzip: bool) -> Self {
-        DefaultDeserializer { decompress_gzip }
+    pub fn new(decompress_gzip: bool, max_decompressed_message_size: u64) -> Self {
+        DefaultDeserializer {
+            decompress_gzip,
+            max_decompressed_message_size,
+        }
     }
 
-    fn decompress(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
-        let mut decoder = GzDecoder::new(bytes);
+    /// Decompresses `bytes` as gzip, refusing to read more than `max_size + 1` bytes from the
+    /// decoder. This bounds the memory allocated for a single message regardless of how large
+    /// the compressed payload claims to decompress into, while still allowing a payload whose
+    /// decompressed size is exactly `max_size` to succeed.
+    fn decompress(bytes: &[u8], max_size: u64) -> std::io::Result<Vec<u8>> {
+        let decoder = GzDecoder::new(bytes);
+        let read_limit = max_size.saturating_add(1);
+        let mut limited = decoder.take(read_limit);
+
         let mut decompressed_data = Vec::new();
-        decoder.read_to_end(&mut decompressed_data)?;
+        limited.read_to_end(&mut decompressed_data)?;
+
+        if decompressed_data.len() as u64 > max_size {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("decompressed message exceeds configured maximum of {max_size} bytes"),
+            ));
+        }
+
         Ok(decompressed_data)
     }
 }
@@ -117,7 +152,7 @@ impl DefaultDeserializer {
 impl MessageDeserializer for DefaultDeserializer {
     async fn deserialize(&mut self, payload: &[u8]) -> Result<Value, MessageDeserializationError> {
         let payload = if self.decompress_gzip {
-            Self::decompress(payload).map_err(|e| {
+            Self::decompress(payload, self.max_decompressed_message_size).map_err(|e| {
                 MessageDeserializationError::JsonDeserialization {
                     dead_letter: DeadLetter::from_failed_deserialization(payload, e.to_string()),
                 }
@@ -248,7 +283,9 @@ impl MessageDeserializer for AvroSchemaDeserializer {
     ) -> Result<Value, MessageDeserializationError> {
         let reader_result = match &self.schema {
             None => apache_avro::Reader::new(Cursor::new(message_bytes)),
-            Some(schema) => apache_avro::Reader::with_schema(schema, Cursor::new(message_bytes)),
+            Some(schema) => apache_avro::Reader::builder(Cursor::new(message_bytes))
+                .reader_schema(schema)
+                .build(),
         };
 
         match reader_result {
@@ -403,7 +440,7 @@ impl SoeAvroDeserializer {
                         .try_into()
                         .expect("Rabin fingerprints are 8 bytes");
                     let key = Self::fingerprint_to_i64(fingerprint);
-                    match GenericSingleObjectReader::new(s) {
+                    match GenericSingleObjectReader::builder().schema(s).build() {
                         Ok(decoder) => Ok((key, decoder)),
                         Err(e) => Err(anyhow::format_err!(
                             "Schema file '{:?}'; Error: {}",
@@ -440,4 +477,138 @@ impl SoeAvroDeserializer {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+    use flate2::{write::GzEncoder, Compression};
+    use std::io::Write;
+    use std::time::Instant;
+
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(data).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    /// Builds a JSON payload whose serialized byte length is exactly `target_len`.
+    fn json_padded_to_len(target_len: usize) -> Vec<u8> {
+        let overhead = serde_json::to_vec(&serde_json::json!({ "pad": "" }))
+            .unwrap()
+            .len();
+        let pad_len = target_len - overhead;
+        let value = serde_json::json!({ "pad": "a".repeat(pad_len) });
+        let bytes = serde_json::to_vec(&value).unwrap();
+        assert_eq!(bytes.len(), target_len);
+        bytes
+    }
+
+    #[tokio::test]
+    async fn small_gzip_payload_deserializes_successfully() {
+        let data = serde_json::json!({"hello": "world"});
+        let payload = gzip(data.to_string().as_bytes());
+        let mut deserializer = DefaultDeserializer::new(true, 1024);
+
+        let value = deserializer.deserialize(&payload).await.unwrap();
+
+        assert_eq!(value, data);
+    }
+
+    #[tokio::test]
+    async fn gzip_payload_exactly_at_limit_succeeds() {
+        let limit = 1024usize;
+        let decompressed = json_padded_to_len(limit);
+        let payload = gzip(&decompressed);
+        let mut deserializer = DefaultDeserializer::new(true, limit as u64);
+
+        let result = deserializer.deserialize(&payload).await;
+
+        assert!(result.is_ok(), "exact-limit payload should succeed");
+    }
+
+    #[tokio::test]
+    async fn gzip_payload_one_byte_over_limit_fails() {
+        let limit = 1024usize;
+        let decompressed = json_padded_to_len(limit + 1);
+        let payload = gzip(&decompressed);
+        let mut deserializer = DefaultDeserializer::new(true, limit as u64);
+
+        let result = deserializer.deserialize(&payload).await;
+
+        match result {
+            Err(MessageDeserializationError::JsonDeserialization { dead_letter }) => {
+                let error = dead_letter
+                    .error
+                    .expect("dead letter should carry an error");
+                assert!(
+                    error.contains(&limit.to_string()),
+                    "error should identify the configured limit, got: {}",
+                    error
+                );
+            }
+            other => panic!(
+                "expected a JsonDeserialization dead letter, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_decompressed_payload_is_rejected_without_full_decompression() {
+        // Highly compressible: repeating a single byte compresses to a tiny fixture
+        // while decompressing to many times the configured limit.
+        let limit = 1024u64;
+        let chunk = vec![b'a'; 1024 * 1024];
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        for _ in 0..64 {
+            // 64 MiB decompressed
+            encoder.write_all(&chunk).unwrap();
+        }
+        let payload = encoder.finish().unwrap();
+        let decompressed_size = (chunk.len() * 64) as u64;
+        assert!(
+            payload.len() as u64 * 100 < decompressed_size,
+            "compressed fixture should be tiny relative to its decompressed size, was {} bytes",
+            payload.len()
+        );
+
+        let mut deserializer = DefaultDeserializer::new(true, limit);
+        let start = Instant::now();
+        let result = deserializer.deserialize(&payload).await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            matches!(
+                result,
+                Err(MessageDeserializationError::JsonDeserialization { .. })
+            ),
+            "expected a JsonDeserialization dead letter for an oversized payload"
+        );
+        assert!(
+            elapsed.as_secs() < 5,
+            "decompression should stop at the configured limit instead of expanding the full payload, took {:?}",
+            elapsed
+        );
+
+        if let Err(MessageDeserializationError::JsonDeserialization { dead_letter }) = result {
+            let preserved = base64::decode(dead_letter.base64_bytes.unwrap()).unwrap();
+            assert_eq!(
+                preserved, payload,
+                "dead letter should preserve the original compressed payload"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_gzip_still_fails_normally() {
+        let mut deserializer = DefaultDeserializer::new(true, 1024);
+
+        let result = deserializer.deserialize(b"not a valid gzip stream").await;
+
+        assert!(
+            matches!(
+                result,
+                Err(MessageDeserializationError::JsonDeserialization { .. })
+            ),
+            "corrupt gzip input should still surface as a deserialization failure"
+        );
+    }
+}
