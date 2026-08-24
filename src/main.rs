@@ -34,7 +34,7 @@ use chrono::Local;
 use clap::{Arg, ArgAction, ArgGroup, ArgMatches, Command};
 use kafka_delta_ingest::{
     start_ingest, AutoOffsetReset, DataTypeOffset, DataTypePartition, IngestOptions, MessageFormat,
-    SchemaSource,
+    SchemaSource, DEFAULT_MAX_DECOMPRESSED_MESSAGE_SIZE,
 };
 use log::{error, info, LevelFilter};
 use std::collections::HashMap;
@@ -142,6 +142,9 @@ async fn main() -> anyhow::Result<()> {
             let end_at_last_offsets = ingest_matches.get_flag("end");
 
             let decompress_gzip = ingest_matches.get_flag("decompress_gzip");
+            let max_decompressed_message_size = ingest_matches
+                .get_one::<u64>("max_decompressed_message_size")
+                .unwrap();
 
             // ingest_matches.get_flag("end")
             let format = convert_matches_to_message_format(ingest_matches).unwrap();
@@ -164,6 +167,7 @@ async fn main() -> anyhow::Result<()> {
                 input_format: format,
                 end_at_last_offsets,
                 decompress_gzip,
+                max_decompressed_message_size: *max_decompressed_message_size,
             };
 
             tokio::spawn(async move {
@@ -331,6 +335,16 @@ fn parse_seek_offsets(val: &str) -> Vec<(DataTypePartition, DataTypeOffset)> {
     list
 }
 
+/// Formats [`DEFAULT_MAX_DECOMPRESSED_MESSAGE_SIZE`] for use as the clap default value,
+/// so the CLI default cannot drift out of sync with [`IngestOptions::default()`].
+fn default_max_decompressed_message_size() -> &'static str {
+    Box::leak(
+        DEFAULT_MAX_DECOMPRESSED_MESSAGE_SIZE
+            .to_string()
+            .into_boxed_str(),
+    )
+}
+
 fn build_app() -> Command {
     Command::new("kafka-delta-ingest")
         .version(env!["CARGO_PKG_VERSION"])
@@ -485,6 +499,12 @@ This can be used to provide TLS configuration as in:
                     .env("DECOMPRESS_GZIP")
                     .help("Enable gzip decompression for incoming messages")
                     .action(ArgAction::SetTrue))
+                .arg(Arg::new("max_decompressed_message_size")
+                    .long("max_decompressed_message_size")
+                    .env("MAX_DECOMPRESSED_MESSAGE_SIZE")
+                    .help("The maximum number of bytes a gzip-compressed message may decompress into. Only applies when --decompress_gzip is set; messages that would decompress beyond this size are sent to the dead letter path instead of being fully decompressed.")
+                    .default_value(default_max_decompressed_message_size())
+                    .value_parser(clap::value_parser!(u64)))
         )
         .arg_required_else_help(true)
 }

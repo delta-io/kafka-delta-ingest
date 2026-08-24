@@ -253,6 +253,12 @@ impl AutoOffsetReset {
     pub const CONFIG_KEY: &'static str = "auto.offset.reset";
 }
 
+/// Default value for [`IngestOptions::max_decompressed_message_size`] (64 MiB).
+///
+/// This is intentionally much larger than Kafka's typical message size limit, while still
+/// bounding how much memory a single gzip-compressed message can expand into.
+pub const DEFAULT_MAX_DECOMPRESSED_MESSAGE_SIZE: u64 = 64 * 1024 * 1024;
+
 /// Options for configuring the behavior of the run loop executed by the [`start_ingest`] function.
 #[derive(Clone, Debug)]
 pub struct IngestOptions {
@@ -302,6 +308,11 @@ pub struct IngestOptions {
     pub end_at_last_offsets: bool,
     /// Assume that message payloads are gzip compressed and decompress them before processing.
     pub decompress_gzip: bool,
+    /// The maximum number of bytes a gzip-compressed message may decompress into.
+    /// Only applies when `decompress_gzip` is `true`. Messages that would decompress
+    /// beyond this size are treated as a deserialization failure instead of being
+    /// fully decompressed. Defaults to [`DEFAULT_MAX_DECOMPRESSED_MESSAGE_SIZE`].
+    pub max_decompressed_message_size: u64,
 }
 
 impl Default for IngestOptions {
@@ -324,6 +335,7 @@ impl Default for IngestOptions {
             input_format: MessageFormat::DefaultJson,
             end_at_last_offsets: false,
             decompress_gzip: false,
+            max_decompressed_message_size: DEFAULT_MAX_DECOMPRESSED_MESSAGE_SIZE,
         }
     }
 }
@@ -766,11 +778,14 @@ impl IngestProcessor {
         let table = delta_helpers::load_table(table_uri, HashMap::new()).await?;
         let coercion_tree = coercions::create_coercion_tree(table.schema().unwrap());
         let delta_writer = DataWriter::for_table(&table, HashMap::new())?;
-        let deserializer =
-            match MessageDeserializerFactory::try_build(&opts.input_format, opts.decompress_gzip) {
-                Ok(deserializer) => deserializer,
-                Err(e) => return Err(IngestError::UnableToCreateDeserializer { source: e }),
-            };
+        let deserializer = match MessageDeserializerFactory::try_build(
+            &opts.input_format,
+            opts.decompress_gzip,
+            opts.max_decompressed_message_size,
+        ) {
+            Ok(deserializer) => deserializer,
+            Err(e) => return Err(IngestError::UnableToCreateDeserializer { source: e }),
+        };
 
         Ok(IngestProcessor {
             topic,

@@ -219,6 +219,8 @@ kafka-delta-ingest now supports ingestion of gzip-compressed messages. This can 
 
 To enable gzip decompression, use the `--decompress_gzip` flag when starting the ingestion process.
 
+The `--max_decompressed_message_size` option (default 64 MiB) bounds how large a single message may grow once decompressed. Messages that would decompress beyond this limit are sent to the dead letter path instead of being fully decompressed.
+
 == Writing to S3
 
 When writing to S3, you may experience an error like `source: StorageError { source: S3Generic("dynamodb locking is not enabled") }`.
