@@ -248,7 +248,9 @@ impl MessageDeserializer for AvroSchemaDeserializer {
     ) -> Result<Value, MessageDeserializationError> {
         let reader_result = match &self.schema {
             None => apache_avro::Reader::new(Cursor::new(message_bytes)),
-            Some(schema) => apache_avro::Reader::with_schema(schema, Cursor::new(message_bytes)),
+            Some(schema) => apache_avro::Reader::builder(Cursor::new(message_bytes))
+                .reader_schema(schema)
+                .build(),
         };
 
         match reader_result {
@@ -403,7 +405,7 @@ impl SoeAvroDeserializer {
                         .try_into()
                         .expect("Rabin fingerprints are 8 bytes");
                     let key = Self::fingerprint_to_i64(fingerprint);
-                    match GenericSingleObjectReader::new(s) {
+                    match GenericSingleObjectReader::builder().schema(s).build() {
                         Ok(decoder) => Ok((key, decoder)),
                         Err(e) => Err(anyhow::format_err!(
                             "Schema file '{:?}'; Error: {}",

@@ -182,12 +182,12 @@ async fn test_avro_default() {
     .await;
 
     let schema = apache_avro::Schema::parse_str(DEFAULT_AVRO_SCHEMA).unwrap();
-    let mut writer = apache_avro::Writer::new(&schema, Vec::new());
+    let mut writer = apache_avro::Writer::new(&schema, Vec::new()).unwrap();
     let mut record = apache_avro::types::Record::new(writer.schema()).unwrap();
     record.put("id", DEFAULT_ID);
     record.put("name", DEFAULT_NAME);
     record.put("date", DEFAULT_DATE);
-    writer.append(record).unwrap();
+    writer.append_value(record).unwrap();
     let encoded = writer.into_inner().unwrap();
     helpers::send_encoded(&producer, &topic, encoded).await;
     // wait for latency flush
@@ -227,12 +227,12 @@ async fn test_avro_with_file() {
     .await;
 
     let schema = apache_avro::Schema::parse_str(DEFAULT_AVRO_SCHEMA).unwrap();
-    let mut writer = apache_avro::Writer::new(&schema, Vec::new());
+    let mut writer = apache_avro::Writer::new(&schema, Vec::new()).unwrap();
     let mut record = apache_avro::types::Record::new(writer.schema()).unwrap();
     record.put("id", DEFAULT_ID);
     record.put("name", DEFAULT_NAME);
     record.put("date", DEFAULT_DATE);
-    writer.append(record).unwrap();
+    writer.append_value(record).unwrap();
     let encoded = writer.into_inner().unwrap();
     helpers::send_encoded(&producer, &topic, encoded).await;
     // wait for latency flush
@@ -371,6 +371,8 @@ async fn prepare_json_schema(topic: String) -> Result<RegisteredSchema, SRCError
             r#"{"schemaType": "JSON", "schema": "{\"type\": \"object\", \"properties\": {\"name\": {\"type\": \"string\"}, \"date\": {\"type\": \"string\"}, \"id\": {\"type\": \"number\"}}}"}"#,
         ),
         references: vec![],
+        properties: None,
+        tags: None,
     };
     post_schema(&settings, topic, schema).await
 }
@@ -382,6 +384,8 @@ async fn prepare_avro_schema(topic: String) -> Result<RegisteredSchema, SRCError
         schema_type: SchemaType::Avro,
         schema: String::from(DEFAULT_AVRO_SCHEMA),
         references: vec![],
+        properties: None,
+        tags: None,
     };
     post_schema(&settings, topic, schema).await
 }
