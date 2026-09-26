@@ -19,6 +19,8 @@ toc::[]
 
 Make sure the docker-compose setup has been ran, and execute `cargo test` to run unit and integration tests.
 
+NOTE: On macOS with both `openssl@3` and `openssl@4` installed from Homebrew, the build can fail at link time with undefined `ENGINE_*` symbols, because librdkafka is compiled against OpenSSL 3 and linked against OpenSSL 4 (link:https://github.com/fede1024/rust-rdkafka/issues/858[rust-rdkafka#858]). Build against OpenSSL 3 with `export OPENSSL_DIR=$(brew --prefix openssl@3) PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig`.
+
 == Environment Variables
 
 |===
