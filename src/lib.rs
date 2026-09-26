@@ -608,11 +608,17 @@ fn fetch_latest_offsets(
         .first()
         .unwrap()
         .partitions();
-    let partitions = partition_meta
+    // A partition emptied by retention has a non-zero high watermark but nothing
+    // to consume; record 0 for it, which counts as caught up.
+    let result = partition_meta
         .iter()
-        .map(|p| p.id() as DataTypePartition)
-        .collect::<Vec<_>>();
-    let result = get_high_watermark_map(topic.as_str(), consumer.clone(), partitions.into_iter())?;
+        .map(|p| {
+            let partition = p.id() as DataTypePartition;
+            consumer
+                .fetch_watermarks(topic, partition, Timeout::Never)
+                .map(|(low, high)| (partition, if high > low { high } else { 0 }))
+        })
+        .collect::<Result<HashMap<_, _>, _>>()?;
     Ok(result)
 }
 
