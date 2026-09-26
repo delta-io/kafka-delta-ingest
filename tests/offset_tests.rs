@@ -407,3 +407,53 @@ async fn end_at_initial_offsets() {
     assert_eq!(table.version(), 1);
     assert_eq!(count_records(table), 15);
 }
+
+#[tokio::test]
+#[serial]
+async fn end_at_initial_offsets_without_new_messages() {
+    helpers::init_logger();
+    let topic = format!("end_at_offset_idle_{}", Uuid::new_v4());
+
+    let table = helpers::create_local_table(
+        json!({
+            "id": "integer",
+            "city": "string",
+        }),
+        vec!["city"],
+        &topic,
+    );
+    let table = table.as_str();
+
+    helpers::create_topic(&topic, 3).await;
+
+    let producer = helpers::create_producer();
+    for i in 0..15 {
+        helpers::send_json(
+            &producer,
+            &topic,
+            &serde_json::to_value(Msg::new(i)).unwrap(),
+        )
+        .await;
+    }
+
+    let (kdi, _token, rt) = helpers::create_kdi(
+        &topic,
+        table,
+        IngestOptions {
+            app_id: topic.clone(),
+            allowed_latency: 5,
+            max_messages_per_batch: 20,
+            min_bytes_per_file: 20,
+            end_at_last_offsets: true,
+            ..Default::default()
+        },
+    );
+
+    // Nothing is produced after start, so the worker must stop on its own
+    // once the existing messages are committed.
+    helpers::expect_termination_within(kdi, 30).await;
+    rt.shutdown_background();
+
+    let table = deltalake_core::open_table(table).await.unwrap();
+    assert_eq!(count_records(table), 15);
+}
