@@ -457,3 +457,53 @@ async fn end_at_initial_offsets_without_new_messages() {
     let table = deltalake_core::open_table(table).await.unwrap();
     assert_eq!(count_records(table), 15);
 }
+
+#[tokio::test]
+#[serial]
+async fn end_at_initial_offsets_with_idle_worker() {
+    helpers::init_logger();
+    let topic = format!("end_at_offset_idle_worker_{}", Uuid::new_v4());
+
+    let table = helpers::create_local_table(
+        json!({
+            "id": "integer",
+            "city": "string",
+        }),
+        vec!["city"],
+        &topic,
+    );
+    let table = table.as_str();
+
+    // One partition for two workers, so one of them never gets an assignment.
+    helpers::create_topic(&topic, 1).await;
+
+    let producer = helpers::create_producer();
+    for i in 0..15 {
+        helpers::send_json(
+            &producer,
+            &topic,
+            &serde_json::to_value(Msg::new(i)).unwrap(),
+        )
+        .await;
+    }
+
+    let options = IngestOptions {
+        app_id: topic.clone(),
+        allowed_latency: 5,
+        max_messages_per_batch: 20,
+        min_bytes_per_file: 20,
+        end_at_last_offsets: true,
+        ..Default::default()
+    };
+    let (kdi1, _token1, rt1) =
+        helpers::create_kdi_with(&topic, table, Some("w1".into()), options.clone());
+    let (kdi2, _token2, rt2) = helpers::create_kdi_with(&topic, table, Some("w2".into()), options);
+
+    helpers::expect_termination_within(kdi1, 45).await;
+    helpers::expect_termination_within(kdi2, 45).await;
+    rt1.shutdown_background();
+    rt2.shutdown_background();
+
+    let table = deltalake_core::open_table(table).await.unwrap();
+    assert_eq!(count_records(table), 15);
+}
