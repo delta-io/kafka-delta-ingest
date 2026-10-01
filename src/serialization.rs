@@ -177,7 +177,7 @@ impl MessageDeserializer for SoeAvroDeserializer {
                         message_bytes,
                         format!(
                             "Unkown schema with fingerprint {}",
-                            &message_bytes[2..10]
+                            message_bytes[2..10]
                                 .iter()
                                 .map(|byte| format!("{:02x}", byte))
                                 .collect::<Vec<String>>()
