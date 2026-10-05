@@ -3,7 +3,7 @@ name = "kafka-delta-ingest"
 version = "0.5.0"
 authors = ["R. Tyler Croy <rtyler@brokenco.de>", "Christian Williams <christianw@scribd.com>"]
 edition = "2024"
-rust-version = "1.91"
+rust-version = "1.94"
 resolver = "3"
 
 [dependencies]
