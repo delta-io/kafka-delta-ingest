@@ -529,6 +529,18 @@ pub async fn start_ingest(
             ingest_processor.latency_timer = Instant::now();
         }
 
+        // Exit once everything up to the offsets captured at startup is committed.
+        // Checked here rather than per message, because a caught-up topic delivers
+        // no further messages to trigger `end_of_partition_reached`.
+        if let Some(offset_map) = &_max_offsets {
+            if ingest_processor.is_caught_up(&partition_assignment, offset_map) {
+                info!(
+                    "All assigned partitions are written up to their latest offsets, terminating"
+                );
+                return Ok(());
+            }
+        }
+
         // Exit if the cancellation token is set.
         if cancellation_token.is_cancelled() {
             return Ok(());
@@ -596,11 +608,17 @@ fn fetch_latest_offsets(
         .first()
         .unwrap()
         .partitions();
-    let partitions = partition_meta
+    // A partition emptied by retention has a non-zero high watermark but nothing
+    // to consume; record 0 for it, which counts as caught up.
+    let result = partition_meta
         .iter()
-        .map(|p| p.id() as DataTypePartition)
-        .collect::<Vec<_>>();
-    let result = get_high_watermark_map(topic.as_str(), consumer.clone(), partitions.into_iter())?;
+        .map(|p| {
+            let partition = p.id() as DataTypePartition;
+            consumer
+                .fetch_watermarks(topic, partition, Timeout::Never)
+                .map(|(low, high)| (partition, if high > low { high } else { 0 }))
+        })
+        .collect::<Result<HashMap<_, _>, _>>()?;
     Ok(result)
 }
 
@@ -1191,6 +1209,25 @@ impl IngestProcessor {
 
     fn buffered_record_batch_count(&self) -> usize {
         self.delta_writer.buffered_record_batch_count()
+    }
+
+    /// Returns a boolean indicating whether every assigned partition has been committed to the
+    /// delta log up to the last message below its high watermark in `high_watermarks`.
+    fn is_caught_up(
+        &self,
+        partition_assignment: &PartitionAssignment,
+        high_watermarks: &HashMap<DataTypePartition, DataTypeOffset>,
+    ) -> bool {
+        let partitions = partition_assignment.assigned_partitions();
+        !partitions.is_empty()
+            && partitions.iter().all(|p| {
+                let high_watermark = high_watermarks.get(p).copied().unwrap_or(0);
+                high_watermark == 0
+                    || matches!(
+                        self.delta_partition_offsets.get(p),
+                        Some(Some(offset)) if *offset >= high_watermark - 1
+                    )
+            })
     }
 }
 
