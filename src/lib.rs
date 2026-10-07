@@ -501,7 +501,12 @@ pub async fn start_ingest(
         if ingest_processor.should_complete_file() {
             ingest_metrics.delta_write_started();
             let timer = Instant::now();
-            match ingest_processor.complete_file(&partition_assignment).await {
+            let result = ingest_processor.complete_file(&partition_assignment).await;
+            // Start the next file's latency window after the commit, not before it. Otherwise
+            // a commit slower than allowed_latency leaves the window already expired, and every
+            // following file is flushed with a single message.
+            ingest_processor.latency_timer = Instant::now();
+            match result {
                 Err(IngestError::ConflictingOffsets) | Err(IngestError::DeltaSchemaChanged) => {
                     ingest_processor.reset_state(&mut partition_assignment)?;
                     continue;
@@ -941,8 +946,6 @@ impl IngestProcessor {
         &mut self,
         partition_assignment: &PartitionAssignment,
     ) -> Result<i64, IngestError> {
-        // Reset the latency timer to track allowed latency for the next file
-        self.latency_timer = Instant::now();
         let partition_offsets = partition_assignment.nonempty_partition_offsets();
         // Upload pending parquet file to delta store
         // TODO: remove it if we got conflict error? or it'll be considered as tombstone
