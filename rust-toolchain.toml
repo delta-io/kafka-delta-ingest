@@ -1,0 +1,7 @@
+# This file specifies the Rust toolchain to use for building this project
+[toolchain]
+# Minimum supported Rust version that satisfies all dependencies
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+# Target platforms - can be extended if cross-compilation is needed
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]

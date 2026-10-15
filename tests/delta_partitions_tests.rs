@@ -1,14 +1,14 @@
 #[allow(dead_code)]
 mod helpers;
 
+use deltalake_core::DeltaTableError;
 use deltalake_core::kernel::transaction::CommitBuilder;
 use deltalake_core::kernel::transaction::TableReference;
 use deltalake_core::kernel::{Action, Add};
 use deltalake_core::protocol::{DeltaOperation, SaveMode};
-use deltalake_core::DeltaTableError;
 use kafka_delta_ingest::writer::*;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 
 #[derive(Debug, Serialize, Deserialize)]

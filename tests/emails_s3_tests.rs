@@ -77,16 +77,18 @@ async fn run_emails_s3_tests(initiate_rebalance: bool) {
 }
 
 fn create_options(name: &str) -> IngestOptions {
-    env::set_var("AWS_ENDPOINT_URL", helpers::test_aws_endpoint());
-    env::set_var("AWS_S3_LOCKING_PROVIDER", "dynamodb");
-    env::set_var("AWS_REGION", "us-east-2");
-    env::set_var("AWS_STORAGE_ALLOW_HTTP", "true");
-    env::set_var("DELTA_DYNAMO_TABLE_NAME", "locks");
-    env::set_var("DYNAMO_LOCK_OWNER_NAME", name);
-    env::set_var("DYNAMO_LOCK_PARTITION_KEY_VALUE", "emails_s3_tests");
-    env::set_var("DYNAMO_LOCK_REFRESH_PERIOD_MILLIS", "100");
-    env::set_var("DYNAMO_LOCK_ADDITIONAL_TIME_TO_WAIT_MILLIS", "100");
-    env::set_var("DYNAMO_LOCK_LEASE_DURATION", "2");
+    unsafe {
+        env::set_var("AWS_ENDPOINT_URL", helpers::test_aws_endpoint());
+        env::set_var("AWS_S3_LOCKING_PROVIDER", "dynamodb");
+        env::set_var("AWS_REGION", "us-east-2");
+        env::set_var("AWS_STORAGE_ALLOW_HTTP", "true");
+        env::set_var("DELTA_DYNAMO_TABLE_NAME", "locks");
+        env::set_var("DYNAMO_LOCK_OWNER_NAME", name);
+        env::set_var("DYNAMO_LOCK_PARTITION_KEY_VALUE", "emails_s3_tests");
+        env::set_var("DYNAMO_LOCK_REFRESH_PERIOD_MILLIS", "100");
+        env::set_var("DYNAMO_LOCK_ADDITIONAL_TIME_TO_WAIT_MILLIS", "100");
+        env::set_var("DYNAMO_LOCK_LEASE_DURATION", "2");
+    }
 
     let mut additional_kafka_settings = HashMap::new();
     additional_kafka_settings.insert("auto.offset.reset".to_string(), "earliest".to_string());
@@ -115,15 +117,16 @@ fn create_options(name: &str) -> IngestOptions {
 }
 
 async fn prepare_table(topic: &str) -> String {
-    match env::var("AWS_ACCESS_KEY_ID") {
-        Err(_) => env::set_var("AWS_ACCESS_KEY_ID", "test"),
-        Ok(_) => {}
+    unsafe {
+        match env::var("AWS_ACCESS_KEY_ID") {
+            Err(_) => env::set_var("AWS_ACCESS_KEY_ID", "test"),
+            Ok(_) => {}
+        }
+        match env::var("AWS_SECRET_ACCESS_KEY") {
+            Err(_) => env::set_var("AWS_SECRET_ACCESS_KEY", "test"),
+            Ok(_) => {}
+        }
     }
-    match env::var("AWS_SECRET_ACCESS_KEY") {
-        Err(_) => env::set_var("AWS_SECRET_ACCESS_KEY", "test"),
-        Ok(_) => {}
-    }
-
     let s3 = rusoto_s3::S3Client::new(Region::Custom {
         name: "custom".to_string(),
         endpoint: helpers::test_aws_endpoint(),
