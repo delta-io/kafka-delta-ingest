@@ -126,7 +126,7 @@ docker run -it --network=host ^
   -e AZURE_STORAGE_ACCOUNT_NAME={AZURE_STORAGE_ACCOUNT_NAME} ^
   -e "AZURE_STORAGE_ACCOUNT_KEY={AZURE_STORAGE_ACCOUNT_KEY}" ^
   kdi:0.1 ^
-  ingest web_requests adls2://{AZURE_STORAGE_ACCOUNT_NAME}/{FILESYSTEM_NAME}/web_requests ^
+  ingest web_requests abfss://{FILESYSTEM_NAME}@{AZURE_STORAGE_ACCOUNT_NAME}.dfs.core.windows.net/web_requests ^
   --allowed_latency 5 ^
   --kafka thovoll-kdi-eh.servicebus.windows.net:9093 ^
   --Kafka security.protocol=SASL_SSL ^
@@ -155,6 +155,8 @@ Notes:
 *** `metadata.max.age.ms=180000`
 *** `heartbeat.interval.ms=3000`
 *** `session.timeout.ms=30000`
+* Use an `abfss://` (or `abfs://{FILESYSTEM_NAME}/{path}`) table location. Avoid `az://{FILESYSTEM_NAME}/{path}`: the `object_store` version used here drops the path and looks for `_delta_log` at the container root (fixed upstream in link:https://github.com/apache/arrow-rs-object-store/pull/604[object_store 0.13.2]).
+* Azure Storage rejects a write to an existing blob when asked to, so concurrent writers need no locking provider.
 
 ==== Sending data to Event Hubs
 
@@ -221,17 +223,18 @@ To enable gzip decompression, use the `--decompress_gzip` flag when starting the
 
 == Writing to S3
 
-When writing to S3, you may experience an error like `source: StorageError { source: S3Generic("dynamodb locking is not enabled") }`.
+Concurrent writers to one Delta table are safe only if a commit fails when another writer has already created the same log file. delta-rs does this on S3 with conditional writes (`If-None-Match`) by default, so no locking provider is needed on Amazon S3 or on S3-compatible stores that support conditional writes.
 
-A locking mechanism is need to prevent unsafe concurrent writes to a delta lake directory, and DynamoDB is an option for this. To use DynamoDB, set the `AWS_S3_LOCKING_PROVIDER` variable to `dynamodb` and create a table named `delta_rs_lock_table` in Dynamo. An example DynamoDB table creation snippet using the aws CLI follows, and should be customized for your environment's needs (e.g. read/write capacity modes):
-
+If your S3-compatible store does not support conditional writes, use DynamoDB instead: set `AWS_S3_LOCKING_PROVIDER` to `dynamodb` and create the table that delta-rs expects. Its default name is `delta_log`; set `DELTA_DYNAMO_TABLE_NAME` to use another name. Adjust the capacity settings for your environment:
 
 ```bash
-aws dynamodb create-table --table-name delta_rs_lock_table \
+aws dynamodb create-table --table-name delta_log \
     --attribute-definitions \
-        AttributeName=key,AttributeType=S \
+        AttributeName=tablePath,AttributeType=S \
+        AttributeName=fileName,AttributeType=S \
     --key-schema \
-        AttributeName=key,KeyType=HASH \
+        AttributeName=tablePath,KeyType=HASH \
+        AttributeName=fileName,KeyType=RANGE \
     --provisioned-throughput \
         ReadCapacityUnits=10,WriteCapacityUnits=10
 ```
