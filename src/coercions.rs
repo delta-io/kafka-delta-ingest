@@ -80,7 +80,7 @@ pub(crate) fn coerce(value: &mut Value, coercion_tree: &CoercionTree) {
 fn apply_coercion(value: &mut Value, node: &CoercionNode) {
     match node {
         CoercionNode::Coercion(Coercion::ToString) => {
-            if !value.is_string() {
+            if !value.is_string() && !value.is_null() {
                 *value = Value::String(value.to_string());
             }
         }
