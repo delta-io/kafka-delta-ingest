@@ -54,7 +54,7 @@ Notes:
 ** Above, AWS_ENDPOINT_URL points to localstack.
 * The Kafka broker is assumed to be at localhost:9092, use -k to override.
 * To clean data from previous local runs, execute `./bin/clean-example-data.sh`. You'll need to do this if you destroy your Kafka container between runs since your delta log directory will be out of sync with Kafka offsets.
-* For Kafka topics secured by SSL client certificates, see <<_kafka_ssl,Kafka SSL>>.
+* For Kafka topics secured by SSL client certificates, see <<kafka-ssl,Kafka SSL>>.
 
 
 === Using Azure Event Hubs
@@ -182,6 +182,7 @@ Notes:
 * The following configuration settings in the command above are taken from link:https://docs.microsoft.com/en-us/azure/event-hubs/apache-kafka-configurations#librdkafka-configuration-properties[here]:
 `-X socket.keepalive.enable=true -X metadata.max.age.ms=180000 -X heartbeat.interval.ms=3000 -X session.timeout.ms=30000`
 
+[[kafka-ssl]]
 == Kafka SSL
 
 In case you have Kafka topics secured by SSL client certificates, you can specify these secrets as environment variables.
