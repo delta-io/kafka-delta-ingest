@@ -1,4 +1,4 @@
-FROM rust:1.98 AS builder
+FROM rust:1.98-bookworm AS builder
 
 RUN mkdir /build
 WORKDIR /build
