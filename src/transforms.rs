@@ -13,8 +13,8 @@ use std::sync::Arc;
 #[derive(thiserror::Error, Debug)]
 pub enum TransformError {
     /// The value to transform is not a JSON object.
-    #[error("Unable to mutate non-object value {value}")]
-    ValueNotAnObject { value: Value },
+    #[error("Unable to mutate non-object value of type {kind}")]
+    ValueNotAnObject { kind: &'static str },
 
     /// JMESPath query expression failed when querying the source value.
     #[error("JmespathError: {source}")]
@@ -420,7 +420,7 @@ impl Transformer {
                 Ok(())
             }
             _ => Err(TransformError::ValueNotAnObject {
-                value: value.to_owned(),
+                kind: json_type_name(value),
             }),
         }
     }
@@ -472,6 +472,17 @@ fn timestamp_value_from_kafka(
         // Convert to milliseconds to microseconds for delta format
         rdkafka::Timestamp::CreateTime(ms) => serde_json::to_value(ms * 1000),
         rdkafka::Timestamp::LogAppendTime(ms) => serde_json::to_value(ms * 1000),
+    }
+}
+
+fn json_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
     }
 }
 
@@ -783,5 +794,23 @@ mod tests {
         assert_eq!("test", kafka_topic);
         assert_eq!(1626823098519000, kafka_timestamp);
         assert_eq!(0, kafka_timestamp_type);
+    }
+
+    #[test]
+    fn transform_rejects_non_object_without_leaking_value() {
+        let mut value = json!(["secret-payload"]);
+        let transformer = Transformer::from_transforms(&HashMap::new()).unwrap();
+
+        let err = transformer
+            .transform::<OwnedMessage>(&mut value, None)
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            TransformError::ValueNotAnObject { kind: "array" }
+        ));
+        let message = err.to_string();
+        assert!(message.contains("of type array"));
+        assert!(!message.contains("secret-payload"));
     }
 }
