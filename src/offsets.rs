@@ -231,7 +231,7 @@ mod tests {
 
     async fn create_table() -> DeltaTable {
         let table_path = format!("./tests/gen/table-{}", Uuid::new_v4());
-        let v0_path = format!("{}/_delta_log/00000000000000000000.json", &table_path);
+        let v0_path = format!("{}/_delta_log/00000000000000000000.json", table_path);
         std::fs::create_dir_all(Path::new(&v0_path).parent().unwrap()).unwrap();
         std::fs::write(&v0_path, VERSION_0).unwrap();
         deltalake_core::open_table(&table_path).await.unwrap()

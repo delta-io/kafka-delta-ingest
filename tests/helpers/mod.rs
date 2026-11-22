@@ -124,7 +124,7 @@ pub async fn read_files_from_store(table: &DeltaTable) -> Vec<i32> {
                 .truncate(true)
                 .open(&tmp)
                 .unwrap();
-            file.write(bytes.chunk()).unwrap();
+            file.write_all(bytes.chunk()).unwrap();
             file.flush().unwrap();
             drop(file)
         }
@@ -133,10 +133,8 @@ pub async fn read_files_from_store(table: &DeltaTable) -> Vec<i32> {
 
         let row_iter = reader.get_row_iter(None).unwrap();
 
-        for record in row_iter {
-            if let Ok(record) = record {
-                list.push(record.get_string(0).unwrap().parse::<i32>().unwrap());
-            }
+        for record in row_iter.flatten() {
+            list.push(record.get_string(0).unwrap().parse::<i32>().unwrap());
         }
     }
 
@@ -247,7 +245,7 @@ pub fn create_local_table(schema: Value, partitions: Vec<&str>, table_name: &str
 }
 
 pub fn create_local_table_in(schema: Value, partitions: Vec<&str>, path: &str) {
-    let v0 = format!("{}/_delta_log/00000000000000000000.json", &path);
+    let v0 = format!("{}/_delta_log/00000000000000000000.json", path);
 
     std::fs::create_dir_all(FilePath::new(&v0).parent().unwrap()).unwrap();
 
@@ -483,8 +481,8 @@ pub async fn inspect_table(path: &str) {
                 }
                 Action::Add(a) => {
                     let stats = a.get_stats_parsed().unwrap().unwrap();
-                    println!("  Add: {}. Records: {}", &a.path, stats.num_records);
-                    let full_path = format!("{}/{}", &path, &a.path);
+                    println!("  Add: {}. Records: {}", a.path, stats.num_records);
+                    let full_path = format!("{}/{}", path, a.path);
                     let parquet_bytes = store
                         .get(&Path::parse(&full_path).unwrap())
                         .await
@@ -515,8 +513,7 @@ pub async fn inspect_table(path: &str) {
                 .await
                 .unwrap();
             let reader = SerializedFileReader::new(bytes).unwrap();
-            let mut i = 0;
-            for record in reader.get_row_iter(None).unwrap() {
+            for (i, record) in reader.get_row_iter(None).unwrap().enumerate() {
                 let json = record.unwrap().to_json_value();
                 if let Some(m) = parse_json_field::<Metadata>(&json, "metaData") {
                     println!(" {}. metaData: {}", i, m.id);
@@ -542,8 +539,6 @@ pub async fn inspect_table(path: &str) {
                         .unwrap_or(-1);
                     println!(" {}. add[{}]: {}", i, records, a.path);
                 }
-
-                i += 1;
             }
             println!()
         }
@@ -580,8 +575,8 @@ impl TestScope {
         runtime.insert(WORKER_1, create_runtime(WORKER_1));
         runtime.insert(WORKER_2, create_runtime(WORKER_2));
 
-        println!("Topic: {}", &topic);
-        println!("Table: {}", &table);
+        println!("Topic: {}", topic);
+        println!("Table: {}", table);
         create_topic(topic, TEST_PARTITIONS).await;
 
         Self {
@@ -618,7 +613,7 @@ impl TestScope {
         let producer = create_producer();
         let now: DateTime<Utc> = Utc::now();
 
-        println!("Sending {} messages to {}", amount, &self.topic);
+        println!("Sending {} messages to {}", amount, self.topic);
         for n in 0..amount {
             let json = &json!({
                 "id": n.to_string(),
