@@ -11,7 +11,7 @@ COPY --link ./tests .
 RUN --mount=type=cache,target=/usr/local/cargo/registry,id=kdi-cargo-registry \
     --mount=type=cache,target=/usr/local/cargo/git,id=kdi-cargo-git \
     --mount=type=cache,target=target,id=kdi-target \
-    cargo build --release --features s3 && cp target/release/kafka-delta-ingest .
+    cargo build --release --features s3,azure && cp target/release/kafka-delta-ingest .
 
 FROM debian:12
 
