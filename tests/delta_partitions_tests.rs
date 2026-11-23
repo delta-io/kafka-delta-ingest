@@ -1,7 +1,6 @@
 #[allow(dead_code)]
 mod helpers;
 
-use deltalake_core::DeltaTableError;
 use deltalake_core::kernel::transaction::CommitBuilder;
 use deltalake_core::kernel::transaction::TableReference;
 use deltalake_core::kernel::{Action, Add};
@@ -113,7 +112,6 @@ async fn test_delta_partitions() {
             operation,
         )
         .await
-        .map_err(DeltaTableError::from)
         .expect("Failed to create transaction")
         .version;
 

@@ -179,7 +179,7 @@ mod tests {
 
         values.sort();
 
-        let expected: Vec<String> = vec!["\"0:0\"", "\"0:1\"", "\"0:2\"", "\"1:0\"", "\"1:1\""]
+        let expected: Vec<String> = ["\"0:0\"", "\"0:1\"", "\"0:2\"", "\"1:0\"", "\"1:1\""]
             .iter()
             .map(|s| s.to_string())
             .collect();

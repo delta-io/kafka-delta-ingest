@@ -1174,7 +1174,7 @@ mod tests {
             .unwrap();
         assert_eq!(add.len(), 1);
         let stats: deltalake_core::protocol::Stats =
-            serde_json::from_str(&add[0].stats.as_ref().unwrap()).expect("Failed to parse stats");
+            serde_json::from_str(add[0].stats.as_ref().unwrap()).expect("Failed to parse stats");
 
         let min_max_keys = vec!["meta", "some_int", "some_string", "some_bool"];
         let mut null_count_keys = vec!["some_list", "some_nested_list"];
@@ -1208,7 +1208,7 @@ mod tests {
                 ("date", ColumnValueStat::Value(v)) => {
                     assert_eq!("2021-06-22", v.as_str().unwrap())
                 }
-                _ => assert!(false, "Key should not be present"),
+                _ => panic!("Key should not be present"),
             }
         }
 
@@ -1236,7 +1236,7 @@ mod tests {
                 ("date", ColumnValueStat::Value(v)) => {
                     assert_eq!("2021-06-22", v.as_str().unwrap())
                 }
-                _ => assert!(false, "Key should not be present"),
+                _ => panic!("Key should not be present"),
             }
         }
 
@@ -1262,7 +1262,7 @@ mod tests {
                 ("some_list", ColumnCountStat::Value(v)) => assert_eq!(100, *v),
                 ("some_nested_list", ColumnCountStat::Value(v)) => assert_eq!(0, *v),
                 ("date", ColumnCountStat::Value(v)) => assert_eq!(0, *v),
-                _ => assert!(false, "Key should not be present"),
+                _ => panic!("Key should not be present"),
             }
         }
     }
@@ -1383,27 +1383,29 @@ mod tests {
                 .to_string()
         };
         static ref JSON_ROWS: Vec<Value> = {
-            std::iter::repeat(json!({
-                "meta": {
-                    "kafka": {
-                        "offset": 0,
-                        "partition": 0,
-                        "topic": "some_topic"
+            std::iter::repeat_n(
+                json!({
+                    "meta": {
+                        "kafka": {
+                            "offset": 0,
+                            "partition": 0,
+                            "topic": "some_topic"
+                        },
+                        "producer": {
+                            "timestamp": "2021-06-22"
+                        },
                     },
-                    "producer": {
-                        "timestamp": "2021-06-22"
-                    },
-                },
-                "some_string": "GET",
-                "some_int": 302,
-                "some_bool": true,
-                "some_list": ["a", "b", "c"],
-                "some_nested_list": [[42], [84]],
-                "date": "2021-06-22",
-            }))
-            .take(100)
-            .chain(
-                std::iter::repeat(json!({
+                    "some_string": "GET",
+                    "some_int": 302,
+                    "some_bool": true,
+                    "some_list": ["a", "b", "c"],
+                    "some_nested_list": [[42], [84]],
+                    "date": "2021-06-22",
+                }),
+                100,
+            )
+            .chain(std::iter::repeat_n(
+                json!({
                     "meta": {
                         "kafka": {
                             "offset": 100,
@@ -1420,11 +1422,11 @@ mod tests {
                     "some_list": ["x", "y", "z"],
                     "some_nested_list": [[42], [84]],
                     "date": "2021-06-22",
-                }))
-                .take(100),
-            )
-            .chain(
-                std::iter::repeat(json!({
+                }),
+                100,
+            ))
+            .chain(std::iter::repeat_n(
+                json!({
                     "meta": {
                         "kafka": {
                             "offset": 0,
@@ -1437,9 +1439,9 @@ mod tests {
                     },
                     "some_nested_list": [[42], null],
                     "date": "2021-06-22",
-                }))
-                .take(100),
-            )
+                }),
+                100,
+            ))
             .collect()
         };
     }

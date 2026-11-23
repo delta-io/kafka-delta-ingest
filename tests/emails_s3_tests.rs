@@ -118,13 +118,11 @@ fn create_options(name: &str) -> IngestOptions {
 
 async fn prepare_table(topic: &str) -> String {
     unsafe {
-        match env::var("AWS_ACCESS_KEY_ID") {
-            Err(_) => env::set_var("AWS_ACCESS_KEY_ID", "test"),
-            Ok(_) => {}
+        if env::var("AWS_ACCESS_KEY_ID").is_err() {
+            env::set_var("AWS_ACCESS_KEY_ID", "test");
         }
-        match env::var("AWS_SECRET_ACCESS_KEY") {
-            Err(_) => env::set_var("AWS_SECRET_ACCESS_KEY", "test"),
-            Ok(_) => {}
+        if env::var("AWS_SECRET_ACCESS_KEY").is_err() {
+            env::set_var("AWS_SECRET_ACCESS_KEY", "test");
         }
     }
     let s3 = rusoto_s3::S3Client::new(Region::Custom {
