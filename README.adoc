@@ -54,23 +54,7 @@ Notes:
 ** Above, AWS_ENDPOINT_URL points to localstack.
 * The Kafka broker is assumed to be at localhost:9092, use -k to override.
 * To clean data from previous local runs, execute `./bin/clean-example-data.sh`. You'll need to do this if you destroy your Kafka container between runs since your delta log directory will be out of sync with Kafka offsets.
-
-==== Kafka SSL
-
-In case you have Kafka topics secured by SSL client certificates, you can specify these secrets as environment variables.
-
-For the cert chain include the PEM content as an environment variable named `KAFKA_DELTA_INGEST_CERT`.
-For the cert private key include the PEM content as an environment variable named `KAFKA_DELTA_INGEST_KEY`.
-
-These will be set as the `ssl.certificate.pem` and `ssl.key.pem` Kafka settings respectively.
-
-Make sure to provide the additional option:
-
-```
--K security.protocol=SSL
-```
-
-when invoking the cli command as well.
+* For Kafka topics secured by SSL client certificates, see <<kafka-ssl,Kafka SSL>>.
 
 
 === Using Azure Event Hubs
@@ -110,7 +94,7 @@ More info:
 5. Build the docker image
 
 ```
-docker build -t kdi:0.1 . -f Dockerfile.Debian
+docker build -t kdi:0.1 .
 ```
 
 Notes:
@@ -198,6 +182,7 @@ Notes:
 * The following configuration settings in the command above are taken from link:https://docs.microsoft.com/en-us/azure/event-hubs/apache-kafka-configurations#librdkafka-configuration-properties[here]:
 `-X socket.keepalive.enable=true -X metadata.max.age.ms=180000 -X heartbeat.interval.ms=3000 -X session.timeout.ms=30000`
 
+[[kafka-ssl]]
 == Kafka SSL
 
 In case you have Kafka topics secured by SSL client certificates, you can specify these secrets as environment variables.
@@ -239,23 +224,23 @@ aws dynamodb create-table --table-name delta_log \
         ReadCapacityUnits=10,WriteCapacityUnits=10
 ```
 
+NOTE: As of `deltalake >= 0.17.0`, DynamoDB-based locking on S3 is handled internally by the `deltalake-aws` crate via `S3DynamoDbLogStore`. Direct `dynamodb_lock` interactions are no longer required.
+
 == Schema Support
 This application has support for both avro and json format via command line arguments. If no format argument is provided, the default behavior is to use json.
 The table below indicates what will happen with respect to the provided arguments.
 
+[options="header"]
 |===
-| Argument      | Value |  Result |
-| ----------- | ----------- | ----------- |
-| <none>      | <none>       | default json behavior |
-| --json      | <any string>       | default json behavior |
-| --json      | <schema registry url>       |  will connect schema registry to deserialize json |
-| --avro   | ""        | expects all messages in avro format |
-| --avro      | <path to an avro schema>       | will use the provided avro schema for deserialization |
-| --avro   | <schema registry url>        | will connect schema registry to deserialize avro |
+| Argument | Value | Result
+| <none> | <none> | default json behavior
+| `--json` | <any string> | default json behavior
+| `--json` | <schema registry url> | will connect schema registry to deserialize json
+| `--avro` | `""` | expects all messages in avro format
+| `--avro` | <path to an avro schema> | will use the provided avro schema for deserialization
+| `--avro` | <schema registry url> | will connect schema registry to deserialize avro
 |===
 
-
-NOTE: As of `deltalake >= 0.17.0`, DynamoDB-based locking on S3 is handled internally by the `deltalake-aws` crate via `S3DynamoDbLogStore`. Direct `dynamodb_lock` interactions are no longer required.
 == Verifying data in Azure Storage
 
 Use the Azure Portal to browse the file system:
