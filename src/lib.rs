@@ -17,10 +17,6 @@ extern crate strum_macros;
 extern crate serde_json;
 
 use coercions::CoercionTree;
-use deltalake_core::kernel::transaction::CommitBuilder;
-use deltalake_core::kernel::transaction::TableReference;
-use deltalake_core::protocol::DeltaOperation;
-use deltalake_core::protocol::OutputMode;
 use deltalake_core::{DeltaTable, DeltaTableError};
 use futures::stream::StreamExt;
 use log::{debug, error, info, warn};
@@ -969,69 +965,33 @@ impl IngestProcessor {
             return Err(IngestError::DeltaSchemaChanged);
         }
 
-        // Try to commit
-        let mut attempt_number: u32 = 0;
+        // Commit once. delta-rs retries internally; see `commit_streaming_append`.
         let actions = build_actions(&partition_offsets, self.opts.app_id.as_str(), add);
-        loop {
-            let epoch_id = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("Time went backwards")
-                .as_millis() as i64;
-            let commit = CommitBuilder::default()
-                .with_actions(actions.clone())
-                .build(
-                    self.table.state.as_ref().map(|s| s as &dyn TableReference),
-                    self.table.log_store().clone(),
-                    DeltaOperation::StreamingUpdate {
-                        output_mode: OutputMode::Append,
-                        query_id: self.opts.app_id.clone(),
-                        epoch_id,
-                    },
-                )
-                .await;
-            match commit {
-                Ok(v) => {
-                    /*if v != version {
-                        return Err(IngestError::UnexpectedVersionMismatch {
-                            expected_version: version,
-                            actual_version: v,
-                        });
-                    }
-                    assert_eq!(v, version);*/
-                    for (p, o) in &partition_offsets {
-                        self.delta_partition_offsets.insert(*p, Some(*o));
-                    }
-                    if self.opts.write_checkpoints {
-                        try_create_checkpoint(&mut self.table, v.version).await?;
-                    }
-                    record_write_lag(
-                        self.topic.as_str(),
-                        self.consumer.clone(),
-                        &partition_offsets,
-                        &self.ingest_metrics,
-                    )?;
-                    return Ok(v.version);
-                }
-                Err(e) => match e {
-                    DeltaTableError::VersionAlreadyExists(_) => {
-                        error!(
-                            "Transaction attempt failed. Attempts exhausted beyond max_retry_commit_attempts of {} so failing",
-                            DEFAULT_DELTA_MAX_RETRY_COMMIT_ATTEMPTS
-                        );
-                        return Err(e.into());
-                    }
-                    // if store == "DeltaS3ObjectStore"
-                    DeltaTableError::GenericError { source: _ } => {
-                        error!("Delta write failed.. DeltaTableError: {}", e);
-                        return Err(IngestError::InconsistentState(
-                            "The remote dynamodb lock is non-acquirable!".to_string(),
-                        ));
-                    }
-                    _ if attempt_number == 0 => return Err(e.into()),
-                    _ => attempt_number += 1,
-                },
+        let version = match commit_streaming_append(&self.table, &self.opts.app_id, actions).await {
+            Ok(version) => version,
+            // if store == "DeltaS3ObjectStore"
+            Err(e @ DeltaTableError::GenericError { .. }) => {
+                error!("Delta write failed.. DeltaTableError: {}", e);
+                return Err(IngestError::InconsistentState(
+                    "The remote dynamodb lock is non-acquirable!".to_string(),
+                ));
             }
+            Err(e) => return Err(e.into()),
+        };
+
+        for (p, o) in &partition_offsets {
+            self.delta_partition_offsets.insert(*p, Some(*o));
         }
+        if self.opts.write_checkpoints {
+            try_create_checkpoint(&mut self.table, version).await?;
+        }
+        record_write_lag(
+            self.topic.as_str(),
+            self.consumer.clone(),
+            &partition_offsets,
+            &self.ingest_metrics,
+        )?;
+        Ok(version)
     }
 
     /// Resets all current state to the correct starting points represented by the current partition assignment.
