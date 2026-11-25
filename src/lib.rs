@@ -841,8 +841,8 @@ impl IngestProcessor {
                     }
                     Err(e) => {
                         warn!(
-                            "Transform failed - partition {}, offset {}",
-                            partition, offset
+                            "Transform failed - partition {}, offset {}: {}",
+                            partition, offset, e
                         );
                         self.ingest_metrics.message_transform_failed();
                         self.dlq
