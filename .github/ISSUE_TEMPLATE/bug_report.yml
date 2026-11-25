@@ -1,0 +1,120 @@
+name: Bug Report
+description: File a bug report to help us improve
+title: "[Bug]: "
+labels: []
+type: Bug
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report!
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear and concise description of what the bug is.
+      placeholder: Tell us what you see!
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: A clear and concise description of what you expected to happen.
+      placeholder: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: kafka-delta-ingest version
+      description: Release version or git commit you are running.
+      placeholder: e.g. 0.5.0 or 4d2ed76
+    validations:
+      required: false
+
+  - type: dropdown
+    id: storage
+    attributes:
+      label: Storage backend
+      description: Where is the target Delta table stored?
+      options:
+        - Local filesystem
+        - AWS S3 (s3 feature)
+        - Azure Storage (azure feature)
+        - Other
+    validations:
+      required: false
+
+  - type: dropdown
+    id: message-format
+    attributes:
+      label: Message format
+      description: Which message format option are you using?
+      options:
+        - JSON (default or --json)
+        - Avro with schema registry (--avro)
+        - Avro with local schema files (--soe-avro)
+    validations:
+      required: false
+
+  - type: input
+    id: kafka
+    attributes:
+      label: Kafka broker
+      description: Broker implementation and version.
+      placeholder: e.g. Apache Kafka 3.9, Redpanda 24.1, Amazon MSK, Azure Event Hubs
+    validations:
+      required: false
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      description: What operating system are you running?
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Other
+    validations:
+      required: false
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command and configuration
+      description: |
+        The `kafka-delta-ingest ingest ...` command you ran, including `--transform` and `-K` settings.
+        Remove credentials and connection strings before posting.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: A minimal reproducible example for the bug.
+      placeholder: |
+        1. Create topic '...' and table '...'
+        2. Produce message '....'
+        3. Run kafka-delta-ingest with '....'
+        4. See error
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: |
+        Please copy and paste any relevant log output (`RUST_LOG=debug` helps).
+        This will be automatically formatted into code, so no need for backticks.
+      render: shell
+    validations:
+      required: false
