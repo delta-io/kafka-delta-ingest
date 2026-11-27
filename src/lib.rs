@@ -365,7 +365,7 @@ pub async fn start_ingest(
     let consumer = Arc::new(consumer);
     consumer.subscribe(&[topic.as_str()])?;
 
-    let _max_offsets = if opts.end_at_last_offsets {
+    let max_offsets = if opts.end_at_last_offsets {
         Some(fetch_latest_offsets(&topic, &consumer)?)
     } else {
         None
@@ -441,7 +441,7 @@ pub async fn start_ingest(
 
                 let message = message?;
 
-                if let Some(offset_map) = &_max_offsets
+                if let Some(offset_map) = &max_offsets
                     && end_of_partition_reached(&message, offset_map)
                 {
                     unassign_partition(cancellation_token.clone(), consumer.clone(), &message)?;
@@ -532,7 +532,7 @@ pub async fn start_ingest(
         // Exit once everything up to the offsets captured at startup is committed.
         // Checked here rather than per message, because a caught-up topic delivers
         // no further messages to trigger `end_of_partition_reached`.
-        if let Some(offset_map) = &_max_offsets {
+        if let Some(offset_map) = &max_offsets {
             if ingest_processor.is_caught_up(&partition_assignment, offset_map) {
                 info!(
                     "All assigned partitions are written up to their latest offsets, terminating"
