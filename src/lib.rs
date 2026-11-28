@@ -532,13 +532,11 @@ pub async fn start_ingest(
         // Exit once everything up to the offsets captured at startup is committed.
         // Checked here rather than per message, because a caught-up topic delivers
         // no further messages to trigger `end_of_partition_reached`.
-        if let Some(offset_map) = &max_offsets {
-            if ingest_processor.is_caught_up(&partition_assignment, offset_map) {
-                info!(
-                    "All assigned partitions are written up to their latest offsets, terminating"
-                );
-                return Ok(());
-            }
+        if let Some(offset_map) = &max_offsets
+            && ingest_processor.is_caught_up(&partition_assignment, offset_map)
+        {
+            info!("All assigned partitions are written up to their latest offsets, terminating");
+            return Ok(());
         }
 
         // Exit if the cancellation token is set.
